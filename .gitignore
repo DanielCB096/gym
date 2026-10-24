@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Node / frontend
+node_modules/
+.next/
+out/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Databases and local services
+*.sqlite3
+*.db
+postgres_data/
+redis_data/
+
+# Secrets and certificates
+*.pem
+*.crt
+*.key
+*.p12
+*.pfx
+*.cer
+
+# IDE/editor
+.vscode/
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Local scratch
+.scratch/
+.tmp/
+
+# Backups and exports
+backups/
+exports/
+*.bak
+*.zip
+
+# Real data
+clientes-real/
+reales/
+uploads/
+photos-real/

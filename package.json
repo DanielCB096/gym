@@ -1,0 +1,10 @@
+{
+  "name": "gym-manager",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "lint": "echo \"Lint no configurado aún\"",
+    "test": "echo \"Tests no configurados aún\"",
+    "dev": "echo \"No hay app a ejecutar aún\""
+  }
+}

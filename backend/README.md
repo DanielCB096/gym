@@ -1,0 +1,277 @@
+# Backend
+
+Este directorio alberga la API del sistema y la lógica de negocio central.
+
+## Objetivo
+
+- gestionar socios y membresías
+- manejar pagos y cobros recurrentes
+- controlar acceso y bitácoras
+- facturar, vender y auditar eventos
+- servir la lógica compartida para web, móvil y kiosco
+
+## Estructura sugerida
+
+```text
+backend/
+├── src/
+│   ├── app/
+│   ├── core/
+│   ├── modules/
+│   ├── infra/
+│   └── shared/
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
+└── README.md
+```
+
+La zona horaria del gimnasio se resuelve en un solo lugar, `src/app/timezone.py`
+(`DEFAULT_TIMEZONE`, `club_timezone`, `local_midnight`, `club_date`,
+`club_day_stamp`). Los módulos de accesos, reportes, punto de venta y
+mantenimiento la comparten en vez de leer `APP_TIMEZONE` cada uno por su cuenta:
+los instantes se guardan en UTC y se leen en el calendario local (los folios
+`V-…`/`D-…`/`MT-…` y las fronteras de los reportes lo usan).
+
+## Stack propuesto
+
+- Python 3.12+
+- FastAPI
+- PostgreSQL
+- Redis
+- Celery
+- SQLAlchemy / SQLModel
+- Alembic para migraciones versionadas
+- Pydantic
+- pytest
+
+## Migraciones de base de datos
+
+Configura `DATABASE_URL` en el entorno usando el esquema `postgresql+psycopg://` y ejecuta desde `backend/`:
+
+```bash
+alembic upgrade head
+alembic current
+alembic downgrade base
+```
+
+`downgrade base` elimina las tablas creadas por estas migraciones y solo debe usarse en una base desechable o después de respaldar y verificar los datos. Revisa `alembic upgrade head --sql` para inspeccionar SQL sin conectarte a PostgreSQL.
+
+Después de migrar una base nueva, crea el primer usuario dueño desde una consola local segura. Desde PowerShell en `backend/`:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m app.modules.identity.bootstrap_owner
+```
+
+El comando solicita correo y contraseña sin mostrarla y solo funciona cuando no existen usuarios. El backend usa sesiones opacas de 8 horas, guarda solo el hash SHA-256 del token y almacena contraseñas con Argon2. Las rutas administrativas requieren permiso en backend.
+
+Rutas iniciales de identidad y personal:
+
+- `POST /auth/login`, `GET /auth/me` y `POST /auth/logout`
+- `GET /admin/roles` y `POST /admin/roles/{role_code}/permissions` / `DELETE /admin/roles/{role_code}/permissions/{permission_code}` (permiso `roles.manage`) para editar la matriz de permisos
+- `GET /admin/users` (permiso `roles.manage`) con los roles activos de cada cuenta
+- `GET /admin/sessions` y `DELETE /admin/sessions/{session_id}` (permiso `sessions.manage`)
+- `GET /admin/staff` y `POST /admin/staff`
+- `GET /admin/members` (permiso `members.read`) y `POST /admin/members` (permiso `members.manage`) para el alta de socio
+- `GET /admin/plans` (permiso `members.read`) con los planes activos para asignar
+- `PATCH /admin/members/{member_id}` (permiso `members.manage`) para editar los datos del socio
+- `POST /admin/members/{member_id}/membership` y sus acciones `/payments`, `/freeze`, `/resume` y `/cancel` (permiso `members.manage`) para el ciclo de vida de la membresía; `/payments` registra el cobro manual con efectivo/tarjeta declarada/transferencia y exige turno abierto
+- `GET /admin/access-events` (permiso `access.read`)
+- `POST /admin/access-events/manual` (permiso `access.manual_override`)
+- `GET /admin/dashboard` (permiso `dashboard.read`)
+- `POST /admin/users` y asignación/revocación en `/admin/users/{user_id}/roles`
+- `GET /admin/products` (permiso `inventory.read`) y `POST /admin/products`, `PATCH /admin/products/{product_id}`, `POST /admin/products/{product_id}/stock` (permiso `inventory.manage`)
+- `GET /admin/sales` (permiso `sales.read`) y `POST /admin/sales` (permiso `sales.manage`)
+- `GET /admin/sales/returns` (permiso `sales.read`) y `POST /admin/sales/{sale_id}/returns` (permiso `sales.manage`)
+- `POST /admin/sales/offline` (permiso `sales.manage`)
+- `GET /admin/member-accounts` y `GET /admin/member-accounts/{member_id}` (permiso `sales.read`), `GET /admin/member-accounts/{member_id}/statement.pdf|.csv` (permiso `sales.read`), `GET /admin/member-accounts/{member_id}/statement/deliveries` (permiso `sales.read`), `POST /admin/member-accounts/{member_id}/payments`, `POST /admin/member-accounts/{member_id}/statement/send`, `POST /admin/member-accounts/{member_id}/statement/deliveries/{delivery_id}/retry` y `POST /admin/member-accounts/reminders` (permiso `sales.manage`) y `PATCH /admin/member-accounts/{member_id}/credit-limit` (permiso `sales.credit`)
+- `GET /admin/cash-sessions` y `GET /admin/cash-sessions/current` (permiso `sales.read`) y `POST /admin/cash-sessions`, `POST /admin/cash-sessions/{cash_session_id}/close` (permiso `sales.manage`)
+- `GET /admin/classes/types`, `GET /admin/classes/rooms` y `GET /admin/classes/instructors` (permiso `classes.read`), más `POST /admin/classes/types` y `POST /admin/classes/rooms` (permiso `classes.manage`)
+- `GET /admin/classes/sessions` (permiso `classes.read`) y `POST /admin/classes/sessions`, `PATCH /admin/classes/sessions/{session_id}` y `POST /admin/classes/sessions/{session_id}/cancel` (permiso `classes.manage`)
+- `GET /admin/classes/sessions/{session_id}/reservations` (permiso `classes.read`) y `POST /admin/classes/sessions/{session_id}/reservations`, `POST /admin/classes/reservations/{reservation_id}/cancel` y `POST /admin/classes/reservations/{reservation_id}/attendance` (permiso `classes.manage`)
+- `GET /admin/routines/overview` (permiso `routines.read`)
+- `GET /admin/routines/exercises` (permiso `routines.read`) y `POST /admin/routines/exercises`, `PATCH /admin/routines/exercises/{exercise_id}` (permiso `routines.manage`)
+- `GET /admin/routines` y `GET /admin/routines/{routine_id}` (permiso `routines.read`) y `POST /admin/routines`, `PATCH /admin/routines/{routine_id}`, `PUT /admin/routines/{routine_id}/items`, `POST /admin/routines/{routine_id}/archive` (permiso `routines.manage`)
+- `GET /admin/routines/assignments` y `GET /admin/routines/assignments/{assignment_id}` (permiso `routines.read`) y `POST /admin/routines/assignments`, `POST /admin/routines/assignments/{assignment_id}/complete`, `POST /admin/routines/assignments/{assignment_id}/cancel`, `POST /admin/routines/assignments/{assignment_id}/workouts`, `POST /admin/routines/workouts/{workout_id}/review` (permiso `routines.manage`)
+- `GET /admin/routines/assignments/{assignment_id}/workouts` y `GET /admin/routines/members/{member_id}/progress`, `GET /admin/routines/members/{member_id}/measurements` (permiso `routines.read`) y `POST /admin/routines/members/{member_id}/measurements` (permiso `routines.manage`)
+- `GET /admin/maintenance/overview`, `GET /admin/maintenance/equipment`, `GET /admin/maintenance/equipment/options`, `GET /admin/maintenance/equipment/{equipment_id}`, `GET /admin/maintenance/equipment/{equipment_id}/records`, `GET /admin/maintenance/tickets`, `GET /admin/maintenance/tickets/{ticket_id}`, `GET /admin/maintenance/records`, `GET /admin/maintenance/checklists` y `GET /admin/maintenance/service-status` (permiso `maintenance.read`)
+- `POST /admin/maintenance/tickets` y `POST /admin/maintenance/equipment/{equipment_id}/status` (permiso `maintenance.report`)
+- `POST /admin/maintenance/equipment`, `PATCH /admin/maintenance/equipment/{equipment_id}`, `POST /admin/maintenance/equipment/{equipment_id}/retire`, `POST /admin/maintenance/equipment/{equipment_id}/records`, `PATCH /admin/maintenance/tickets/{ticket_id}`, `POST /admin/maintenance/tickets/{ticket_id}/start`, `POST /admin/maintenance/tickets/{ticket_id}/resolve`, `POST /admin/maintenance/tickets/{ticket_id}/cancel` y `POST /admin/maintenance/checklists` (permiso `maintenance.manage`)
+- `GET /admin/reports/overview`, `GET /admin/reports/revenue`, `GET /admin/reports/memberships`, `GET /admin/reports/operations`, `GET /admin/reports/maintenance`, `GET /admin/reports/inventory` y `GET /admin/reports/export` (permiso `finance.read`)
+
+## Vista previa local
+
+Para explorar el flujo actual en Swagger sin PostgreSQL ni credenciales de pasarela, desde PowerShell en `backend/`:
+
+```powershell
+$env:PREVIEW_MODE = "true"
+$env:DATABASE_URL = "sqlite:///./gym_preview.db"
+python -m uvicorn app.main:app --app-dir src --reload --host 127.0.0.1 --port 8000
+```
+
+Abre `http://127.0.0.1:8000/docs`. En esta vista previa la base es SQLite y la pasarela se simula; el endpoint de webhook no verifica firmas reales. No uses `PREVIEW_MODE` en producción. El esquema SQLite se crea automáticamente solo en este modo. En producción, aplica las migraciones Alembic.
+
+### Vista previa de control de acceso
+
+- `POST /preview/access/snapshots/{member_id}` crea un snapshot local desde la membresía; el cuerpo permite simular adeudo, horarios y vencimiento del caché.
+- `POST /preview/access/check` evalúa entrada/salida, registra la decisión en el outbox SQLite y la persiste en `access_events` para la bitácora administrativa.
+- `GET /preview/access/outbox` lista eventos pendientes.
+- `POST /preview/access/outbox/ack` marca eventos como sincronizados.
+
+Estas rutas no leen credenciales RFID/QR, no activan torniquetes ni consultan el ledger real de adeudos. Solo están disponibles en modo preview.
+
+El panel web usa el backend para login, Personal/roles, Socios, Accesos y Resumen. El aforo, la lectura física de credenciales y los torniquetes siguen sin conectarse.
+
+`GET /admin/members` devuelve cada socio con su membresía y plan más recientes (incluidos socios sin membresía). Acepta `page` (desde 1), `page_size` (1–100, por defecto 25), `search` (nombre, apellido, correo, teléfono o plan), `sort` (`name`, `plan` o `renewal`), `direction` (`asc` o `desc`), `state` (`active`, `expiring_soon`, `frozen` o `pending`) y `plan_id` (UUID); responde con `items`, `total`, `page`, `page_size`, `pages`, un `summary` con contadores globales de activos, por vencer (7 días), congelados y altas pendientes, y `plans` con los planes que tienen socios (para poblar el filtro). Los socios sin membresía siempre quedan al final al ordenar por plan o renovación, y tanto el `summary` como `plans` ignoran la búsqueda y los filtros para mantenerse estables. La vista Socios del panel consume esta ruta mediante el BFF, que reenvía el query string.
+
+`POST /admin/members` (permiso `members.manage`) registra el alta de un socio: recibe `first_name`, `last_name`, `email`, `phone` y `privacy_notice_accepted`. Exige nombre y apellidos y al menos un contacto (correo o teléfono); el correo es único sin distinguir mayúsculas (409 si se repite). El socio queda en estado `pending` con el consentimiento de privacidad registrado (versión `privacidad-v1`) cuando `privacy_notice_accepted` es verdadero.
+
+`PATCH /admin/members/{member_id}` (permiso `members.manage`) actualiza los datos de contacto (`first_name`, `last_name`, `email`, `phone`) con las mismas validaciones y unicidad de correo (409). Responde `404` si el socio no existe.
+
+`GET /admin/plans` (permiso `members.read`) lista los planes activos (`id`, `name`, `duration_days`, `price_cents`, `currency`) para poblar el selector de asignación.
+
+`POST /admin/members/{member_id}/membership/payments` (permiso `members.manage`) registra el **cobro manual de membresía** con `payment_method` `cash`/`card`/`transfer`, `idempotency_key` obligatoria, `plan_id` opcional, `note` opcional y `auto_renew` opcional. Exige un turno de caja abierto (`409`) y vincula el pago a ese turno; para un socio sin membresía crea la membresía y activa al socio `pending`; para una membresía `active` (incluso vencida) extiende `ends_at` desde `max(ahora, vencimiento)` y conserva el plan actual si se omite `plan_id`. Crea un `PaymentAttempt` exitoso sin proveedor, un `Payment` con periodo/turno/cobrador/nota y un evento `payment_confirmed` o `renewed` en una sola transacción. Repetir la misma clave y datos devuelve el pago original con `idempotent_replay: true`; reutilizarla con otros datos responde `409`. Una membresía `frozen`, `suspended` o `pending_payment` no se puede cobrar (`409`), un plan inexistente o sin precio responde `404` y un método inválido `422`. La tarjeta se registra como **declarada** (sin autorización de terminal), por lo que no sustituye a la pasarela.
+
+`POST /admin/members/{member_id}/membership` (permiso `members.manage`) asigna o cambia el plan de un socio y deja la membresía `active` **sin registrar ningún cobro**; es una cortesía auditada que el panel pide confirmar. Recibe `plan_id`, `auto_renew` y `note` opcional; crea la membresía si el socio no tiene ninguna vigente o actualiza la existente, reiniciando el periodo desde hoy (`ends_at = hoy + duration_days`). Registra un evento de membresía (`manual_activation` o `plan_changed`) con `no_charge: true` para dejar constancia de que no hubo pago. Devuelve `404` si el socio o el plan no existen (o el plan está inactivo) y `409`/`422` según el caso.
+
+`POST /admin/members/{member_id}/membership/freeze` congela la membresía activa (`frozen`), `/membership/resume` la reactiva (`active`) y `/membership/cancel` la cancela (`cancelled`) exigiendo un `reason` no vacío (422). Cada transición registra su evento de membresía; sin membresía vigente responden `404` y una transición no permitida responde `409`.
+
+`POST /admin/staff` (permiso `staff.manage`) crea el expediente de un colaborador (`employee_number`, `first_name`, `last_name`, `job_title`, `email`, `phone`); rechaza número de empleado o correo repetidos con `409`. `POST /admin/users` (permisos `staff.manage` **y** `roles.manage`) crea la cuenta de acceso con `email`, `password` (mínimo 12 caracteres), `employee_id` opcional y `role_codes`; responde `409` si el correo ya existe, el colaborador no está activo o algún rol no existe. La contraseña se guarda con Argon2 y nunca se devuelve. `GET /admin/users` (permiso `roles.manage`) lista las cuentas con su colaborador vinculado y sus roles activos. `PATCH /admin/users/{user_id}` (permiso `roles.manage`) habilita o deshabilita una cuenta con `{"status": "active"|"disabled"}`; al deshabilitarla se revocan sus sesiones abiertas (deja de servir el token vigente) y se rechazan nuevos inicios de sesión, se impide deshabilitar al último dueño activo (`409`), responde `404` si la cuenta no existe y `422` si el estado no es válido. Cada cambio queda auditado (`account_disabled`/`account_enabled`) con el responsable.
+
+`POST /admin/roles/{role_code}/permissions` y `DELETE /admin/roles/{role_code}/permissions/{permission_code}` (permiso `roles.manage`) otorgan y retiran permisos de un rol; responden `204`, `404` si el rol o el permiso no existen y `409` si se intenta editar el rol `owner`, cuyos permisos son fijos para no dejar al club sin administración. Cada cambio queda auditado (`role_permission_granted`/`role_permission_revoked`). El seed de vista previa (`ensure_default_access_control`) solo otorga los permisos por defecto a los roles que crea, así que un arranque posterior no vuelve a conceder un permiso retirado desde el panel. En producción los roles y permisos se siembran con migraciones que los buscan por código.
+
+`GET /admin/access-events` (permiso `access.read`) lista la bitácora con `page`, `page_size` (1–100, por defecto 25), `search` (socio, correo o lector) y `state` (`authorized`, `denied`, `manual`); responde con `items` enriquecidos con socio y plan, `total`, `pages` y un `summary` global. `POST /admin/access-events/manual` (permiso `access.manual_override`) registra una entrada autorizada por recepción para un socio existente (`member_id` obligatorio, `note` libre y `reader_id` por defecto `Recepción`); responde `201` con el evento creado y `404` si el socio no existe. El motivo se guarda en `note`, separado del código `reason` (`manual_override`). `GET /admin/dashboard` (permiso `dashboard.read`) devuelve los conteos de socios (total, activos, por vencer, congelados y altas pendientes) y los accesos de hoy (entradas y denegados) en la zona horaria `APP_TIMEZONE` (por defecto `America/Mexico_City`). Los eventos se guardan en `access_events` (migraciones `20261016_0004` y `20261016_0005`) de forma idempotente por `event_id`; las decisiones del lector se siguen evaluando en `POST /preview/access/check`.
+
+## Punto de venta e inventario
+
+El primer incremento del módulo de Punto de venta e inventario se apoya en la migración `20261017_0008_pos_inventory.py`, que crea `products`, `inventory_stock`, `inventory_movements`, `cash_sessions`, `sales` y `sale_items` y siembra los permisos `sales.read`/`sales.manage`. El dinero se maneja siempre en centavos enteros.
+
+`GET /admin/products` (permiso `inventory.read`) lista el catálogo con `page`, `page_size` (1–100), `search` (nombre, SKU, código de barras o categoría), `category` y `state` (`active`, `low`, `out`, `inactive`); responde con `items`, `total`, `pages`, un `summary` (activos, stock bajo, agotados, inactivos) y `categories` para poblar el filtro. `POST /admin/products` (permiso `inventory.manage`) crea un producto con `sku`, `name`, `category` opcional, `barcode` opcional, `price_cents`, `cost_cents` opcional, `stock_min` e `initial_stock`; exige SKU y nombre, rechaza SKU o código de barras repetidos (`409`) y registra un movimiento `intake` si hay existencia inicial. `PATCH /admin/products/{product_id}` edita el producto (mismas validaciones) y `POST /admin/products/{product_id}/stock` registra un movimiento manual: `movement_type` (`intake`, `adjustment` o `waste`) y `quantity` distinta de cero, con `reason` obligatorio en ajustes y mermas.
+
+`GET /admin/sales` (permiso `sales.read`) lista las ventas con `page`, `page_size`, `search` (folio, socio o cajero) y `payment_method` (`cash`, `card`, `transfer`, `account`), incluyendo sus líneas; cada venta expone `refunded_cents` y cada línea `refunded_quantity` y `returnable_quantity` para saber cuánto queda por devolver. `POST /admin/sales` (permiso `sales.manage`) registra una venta con `items` (`product_id` y `quantity`), `payment_method`, `member_id` opcional y `note` opcional: exige un turno de caja abierto, valida que cada producto exista y esté activo, descuenta el stock de forma atómica (`UPDATE ... WHERE quantity + delta >= 0`, de modo que dos ventas simultáneas del mismo SKU no dejan el saldo en negativo y el faltante responde `409`), genera el folio único `V-YYYYMMDD-XXXXXX` (con la fecha del día local del gimnasio, `APP_TIMEZONE`, no la fecha UTC) y guarda las líneas y los movimientos de inventario de tipo `sale`. Con `payment_method = "account"` la venta se carga a la cuenta del socio: exige `member_id` (`422`) de un socio activo (`404` si está inactivo), **no** suma a los totales de efectivo/tarjeta/transferencia del turno y valida el límite de crédito cuando existe (`saldo + total <= credit_limit_cents`; un exceso responde `409`, `NULL` significa sin tope y `0` bloquea todo cargo).
+
+`GET /admin/cash-sessions/current` y `GET /admin/cash-sessions` (permiso `sales.read`) devuelven el turno abierto y los últimos turnos con sus totales por forma de pago (incluidas las devoluciones: `refunds_count`, `total_refunds_cents` y `cash_refunds_cents`, y las cuentas: `account_sales_cents`, `account_refunds_cents`, `account_payments_count`, `account_payments_cents` y `cash_account_payments_cents`). `POST /admin/cash-sessions` (permiso `sales.manage`) abre un turno con `opening_cash_cents` (solo uno abierto a la vez; un segundo intento responde `409`) y `POST /admin/cash-sessions/{cash_session_id}/close` lo cierra con `counted_cash_cents` y `notes` opcional: calcula el efectivo esperado (fondo + ventas en efectivo − devoluciones en efectivo + cobros de cuenta en efectivo), registra la diferencia y exige `notes` cuando la diferencia no es cero (`422`).
+
+El segundo incremento agrega **devoluciones y mermas** sobre la venta original (migración `20261018_0015_sale_returns.py`, tablas `sale_returns` y `sale_return_items`). `POST /admin/sales/{sale_id}/returns` (permiso `sales.manage`) registra una devolución con `items` (`sale_item_id`, `quantity`, `disposition` = `restock` o `write_off`), `refund_method` opcional (`cash`/`card`/`transfer`/`account`, por defecto la de la venta) y `reason` obligatorio: exige un turno de caja abierto (`409`), genera el folio único `D-YYYYMMDD-XXXXXX` (misma fecha del día local del gimnasio), bloquea la fila de la venta (`SELECT ... FOR UPDATE`), impide devolver más de lo vendido menos lo ya devuelto (`409`) y no reescribe la venta. Si la venta original se cargó a la cuenta del socio, la devolución se abona **siempre** a esa cuenta (`refund_method = "account"`; pedir efectivo/tarjeta/transferencia responde `422`) y no mueve el efectivo esperado. Cada línea `restock` reingresa al inventario (`return` `+qty`); cada línea `write_off` registra el ingreso y su baja (`return` `+qty` seguido de `waste` `−qty`, saldo neto cero con la merma en el historial). Una venta pasa a `refunded` solo cuando todas sus líneas quedaron totalmente devueltas; una devolución parcial la deja en `completed` y suma su `refunded_cents`. `GET /admin/sales/returns` (permiso `sales.read`) lista las devoluciones con `page`, `page_size`, `search` y filtro `sale_id`, y devuelve un `summary` por forma de reembolso.
+
+El tercer incremento agrega **proveedores y órdenes de compra**, la mitad entrante del inventario (migración `20261018_0016_suppliers_purchase_orders.py`, tablas `suppliers`, `purchase_orders` y `purchase_order_items`). No crea permisos nuevos: se opera con `inventory.read` (consultar) e `inventory.manage` (crear/editar/enviar/recibir/cancelar).
+
+`GET /admin/suppliers` (permiso `inventory.read`) lista el directorio con `page`, `page_size`, `search` (nombre, contacto, teléfono o correo) y `active`. `POST /admin/suppliers` y `PATCH /admin/suppliers/{supplier_id}` (permiso `inventory.manage`) crean y editan un proveedor con `name` (único sin distinguir mayúsculas, `409` si se repite), `contact_name`, `phone`, `email`, `notes` e `is_active`.
+
+`GET /admin/purchase-orders` (permiso `inventory.read`) lista las órdenes con `page`, `page_size`, `search` (folio o proveedor), `status` (`created`, `sent`, `received`, `cancelled`) y `supplier_id`, incluyendo sus líneas, y devuelve un `summary` por estado cuyo `total_cents` **excluye** las canceladas. `GET /admin/purchase-orders/{id}` devuelve el detalle. `POST /admin/purchase-orders` (permiso `inventory.manage`) crea la orden en `created` con `supplier_id`, `items` (`product_id`, `quantity` positiva, `unit_cost_cents`), `expected_at` y `notes` opcionales: exige un proveedor activo (`422`), al menos una línea, productos existentes y sin repetir, guarda un snapshot de nombre y SKU por línea y genera el folio único `OC-YYYYMMDD-XXXXXX` con el día local del gimnasio. `POST /admin/purchase-orders/{id}/send` la marca `sent` (solo desde `created`) y `POST /admin/purchase-orders/{id}/cancel` la cancela solo si no se ha recibido nada (`409` en caso contrario).
+
+`POST /admin/purchase-orders/{id}/receive` (permiso `inventory.manage`) registra la recepción con `items` (`item_id`, `quantity`): rechaza líneas ajenas a la orden y recibir más de lo pedido (`409`), sube el stock con un movimiento tipo `intake` marcado `reference_type="purchase_order"` (se reutiliza el tipo existente para no alterar el `CHECK` de `inventory_movements.movement_type` que la vista previa no puede migrar), actualiza la cantidad recibida por línea y refresca el `cost_cents` del producto al último costo recibido. Una entrega parcial deja la orden abierta (y la marca `sent` si seguía en `created`); cuando todas las líneas quedan completas pasa a `received` y registra `received_at`/`received_by`.
+
+El cuarto incremento (2026-10-19) cierra la **venta a cuenta del socio (cuentas por cobrar)** con la migración `20261019_0017_member_accounts.py`, que crea `member_account_payments` y amplía los `CHECK` de `sales.payment_method` y `sale_returns.refund_method` para aceptar `account`. No se agregó ningún permiso: la consulta usa `sales.read` y el cobro `sales.manage`. `GET /admin/member-accounts` lista, pagina y busca (`page`, `page_size`, `search`) los socios con saldo distinto de cero y resume `total_receivable_cents`, `total_credit_cents` y `members_with_balance`; `GET /admin/member-accounts/{member_id}` devuelve el estado de cuenta (`summary` + `entries`) con cada cargo, devolución y pago, el saldo corrido después de cada movimiento (más reciente primero) y la antigüedad del cargo más viejo. `POST /admin/member-accounts/{member_id}/payments` registra un cobro con `amount_cents` (> 0), `method` (`cash`/`card`/`transfer`) y `note` opcional: exige un turno de caja abierto (`409`), se vincula a ese turno, rechaza pagos que superen el saldo o cuando no hay saldo pendiente (`409`) y devuelve el `balance_cents` resultante. El saldo **no se almacena**: se calcula como `Σ ventas a cuenta − Σ devoluciones abonadas − Σ pagos`, de modo que siempre cuadra con los documentos.
+
+El quinto incremento (2026-10-19) agrega la **venta sin conexión con sincronización posterior** (migración `20261019_0018_offline_sales.py`): `sales.origin` (`online`/`offline`, con `CHECK`) y `sales.client_reference` (único, nulo en ventas en línea). La cola vive en el navegador; el backend solo recibe lotes. `POST /admin/sales/offline` (permiso `sales.manage`) acepta hasta 100 ventas con `client_reference`, `items`, `payment_method`, `member_id`, `note` y `sold_at`: exige un turno abierto (`409`) y procesa cada venta de forma independiente, devolviendo `results` con `status` `created`/`duplicate`/`rejected` (más `sale` o `error`) y los contadores `created`, `duplicates` y `rejected`. Reintentar un lote es seguro porque `client_reference` es único: las ventas ya registradas vuelven como `duplicate` con su folio y no se descuenta stock ni se cobra dos veces. Cada venta conserva su `sold_at` (el folio usa el día local de esa fecha) y se vincula al turno abierto al sincronizar; un `sold_at` con más de 5 minutos en el futuro se rechaza. `GET /admin/sales` acepta `origin=online|offline` y cada venta expone `origin` y `client_reference`.
+
+El sexto incremento (2026-10-19) agrega el **límite de crédito por socio y la antigüedad de saldos** con la migración `20261019_0019_credit_limits.py`: `members.credit_limit_cents` (nullable; `NULL` = sin límite, `0` = sin crédito, `CHECK >= 0`) y el permiso `sales.credit` («Administrar límites de crédito de socios»), otorgado a dueño y gerente. `GET /admin/member-accounts` acepta `over_limit=true|false` y devuelve, además del resumen por cobrar, `aging` (0–30/31–60/61–90/+90 días), `over_limit_members` y `as_of`; cada socio expone `credit_limit_cents`, `credit_available_cents` (puede ser negativo si está excedido), `over_limit` y su `aging`. La antigüedad aplica pagos y devoluciones **FIFO** a los cargos más antiguos con la fecha local del gimnasio y no se almacena. `PATCH /admin/member-accounts/{member_id}/credit-limit` (`sales.credit`) fija o quita el tope con `credit_limit_cents` (`>= 0` o `null`). `POST /admin/sales` y `POST /admin/sales/offline` rechazan con `409` un cargo a cuenta que deje el saldo sobre el límite (y `422` un límite negativo). Cubierto por `tests/test_credit_limits_api.py`.
+
+El séptimo incremento (2026-10-19) agrega el **estado de cuenta exportable y el envío al socio** con la migración `20261019_0020_statement_deliveries.py`, que crea `member_account_statement_deliveries` (socio, usuario, canal, destinatario, formato, fecha de corte, estado `sent`/`simulated`/`failed` y error). No hay permiso nuevo: `GET /admin/member-accounts/{member_id}/statement.pdf` y `.csv` usan `sales.read`; `POST /admin/member-accounts/{member_id}/statement/send` usa `sales.manage` y acepta `format` (`pdf`/`csv`) y `recipient` opcional (por defecto el correo del socio). El PDF se genera con ReportLab y el CSV es UTF-8 con BOM; ambos se arman al momento, se descargan con `Content-Disposition` y no se cachean. El envío usa `smtplib` con `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_USE_TLS`, `SMTP_USE_SSL` y `SMTP_TIMEOUT`; sin correo responde `422`, sin SMTP en producción `503` y un fallo del servidor `502` (el intento queda auditado como `failed`). En `PREVIEW_MODE` se registra `simulated` y nunca se contacta un SMTP real. Cubierto por `tests/test_member_statement_api.py`.
+
+El octavo incremento (2026-10-19) agrega el **historial de envíos y el reintento** con la migración `20261019_0021_statement_delivery_retries.py`, que agrega `retry_of_id` a `member_account_statement_deliveries` (FK autorreferente con `ON DELETE SET NULL`). `GET /admin/member-accounts/{member_id}/statement/deliveries` (`sales.read`) pagina con `page`/`page_size` (máximo 100), devuelve del más reciente al más antiguo e incluye el correo del usuario que envió y `retry_of_id`. `POST /admin/member-accounts/{member_id}/statement/deliveries/{delivery_id}/retry` (`sales.manage`) solo acepta intentos `failed` o `simulated` (`409` para `sent`), conserva destinatario, formato y fecha de corte, agrega una fila nueva enlazada y responde `404` si el envío no existe o pertenece a otro socio. Un nuevo fallo del transporte se audita como otra fila `failed` enlazada. Cubierto por `tests/test_member_statement_api.py`.
+
+El noveno incremento (2026-10-21) agrega los **recordatorios de cobranza** con la migración `20261021_0022_statement_reminders.py`, que agrega `purpose` (`statement`/`reminder`, `CHECK`, default `statement`) e índice por socio/propósito/fecha a `member_account_statement_deliveries`. `POST /admin/member-accounts/reminders` (`sales.manage`) acepta `member_ids` (1 a 50, se deduplican) y `format` (`pdf`/`csv`), y devuelve `requested`, `sent`, `simulated`, `skipped`, `failed` y `results` con nombre, saldo, importe vencido, motivo y envío creado. Solo envía si el socio tiene saldo positivo con algún cargo de más de 30 días, correo y ningún recordatorio `sent`/`simulated` en los últimos 7 días; un `failed` no inicia el cooldown. El envío usa el estado de cuenta adjunto y un cuerpo con el desglose 31–60/61–90/+90; en `PREVIEW_MODE` se registra `simulated`. Si el socio ya pagó, el reintento de un recordatorio responde `409`. Cubierto por `tests/test_collection_reminders_api.py`; la suite del backend quedó en **103 pruebas** en ese incremento.
+
+El **cobro manual y la renovación de membresía en mostrador** (2026-10-21, migración `20261021_0023_membership_manual_payments.py`) agregan `period_starts_at`, `period_ends_at`, `cash_session_id`, `collected_by` y `note` a `payments`, y relajan el CHECK de `payment_attempts` para aceptar tarjeta declarada sin token (`provider IS NULL`). `POST /admin/members/{member_id}/membership/payments` (`members.manage`) recibe `plan_id` opcional, `payment_method` (`cash`/`card`/`transfer`), `idempotency_key` obligatoria, `note` y `auto_renew`; exige turno abierto, crea un intento exitoso sin proveedor, un pago confirmado y el evento de membresía en una transacción, activa al socio `pending` y renueva desde `max(ahora, ends_at)`. La respuesta incluye pago, intento, periodo, turno, estado de membresía, `renewed` e `idempotent_replay`. El cierre de turno suma los cobros de membresía y los cobros de cuenta en efectivo al efectivo esperado. Cubierto por `tests/test_membership_payments_api.py`; la suite queda en **105 pruebas**.
+
+Las rutas BFF del panel (`/api/admin/products`, `/api/admin/suppliers`, `/api/admin/purchase-orders...`, `/api/admin/sales`, `/api/admin/sales/offline`, `/api/admin/sales/returns`, `/api/admin/sales/{saleId}/returns`, `/api/admin/member-accounts...`, `/api/admin/member-accounts/{memberId}/statement`, `/statement/send`, `/statement/deliveries`, `/deliveries/{deliveryId}/retry`, `/api/admin/member-accounts/reminders`, `/api/admin/cash-sessions...`) y la vista Inventario (pestañas Punto de venta, Catálogo, Caja y cortes, Devoluciones, Cuentas por cobrar y Compras) consumen estos endpoints. La terminal bancaria/pasarela no está conectada: las formas de pago con tarjeta o transferencia se registran como declaradas por el operador sin confirmación real. La venta sin conexión se encola en el navegador y se sincroniza al reconectar; sin red solo se permiten efectivo, tarjeta y transferencia.
+
+`backend/seed_returns.py` puebla la vista previa con dos devoluciones sobre el historial de ventas existente (una reingresa a stock y otra se da de baja por merma); es idempotente y abre un turno de caja con fondo cero si no hay uno abierto.
+
+`backend/seed_member_accounts.py` puebla la vista previa con tres cuentas de socio distintas: una venta a cuenta con abono parcial, una venta a cuenta con devolución que abona el saldo y una venta a cuenta sin abono. Es idempotente por socio (no toca cuentas ya sembradas) y abre un turno de caja con fondo cero si no hay uno abierto.
+
+## Clases y reservaciones
+
+El primer incremento del módulo de Clases y reservaciones usa la migración `20261017_0009_classes.py`, que crea `class_types`, `class_rooms`, `class_sessions` y `class_reservations`. No agrega permisos: `classes.read` y `classes.manage` ya existen desde la migración de RBAC y los tienen dueño, gerente e instructor; recepción no los tiene.
+
+La asistencia y la lista de espera no son tablas aparte: son estados de `class_reservations` (`waitlist`, `reserved`, `attended`, `no_show` y `cancelled`), de modo que la asistencia queda 1:1 con la reserva y el orden de espera se guarda en `waitlist_position`.
+
+`GET/POST /admin/classes/types` y `GET/POST /admin/classes/rooms` mantienen el catálogo (nombre único sin distinguir mayúsculas) y `GET /admin/classes/instructors` lista los colaboradores activos para asignar a la clase.
+
+`GET /admin/classes/sessions` (permiso `classes.read`) lista la agenda con `page`, `page_size` (1–100), `date_from`/`date_to`, `room_id`, `instructor_id`, `class_type_id`, `status` (`scheduled`/`cancelled`) y `search`; responde con `items` (con cupo ocupado, lista de espera y plazas libres por clase), `total`, `pages` y un `summary` (total, programadas, canceladas, próximas, inscritos y en espera). `POST /admin/classes/sessions` crea una clase validando la ventana horaria, la capacidad positiva, el tipo de acceso (`included`/`premium`) y la existencia de tipo, salón e instructor; `PATCH /admin/classes/sessions/{session_id}` admite edición parcial (acepta `room_id: null` o `instructor_id: null` para limpiarlos), no permite editar una clase cancelada ni bajar la capacidad por debajo de las reservas confirmadas, y `POST /admin/classes/sessions/{session_id}/cancel` cancela la clase y todas sus reservas vivas.
+
+`GET /admin/classes/sessions/{session_id}/reservations` devuelve la clase y su lista (confirmadas, asistencias, inasistencias y espera). `POST /admin/classes/sessions/{session_id}/reservations` (permiso `classes.manage`) reserva un lugar: bloquea la fila de la clase (`SELECT ... FOR UPDATE`), cuenta las plazas ocupadas (`reserved` + `attended`) y crea `reserved` si hay cupo o `waitlist` con la siguiente posición si la clase está llena y admite lista de espera (`409` si no la admite). Un índice único parcial (`uq_class_reservations_active`) impide que un socio acumule dos reservas vivas en la misma clase (`409`). `POST /admin/classes/reservations/{reservation_id}/cancel` cancela la reserva; si estaba confirmada, promueve al primero en espera, renumera la lista y marca `late_cancellation` cuando la cancelación cae fuera de `cancel_window_hours` (4 h por defecto). `POST /admin/classes/reservations/{reservation_id}/attendance` marca `attended` o `no_show` y solo se acepta desde una reserva confirmada (`409` en cualquier otro estado).
+
+Las clases premium guardan `access_type=premium` y `extra_price_cents`, pero todavía **no se cobran**. `backend/seed_classes.py` puebla la agenda de la vista previa (tipos, salones y clases de los próximos días con reservas, lista de espera, asistencias e inasistencias); reconstruye la agenda en cada ejecución.
+
+## Rutinas y seguimiento de progreso
+
+El primer incremento del módulo de Rutinas y progreso usa la migración `20261017_0010_routines.py`, que crea `exercises`, `routines`, `routine_items`, `routine_revisions`, `routine_assignments`, `workout_logs` y `body_measurements`; la migración `20261017_0011_routines_permissions.py` siembra los permisos `routines.read` y `routines.manage` y los otorga a dueño, gerente y entrenador (recepción, mantenimiento y contabilidad no los tienen).
+
+La rutina es una **plantilla reutilizable del entrenador**, no un plan de un socio: se asigna a varios socios mediante `routine_assignments`. Cada asignación fija `routine_version` al crearse, de modo que publicar una versión nueva de la plantilla nunca altera el historial del socio. `routines.version` apunta al plan vivo y `routine_revisions` guarda el motivo de cada publicación.
+
+`GET /admin/routines/exercises` (permiso `routines.read`) pagina la biblioteca con `page`, `page_size` (1–100), `search`, `muscle_group`, `category` e `include_inactive`, y responde con `items`, `total`, `pages` y las facetas `muscle_groups`/`categories`. `POST /admin/routines/exercises` y `PATCH /admin/routines/exercises/{exercise_id}` (permiso `routines.manage`) administran nombre, grupo muscular, categoría, equipo, descripción, video e imagen; los ejercicios se desactivan en vez de borrarse porque las rutinas los referencian.
+
+`GET /admin/routines` (permiso `routines.read`) lista plantillas con `search`, `status` (`draft`/`active`/`archived`), `trainer_id` y paginación, con un `summary` de activas, borradores y archivadas. `POST /admin/routines` crea la rutina con al menos una línea del plan; `GET /admin/routines/{routine_id}?version=n` lee la versión viva o una histórica; `PATCH /admin/routines/{routine_id}` edita nombre, entrenador, objetivo, notas y estado; `PUT /admin/routines/{routine_id}/items` publica `version+1` con un juego nuevo de líneas, conserva las anteriores y registra el `reason` en `routine_revisions`; `POST /admin/routines/{routine_id}/archive` la archiva y bloquea más ediciones sin cerrar las asignaciones vivas.
+
+`POST /admin/routines/assignments` valida que la rutina exista, esté activa y tenga ejercicios, y que el socio exista y esté activo. Un índice único parcial (`uq_routine_assignments_active` sobre `(member_id, routine_id)` donde `status='active'`) impide dos asignaciones activas de la misma rutina al mismo socio. Las asignaciones se cierran con `POST .../complete` o `POST .../cancel` y nunca se borran.
+
+El entrenamiento solo se registra contra una asignación **activa** (`POST /admin/routines/assignments/{assignment_id}/workouts`) y rechaza fechas futuras o anteriores a `start_date`; guarda `performed_at`, duración, esfuerzo percibido (1–10) y notas. `POST /admin/routines/workouts/{workout_id}/review` lo marca como revisado. El resumen del entrenamiento no incluye detalle por serie (pendiente para la app del socio).
+
+Las medidas corporales son **append-only**: `POST /admin/routines/members/{member_id}/measurements` nunca reemplaza una medición previa y guarda peso, cintura, pecho y porcentaje de grasa. `GET /admin/routines/members/{member_id}/progress` resume asignaciones activas, entrenos totales y de los últimos 30 días, último entreno y última medición, y `GET /admin/routines/overview` da los contadores del módulo.
+
+`backend/seed_routines.py` puebla la vista previa (12 ejercicios, 4 rutinas —una con dos versiones—, asignaciones, entrenamientos y mediciones); solo siembra el plan si la tabla `routines` está vacía.
+
+## Mantenimiento de equipo e instalaciones
+
+El primer incremento del módulo de Mantenimiento usa la migración `20261017_0012_maintenance.py`, que crea `equipment`, `maintenance_tickets`, `maintenance_records` y `maintenance_checklists`; la migración `20261017_0013_maintenance_permissions.py` agrega el permiso `maintenance.report` y amplía `maintenance.read` a recepción y entrenador; la migración `20261017_0014_exercises_equipment_link.py` agrega `exercises.equipment_id` (`ON DELETE SET NULL`). El módulo es autocontenido: no hay proveedores, órdenes de compra ni adjuntos. Las entidades sueltas del borrador (marca, categoría, ubicación, costo, falla, usuario) se resolvieron como columnas o como campos del ticket/registro.
+
+El dinero se maneja en centavos enteros (`purchase_cost_cents`, `cost_cents`). Los estados del equipo son `operational`, `maintenance`, `out_of_service`, `inspection` y `retired`; el equipo se **retira**, nunca se borra. Los tickets usan `kind` (`corrective`/`preventive`), `severity` (`low`/`medium`/`high`/`critical`) y un folio `MT-{YYYYMMDD}-{hex6}` (con la fecha del día local del gimnasio).
+
+Un ticket de severidad **crítica** saca el equipo de servicio de inmediato (`out_of_service`) y guarda `previous_status`; iniciar la reparación pone el equipo operativo en `maintenance`. Resolver o cancelar **solo** devuelve el equipo a su estado previo si ese ticket lo estaba reteniendo (`blocked_equipment`), así que cerrar un ticket de baja severidad no altera una máquina que nunca se tocó. `POST /admin/maintenance/tickets/{ticket_id}/resolve` exige `resolution_notes` no vacío, crea un `maintenance_record` correctivo **append-only** y responde con el ticket y el registro.
+
+`GET /admin/maintenance/equipment` (permiso `maintenance.read`) pagina la flota con `page`, `page_size` (1–100), `search`, `status`, `category`, `location` e `include_retired`, y responde con `items`, `total`, `pages`, un `summary` (operativos, en mantenimiento, fuera de servicio, en revisión, retirados) y las facetas `categories`/`locations`. `GET /admin/maintenance/equipment/options` devuelve la lista ligera para selectores. `GET /admin/maintenance/equipment/{equipment_id}` trae la ficha con sus tickets, su historial técnico y los ejercicios vinculados. `POST /admin/maintenance/equipment`, `PATCH /admin/maintenance/equipment/{equipment_id}`, `POST .../retire` y `POST .../{equipment_id}/records` (permiso `maintenance.manage`) administran la flota: la baja rechaza tickets abiertos (`409`), un equipo retirado rechaza tickets, cambios de estado y registros, y un registro de tipo `preventive` con `next_due_on` actualiza `next_preventive_due`. `POST /admin/maintenance/equipment/{equipment_id}/status` (permiso `maintenance.report`) fija el estado manual.
+
+`GET /admin/maintenance/tickets` (permiso `maintenance.read`) filtra por `status`, `severity`, `kind`, `equipment_id` y `open_only`, con `summary` de abiertos, críticos y resueltos. `POST /admin/maintenance/tickets` (permiso `maintenance.report`) crea el ticket y, si la severidad es crítica (o `block_equipment` es verdadero), bloquea el equipo; `PATCH /admin/maintenance/tickets/{ticket_id}` y `POST .../{ticket_id}/start|resolve|cancel` (permiso `maintenance.manage`) gestionan el ciclo. `GET /admin/maintenance/records` y `GET /admin/maintenance/checklists` listan la bitácora técnica y las rondas por fecha, tipo y área; `POST /admin/maintenance/checklists` registra una ronda (un resultado `observation` exige `observations`). `GET /admin/maintenance/service-status` resume la disponibilidad por área.
+
+Los ejercicios exponen `equipment_status` cuando están vinculados a un equipo; el plan de la rutina muestra una advertencia suave (no bloquea) si la máquina está en mantenimiento o fuera de servicio. Vincular un equipo inexistente o retirado responde `422`.
+
+`backend/seed_maintenance.py` puebla la vista previa (12 equipos, 5 tickets —uno crítico abierto y una falla resuelta—, registros preventivos y rondas) y vincula la biblioteca de ejercicios con la flota; solo siembra si la tabla `equipment` está vacía. `backend/preview_patch.py` sincroniza la base SQLite de vista previa cuando un modelo gana una columna (por ejemplo `exercises.equipment_id`) y, con `--reset-maintenance`, reconstruye los datos de mantenimiento.
+
+## Reportes
+
+El primer incremento de reportes del módulo 7 es **de solo lectura**: agrega los datos que ya escribieron los demás módulos y **no** crea tablas ni migración. `ReporteFinanciero` del borrador no existe como entidad; cada reporte es una consulta agregada en tiempo de petición sobre `sales`/`sale_items`/`sale_returns`/`sale_return_items`/`cash_sessions`/`products`/`inventory_stock`/`inventory_movements`/`suppliers`/`purchase_orders`/`purchase_order_items`, `payments`/`payment_attempts`/`memberships`/`membership_events`/`plans`/`members`, `access_events`, `class_sessions`/`class_reservations`, `workout_logs`/`body_measurements` y `maintenance_records`/`maintenance_tickets`/`equipment`. Se reutiliza el permiso `finance.read` (\"Consultar reportes financieros\", ya sembrado y otorgado a dueño, gerente y contador), por lo que **no hay migración de RBAC**; recepción, entrenador y mantenimiento reciben `403`.
+
+Siete rutas de solo lectura viven bajo `/admin/reports/*` (permiso `finance.read`): `GET /admin/reports/overview`, `.../revenue`, `.../memberships`, `.../operations`, `.../maintenance` e `.../inventory`, más `GET /admin/reports/export`. Todas aceptan `date_from` y `date_to` (ISO, **ambos inclusivos**), por defecto los últimos 30 días y con un máximo de 730; un rango invertido o demasiado largo responde `422` (`InvalidReportPeriod`) y un reporte desconocido `404` (`UnknownReport`). Cada respuesta incluye el periodo resuelto con su `timezone`. Los límites y las series diarias usan el **calendario del gimnasio** (`APP_TIMEZONE`, por defecto `America/Mexico_City`), no UTC: una venta o devolución de la tarde cae en el día local correcto y un rango que termina «hoy» la incluye. El grupo de día se arma con una expresión dialectal (`timezone(...)` en PostgreSQL; desplazamiento de la columna en SQLite), con el desfase tomado una vez por periodo.
+
+- `overview`: indicadores del periodo (dinero cobrado, MRR esperado, accesos, altas, entrenamientos, mediciones, mantenimiento, tickets abiertos, caja).
+- `revenue`: ingresos **netos de devoluciones** por día, por método, por categoría, por producto y por caja, con series que **rellenan todos los días** del periodo (incluidos los vacíos).
+- `memberships`: socios por estado, membresías por estado y por plan, cobros y altas, con próximos vencimientos.
+- `operations`: accesos por día y por hora, clases (ocupación, asistencias, inasistencias) y entrenamientos.
+- `maintenance`: costo por tipo, por equipo y por registro, tickets abiertos por severidad y preventivos.
+- `inventory`: **valorización al corte** del stock (valor al costo y a precio de venta, por categoría y por producto, con conteos de activos/bajo mínimo/agotados), **movimientos** del ledger del periodo (`movements_by_type` con cantidad neta, `units_in`/`units_out`) y **compras** del periodo (creadas y recibidas, excluyendo canceladas), más proveedores activos y compra por proveedor. La valorización **no** depende del periodo —el club no guarda el valor del stock día a día— y el panel la etiqueta «Corte actual».
+
+El dinero **cobrado** (ventas de mostrador del POS más cobros de membresía confirmados) se reporta separado del **ingreso recurrente esperado** (`mrr_expected_cents`), que es el valor mensual equivalente de las membresías activas —`price_cents * 30 / interval_days`, con `interval_days = billing_interval_days` o, si es nulo, `duration_days`— y **no** un cobro. Los planes con `duration_days < 7` (por ejemplo `PLAN-DIA`) se excluyen por no ser recurrentes.
+
+El **mostrador es neto de devoluciones**: `overview` y `revenue` cuentan todas las ventas del periodo (también las que están en `refunded`) y restan los reembolsos por el periodo en que se pagaron (`sale_returns.returned_at`, base de caja), exponiendo `pos_gross_cents`, `refunds_cents` y `refunds_count` junto al `pos_cents` neto. El neteo se aplica a la serie diaria (que incluye `refunds_cents` y puede quedar negativa), `pos_by_method`, `by_category` y `top_products`, de modo que las cinco suman `pos_cents`; `average_ticket_cents` es `ingresos brutos / ventas`. La ocupación de clases usa `(reservadas + asistencias) / cupo * 100`; las inasistencias se reportan aparte. En accesos, `manual` cuenta `source = \"manual\"` y los denegados cuentan `authorized = false`.
+
+`GET /admin/reports/export` aplana la tabla principal de cada reporte (resumen → indicadores; ingresos → días; socios → planes; operación → días; mantenimiento → equipos; inventario → productos valorizados) y responde `text/csv; charset=utf-8` con `Content-Disposition` `reporte-{reporte}-{desde}-{hasta}.csv`. El CSV de ingresos incluye la columna `Devoluciones (MXN)` (el mostrador ya es neto).
+
+`backend/seed_reports.py` backdatea 30 días de historia para la vista previa: abre y cierra un turno de caja por día y registra ventas por el servicio de inventario, escribe accesos con curva horaria realista y reparte cobros y eventos de membresía. Es idempotente por bloque (se salta si ya hay filas con más de una semana de antigüedad).
+
+## Facturación CFDI 4.0
+
+El primer incremento fiscal del módulo 7 usa la migración `20261023_0024_billing_cfdi.py`, que crea `member_fiscal_profiles`, `invoices`, `invoice_items` e `invoice_events`. No crea `SolicitudFacturacion`/`ComprobanteFiscal` por separado: la solicitud y su resultado comparten fila y el estado (`requested`, `failed`, `stamped`, `cancelled`) distingue ambos momentos; cada intento queda como evento append-only. Se factura una venta del POS (`origin_type = "sale"`, solo si está completada o devuelta) o un cobro de membresía confirmado (`origin_type = "membership_payment"`).
+
+Los permisos separan responsabilidades: `billing.read` (consultar facturas, orígenes y perfiles fiscales), `billing.request` (solicitar la factura y capturar el perfil fiscal) y `billing.manage` (timbrar y cancelar). Dueño, gerente y contador tienen los tres; recepción solo lectura y solicitud; entrenador y mantenimiento no participan.
+
+`GET /admin/billing/summary` resume las facturas por estado e importes; `GET /admin/billing/invoices` pagina, busca por folio/UUID/receptor/origen y filtra por `status`; `POST /admin/billing/invoices` (`billing.request`) recibe `origin_type`, `origin_id`, `receptor` (RFC, razón social, régimen, código postal, uso de CFDI y correo opcional), `idempotency_key` obligatoria y `payment_form` opcional. Los precios se cobran con IVA incluido, así que el backend deriva la base (`round(total / 1.16)`) y el impuesto; valida los datos contra los catálogos del SAT, asigna el siguiente folio de la serie (`CFDI_SERIES`, `A` por defecto) y congela el snapshot del receptor. Repetir la misma clave con la misma solicitud devuelve la factura original (`idempotent_replay: true`); reutilizarla con otros datos responde `409`. Un índice único parcial (`uq_invoices_active_origin`) impide una segunda factura viva por origen: cancelar libera el origen para la sustitución conservando folio e historial.
+
+`GET /admin/billing/invoices/{invoice_id}` devuelve el detalle con conceptos y eventos; `GET .../{id}/xml` descarga el XML con `Cache-Control: no-store`. `POST .../{id}/stamp` (`billing.manage`) genera el CFDI 4.0 pre-timbre y lo envía al PAC; `POST .../{id}/cancel` cancela una factura timbrada con un motivo del SAT (`01`–`04`; el `01` exige `replacement_uuid`), una nota opcional de hasta 300 caracteres y conserva el comprobante. `GET /admin/billing/origins?origin_type=sale|membership_payment` lista solo las operaciones facturables con búsqueda y paginación. `GET/PUT /admin/members/{member_id}/fiscal-profile` (`billing.read`/`billing.request`) leen y guardan el perfil que prellena la siguiente solicitud.
+
+**PAC simulado**: con `PREVIEW_MODE=true` o `PAC_PROVIDER=simulated`, `pac_gateway()` devuelve un `SimulatedPac` que no contacta la red y devuelve el XML con un comentario «SIMULACION», sin UUID ni `TimbreFiscalDigital`; la factura queda `is_simulated = true` y **no tiene validez fiscal**. El adaptador de un PAC real no está implementado: con cualquier otro proveedor el timbrado responde `503` (no se simula en silencio), un rechazo del PAC responde `502` y deja la factura `failed` para reintentar. El emisor se configura con `GYM_RFC`, `GYM_LEGAL_NAME`, `GYM_TAX_REGIME`, `GYM_POSTAL_CODE`, `CFDI_CERTIFICATE_NUMBER`, `CFDI_SERIES`, `CFDI_TAX_RATE_PERCENT`, `CFDI_PRODUCT_CODE` y `CFDI_SERVICE_CODE`; los valores por defecto son marcadores y deben sustituirse antes de un timbrado real. Las credenciales del PAC (`PAC_PROVIDER`, `PAC_USER`, `PAC_PASSWORD`, `PAC_PRODUCTION`) viven solo en variables de entorno.
+
+`backend/seed_billing.py` puebla la vista previa con cuatro facturas (venta timbrada, cobro de membresía timbrado, solicitud pendiente y factura cancelada) y un perfil fiscal de prellenado; solo siembra si no hay facturas. `tests/test_billing_api.py` cubre el desglose de IVA, la idempotencia, la doble facturación, el perfil fiscal, el timbrado simulado, la descarga del XML, la cancelación, los orígenes no facturables, los permisos y el PAC sin configurar. La suite del backend queda en **112 pruebas**.
+
+Siguen pendientes: el adaptador de un PAC real, la factura global, las notas de crédito, el complemento de pago PPD, la conciliación bancaria, el PDF y el envío del CFDI por correo.
+
+## Criterios de calidad
+
+- pruebas automatizadas para reglas de negocio críticas
+- auditoría y bitácoras
+- validación de permisos en backend
+- APIs idempotentes para cobros y facturación

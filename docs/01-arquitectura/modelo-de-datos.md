@@ -1,0 +1,165 @@
+# Modelo de datos
+
+## Principios del modelo
+
+- Este diagrama es conceptual; nombres y cardinalidades deben convertirse en un esquema físico y migraciones antes de implementar.
+- Cada entidad persistente usa identificador estable. Las fechas se almacenan en UTC y se presentan en la zona horaria del gimnasio.
+- Los importes se guardan en centavos enteros o decimal exacto, nunca en `float`; cada monto conserva moneda.
+- Los eventos históricos, pagos, accesos y comprobantes no se eliminan. Se conserva su estado y las relaciones de corrección o cancelación.
+- Un intento de cobro no equivale a un pago confirmado; un pago confirmado tampoco equivale a un CFDI timbrado.
+- El stock se explica con movimientos de inventario; cualquier saldo materializado debe poder reconciliarse contra esos movimientos.
+- Los estados fiscales, cobros, ventas y accesos son dominios separados, aunque se relacionen mediante claves explícitas.
+
+## Diagrama ER conceptual (Mermaid)
+
+```mermaid
+erDiagram
+SOCIO ||--o{ MEMBRESIA_SOCIO : tiene
+PLAN ||--o{ MEMBRESIA_SOCIO : define
+SOCIO ||--o{ CREDENCIAL_ACCESO : usa
+SOCIO ||--o{ ACCESO_REGISTRO : genera
+LECTOR_ACCESO ||--o{ ACCESO_REGISTRO : registra
+MEMBRESIA_SOCIO ||--o{ INTENTO_COBRO : programa
+MEMBRESIA_SOCIO ||--o{ PAGO : recibe
+SOCIO ||--o{ PAGO : realiza
+VENTA ||--o{ PAGO : cobra
+TURNO_CAJA ||--o{ VENTA : registra
+TURNO_CAJA ||--o| CORTE_CAJA : cierra
+SOCIO o|--o{ VENTA : compra
+VENTA ||--|{ DETALLE_VENTA : contiene
+PRODUCTO ||--o{ DETALLE_VENTA : vende
+UBICACION_INVENTARIO ||--o{ INVENTARIO : contiene
+PRODUCTO ||--o{ INVENTARIO : controla
+INVENTARIO ||--o{ MOVIMIENTO_INVENTARIO : registra
+PROVEEDOR ||--o{ ORDEN_COMPRA : surte
+ORDEN_COMPRA ||--|{ DETALLE_ORDEN_COMPRA : incluye
+PRODUCTO ||--o{ DETALLE_ORDEN_COMPRA : solicita
+VENTA ||--o{ DEVOLUCION : origina
+SOCIO o|--o{ CLIENTE_FISCAL : identifica
+CLIENTE_FISCAL ||--o{ SOLICITUD_FACTURACION : solicita
+VENTA ||--o{ SOLICITUD_FACTURACION : puede_facturarse
+PAGO ||--o{ SOLICITUD_FACTURACION : puede_facturarse
+SOLICITUD_FACTURACION ||--o| COMPROBANTE_FISCAL : produce
+COMPROBANTE_FISCAL ||--o{ EVENTO_FISCAL : conserva
+LOTE_FACTURA_GLOBAL ||--|{ DETALLE_LOTE_GLOBAL : agrupa
+COMPROBANTE_FISCAL ||--o| LOTE_FACTURA_GLOBAL : timbra
+PAGO ||--o{ PARTIDA_CONCILIACION : concilia
+MOVIMIENTO_BANCARIO ||--o{ PARTIDA_CONCILIACION : concilia
+CONCILIACION ||--|{ PARTIDA_CONCILIACION : contiene
+EMPLEADO o|--o| USUARIO : tiene_acceso
+USUARIO ||--o{ ASIGNACION_ROL : recibe
+ROL ||--o{ ASIGNACION_ROL : asigna
+ROL ||--o{ ROL_PERMISO : define
+PERMISO ||--o{ ROL_PERMISO : integra
+EMPLEADO ||--o{ ASISTENCIA_EMPLEADO : marca
+EMPLEADO ||--o{ NOMINA : tiene
+EMPLEADO ||--o{ CLASE : imparte
+CLASE ||--o{ RESERVA_CLASE : ofrece
+SOCIO ||--o{ RESERVA_CLASE : reserva
+RESERVA_CLASE ||--o| ASISTENCIA_CLASE : registra
+SOCIO ||--o{ RUTINA : recibe
+EMPLEADO ||--o{ RUTINA : crea
+EQUIPO ||--o{ TICKET_MANTENIMIENTO : reporta
+EMPLEADO ||--o{ TICKET_MANTENIMIENTO : atiende
+TICKET_MANTENIMIENTO ||--o{ HISTORIAL_MANTENIMIENTO : documenta
+```
+
+## Entidades por dominio
+
+### Socios, membresías, pagos y acceso
+- `Socio`, `Plan`, `MembresiaSocio`, `MetodoPago`, `IntentoCobro`, `Pago` y `ReintentoCobro` soportan el ciclo comercial y de cobro recurrente.
+- `CredencialAcceso`, `LectorAcceso` y `AccesoRegistro` soportan credenciales, lecturas autorizadas/denegadas y sincronización offline.
+- La plantilla biométrica cifrada se mantiene separada del registro de acceso; no se almacena imagen biométrica.
+
+### Punto de venta e inventario
+- `Producto`, `VarianteProducto`, `Inventario`, `UbicacionInventario` y `MovimientoInventario` modelan catálogo, existencias y trazabilidad de stock.
+- `Venta`, `DetalleVenta`, `Devolucion`, `TurnoCaja` y `CorteCaja` modelan operaciones del mostrador y cierre por turno.
+- `CuentaSocio` no almacena saldo: se calcula con ventas a cuenta, devoluciones abonadas y `CobroCuentaSocio`; el límite vive en `members.credit_limit_cents`.
+- `EnvioEstadoCuenta` audita cada envío del estado de cuenta o recordatorio de cobranza (socio, usuario, destinatario, formato, propósito `statement`/`reminder`, fecha de corte, estado, error y `retry_of_id` cuando es un reintento). No es un movimiento de la cuenta y es append-only: reintentar agrega una fila nueva enlazada con la anterior (`20261019_0021`); el propósito y el índice por socio/propósito/fecha llegan con `20261021_0022`.
+- `Proveedor`, `OrdenCompra` y `DetalleOrdenCompra` modelan el abastecimiento.
+
+### Facturación y conciliación
+- `ClienteFiscal`, `SolicitudFacturacion`, `ComprobanteFiscal` y `EventoFiscal` conservan datos fiscales, solicitud, resultado y auditoría del PAC. En el primer incremento fiscal se materializan como `member_fiscal_profiles`, `invoices` (solicitud y resultado en una fila) e `invoice_events`; separar la solicitud del comprobante queda para cuando el PAC real lo exija.
+- `RelacionComprobante` vincula comprobantes corregidos, notas de crédito o cancelaciones sin borrar el original.
+- `LoteFacturaGlobal` y `DetalleLoteGlobal` permiten rastrear las operaciones agrupadas.
+- `MovimientoBancario`, `Conciliacion` y `PartidaConciliacion` enlazan pagos con depósitos y movimientos importados, admitiendo depósitos agrupados y diferencias.
+
+### Operación, personal y mantenimiento
+- `Clase`, `ReservaClase`, `ListaEsperaClase` y `AsistenciaClase` registran agenda, cupo y participación.
+- `Rutina` mantiene su relación con socio y entrenador.
+- `Empleado`, `Usuario`, `Rol`, `Permiso`, `AsistenciaEmpleado`, `Nomina` y entidades relacionadas soportan personal, autorización y nómina.
+- `Equipo`, `TicketMantenimiento` e `HistorialMantenimiento` registran disponibilidad, atención y costos técnicos.
+
+## Relaciones importantes
+
+- un socio puede tener varias membresías históricas; una sola puede habilitar acceso según las reglas vigentes
+- cada `Pago` confirmado tiene un origen de cobro identificable: una membresía o una venta; los intentos fallidos se conservan como `IntentoCobro`
+- una venta puede tener varios pagos (por ejemplo, pago dividido) y varias líneas; las líneas conservan descripción, precio e impuestos aplicados en el momento de venta
+- cada solicitud de facturación refiere exactamente a una venta o a un pago; puede haber varios eventos/reintentos de PAC, pero no más de un CFDI vigente incompatible para el mismo origen
+- cada movimiento de inventario registra cantidad, ubicación, motivo y referencia de origen; el saldo actual no reemplaza el historial
+- la factura global guarda el detalle de operaciones incluidas y evita duplicar las ya facturadas individualmente
+- una conciliación puede relacionar varios pagos con uno o varios movimientos bancarios mediante partidas explícitas
+- cada reserva pertenece a un socio y una clase; la asistencia se registra contra la reserva
+- un usuario recibe roles con vigencia y contexto; cada acción sensible conserva actor y fecha en auditoría
+
+## Reglas de integridad por definir en el esquema físico
+
+- Restricción exclusiva de origen para `Pago` (membresía o venta) y para `SolicitudFacturacion` (pago o venta), con excepciones de factura global representadas por su detalle de lote.
+- Unicidad de SKU por alcance definido, UUID de CFDI, referencia externa idempotente y reserva activa por socio/clase.
+- Los cambios de estado de pago, acceso y comprobante se registran como eventos; no se sobrescriben de forma que se pierda el historial.
+- Las operaciones offline deben incluir identificador idempotente del dispositivo/origen para evitar duplicados al sincronizar.
+- La retención de documentos fiscales y datos personales se configura con validación legal y fiscal, no se deriva de este modelo conceptual.
+
+⚠️ El modelo es una base de diseño, no un dictamen fiscal ni un esquema final de producción. Debe mantenerse consistente con el glosario y los documentos de módulo.
+
+## Esquema físico inicial: socios y cobro recurrente
+
+La migración inicial materializa únicamente el flujo prioritario de socios, planes y cobros. Los nombres físicos usan `snake_case` en inglés, conforme a la convención de código; las entidades del dominio conservan los términos del glosario.
+
+| Tabla | Responsabilidad | Restricciones principales |
+|---|---|---|
+| `members` | identidad y contacto mínimo del socio | UUID, correo normalizado único cuando existe, estado de perfil separado del estado de membresía, `credit_limit_cents` nullable (`NULL` = sin tope, `>= 0`) |
+| `plans` | configuración vendible de un plan | código único, duración positiva, importe en centavos y moneda |
+| `memberships` | vigencia y estado del plan asignado | FKs restrictivas a socio/plan, periodo válido, estado controlado y máximo de una membresía no terminal por socio |
+| `member_consents` | aceptación y revocación de documentos | historial con versión y fecha; no almacena datos médicos |
+| `payment_methods` | referencia tokenizada del proveedor | token del proveedor cifrado, nunca PAN/CVV; un solo método predeterminado activo por socio |
+| `payment_attempts` | cada intento de cobro e idempotencia | clave idempotente y huella de solicitud, número de intento positivo, estados controlados; un cobro manual con tarjeta declarada puede no tener `payment_method_id` ni proveedor |
+| `payments` | cobros confirmados | un pago por intento exitoso, monto y moneda como snapshot; desde el cobro manual guarda periodo, turno de caja, cobrador y nota (los campos de periodo/turno son nulos en cobros de pasarela antiguos) |
+| `payment_attempt_events` | historial de transiciones | eventos históricos vinculados al intento |
+| `provider_webhook_events` | deduplicación y seguimiento de webhooks | evento único por proveedor, digest del payload y estado de procesamiento |
+| `membership_events` | auditoría de cambios de membresía | estado anterior/nuevo, actor, fecha y metadatos sin secretos |
+
+La migración está en `backend/alembic/versions/20261015_0001_memberships_billing.py`. La activación inicial de la membresía y la creación del pago confirmado deben ejecutarse en una sola transacción después de confirmar el pago; la respuesta HTTP de la pasarela por sí sola no es confirmación durable.
+
+El cobro manual en mostrador (`20261021_0023_membership_manual_payments.py`) reutiliza `payment_attempts` y `payments` en vez de crear un libro paralelo: el intento queda `succeeded` con `provider = NULL` y el pago guarda `period_starts_at`, `period_ends_at`, `cash_session_id`, `collected_by` y `note`. El turno de caja no duplica el pago: al leer el corte suma los `payments` vinculados por `cash_session_id`, y solo el método `cash` entra al efectivo esperado.
+
+## Esquema físico: facturación CFDI 4.0
+
+La migración `20261023_0024_billing_cfdi.py` materializa el primer incremento fiscal. La solicitud y el comprobante comparten fila porque el estado distingue ambos momentos; el historial de intentos vive en `invoice_events`.
+
+| Tabla | Responsabilidad | Restricciones principales |
+|---|---|---|
+| `member_fiscal_profiles` | datos fiscales del socio para prellenar la siguiente solicitud | un perfil por socio (`uq_member_fiscal_profiles_member`), RFC de 12–13 caracteres, FK restrictiva al socio |
+| `invoices` | solicitud y resultado del CFDI, con snapshot del receptor, importes, timbrado y cancelación | `origin_type` (`sale`/`membership_payment`) y `status` (`requested`/`failed`/`stamped`/`cancelled`) con CHECK; total positivo y `subtotal + impuesto = total`; `(series, folio)`, `idempotency_key` y `uuid` únicos; `request_fingerprint` de la solicitud; actor de alta, timbrado y cancelación; XML y referencias del PAC opcionales |
+| `invoice_items` | conceptos del comprobante con su parte gravable | posición y cantidad positivas, `subtotal + impuesto = total`, unicidad `(invoice_id, position)`, FK en cascada |
+| `invoice_events` | bitácora append-only de solicitudes, intentos y cancelaciones | tipo de evento, estado anterior/nuevo, actor, detalle JSON sin secretos y fecha; índice por factura y fecha |
+
+El índice único parcial `uq_invoices_active_origin` (`origin_type`, `origin_id` donde `status <> 'cancelled'`) impide dos facturas vivas para la misma venta o pago; cancelar conserva la fila y libera el origen para emitir la sustitución. `invoices.uuid` es nulo en las facturas simuladas (no hay timbre del SAT) y se llena solo con un PAC real. El XML timbrado se guarda completo en `invoices.xml_content`; no hay tabla de archivos ni PDF en este incremento. El emisor no se duplica en base de datos: se configura por entorno (`GYM_RFC`, `GYM_LEGAL_NAME`, `GYM_TAX_REGIME`, `GYM_POSTAL_CODE`, `CFDI_CERTIFICATE_NUMBER`, `CFDI_SERIES`, `CFDI_TAX_RATE_PERCENT`, `CFDI_PRODUCT_CODE`, `CFDI_SERVICE_CODE`).
+
+## Persistencia local de acceso offline
+
+La primera implementación usa un archivo SQLite local para el caché de decisiones en el lector/controlador, separado de PostgreSQL central:
+
+- `access_snapshots`: snapshot por socio con estado/vigencia, adeudo, horario y `valid_until`.
+- `access_outbox`: decisiones autorizadas/denegadas con `event_id` único, lector, dirección, motivo, timestamp y estado `pending`/`synced`.
+- Los eventos se insertan transaccionalmente y el mismo `event_id` con solicitud distinta se rechaza.
+- El preview puede marcar eventos como sincronizados para probar el flujo; la integración real de transporte al backend y el hardware siguen pendientes.
+
+## Identidad y autorización inicial
+
+- `employees` mantiene el directorio operativo básico; `app_users` es la identidad de acceso y se vincula opcionalmente con un empleado.
+- `roles`, `permissions` y `role_permissions` definen el catálogo RBAC granular `recurso.acción`.
+- `user_role_assignments` conserva actor, fecha, vencimiento y revocación de cada asignación.
+- `user_sessions` almacena solo SHA-256 del token opaco, con vencimiento y revocación server-side.
+- `auth_events` registra login exitoso/fallido, logout, creación de usuario y cambios de rol sin guardar contraseñas ni tokens.
+- Los roles predeterminados se siembran en la migración Alembic; MFA, rate limiting, recuperación de contraseña y nómina no forman parte de esta primera revisión.
