@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import mailer
 from app.main import app, get_session
@@ -1253,6 +1253,41 @@ def _stamped_sale_invoice(
     return stamped.json()
 
 
+def _stamped_ppd_invoice(
+    client: TestClient,
+    headers: dict[str, str],
+    sale_id: UUID,
+    *,
+    key: str = "ppd-base",
+) -> dict[str, object]:
+    payload = _invoice_payload("sale", sale_id, key=key)
+    payload["payment_method"] = "PPD"
+    payload["payment_form"] = "99"
+    created = client.post("/admin/billing/invoices", headers=headers, json=payload)
+    assert created.status_code == 201, created.text
+    invoice_id = created.json()["invoice"]["id"]
+    stamped = client.post(
+        f"/admin/billing/invoices/{invoice_id}/stamp", headers=headers
+    )
+    assert stamped.status_code == 200, stamped.text
+    return stamped.json()
+
+
+def _payment_payload(
+    *,
+    amount_cents: int,
+    key: str,
+    payment_form: str = "03",
+    paid_on: str | None = None,
+) -> dict[str, object]:
+    return {
+        "amount_cents": amount_cents,
+        "payment_form": payment_form,
+        "paid_on": paid_on or club_date(datetime.now(timezone.utc)).isoformat(),
+        "idempotency_key": key,
+    }
+
+
 def test_credit_note_partial_then_full_controls_invoice_balance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1783,5 +1818,508 @@ def test_credit_note_pdf_and_email_are_labeled(
                 f"CFDI-{note['series']}-{note['folio']:06d}-simulada.pdf",
                 f"CFDI-{note['series']}-{note['folio']:06d}-simulada.xml",
             }
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ppd_invoice_forces_form_99_and_blocks_credit_notes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    _, _, _, _, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+
+            payload = _invoice_payload("sale", sale_id, key="ppd-form")
+            payload["payment_method"] = "PPD"
+            payload["payment_form"] = "03"
+            rejected = client.post(
+                "/admin/billing/invoices", headers=accountant, json=payload
+            )
+            assert rejected.status_code == 422, rejected.text
+            assert "99" in rejected.json()["detail"]
+
+            payload["payment_form"] = "99"
+            created = client.post(
+                "/admin/billing/invoices", headers=accountant, json=payload
+            )
+            assert created.status_code == 201, created.text
+            invoice = created.json()["invoice"]
+            assert invoice["payment_method"] == "PPD"
+            assert invoice["payment_form"] == "99"
+            assert invoice["payment_status"] == "unpaid"
+            assert invoice["payment_balance_cents"] == 11600
+            assert invoice["events"][0]["detail"]["payment_method"] == "PPD"
+
+            stamped = client.post(
+                f"/admin/billing/invoices/{invoice['id']}/stamp", headers=accountant
+            )
+            assert stamped.status_code == 200, stamped.text
+            assert stamped.json()["payment_method"] == "PPD"
+
+            note = client.post(
+                f"/admin/billing/invoices/{invoice['id']}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 1000,
+                    "reason": "correction",
+                    "idempotency_key": "ppd-credit-note",
+                },
+            )
+            assert note.status_code == 409, note.text
+            assert "PPD" in note.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ppd_payment_complement_partial_then_full_and_idempotency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    _, _, _, _, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            base = _stamped_ppd_invoice(client, accountant, sale_id)
+            base_id = str(base["id"])
+
+            created = client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=5000, key="ppd-payment-1"),
+            )
+            assert created.status_code == 201, created.text
+            body = created.json()
+            assert body["idempotent_replay"] is False
+            payment = body["payment"]
+            assert payment["status"] == "requested"
+            assert payment["folio_label"] == "P-000001"
+            assert payment["partiality_number"] == 1
+            assert payment["prior_balance_cents"] == 11600
+            assert payment["outstanding_balance_cents"] == 6600
+            assert payment["payment_form"] == "03"
+            payment_id = payment["id"]
+
+            replay = client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=5000, key="ppd-payment-1"),
+            )
+            assert replay.status_code == 201
+            assert replay.json()["idempotent_replay"] is True
+            assert replay.json()["payment"]["id"] == payment_id
+            conflict = client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=4000, key="ppd-payment-1"),
+            )
+            assert conflict.status_code == 409
+
+            requested = client.get(
+                f"/admin/billing/invoices/{base_id}", headers=accountant
+            ).json()
+            assert requested["paid_cents"] == 0
+            assert requested["payment_balance_cents"] == 11600
+            assert requested["payment_status"] == "unpaid"
+            assert requested["payment_complements"][0]["status"] == "requested"
+
+            stamped = client.post(
+                f"/admin/billing/payment-complements/{payment_id}/stamp",
+                headers=accountant,
+            )
+            assert stamped.status_code == 200, stamped.text
+            stamped_payment = stamped.json()
+            assert stamped_payment["status"] == "stamped"
+            assert stamped_payment["partiality_number"] == 1
+            assert stamped_payment["prior_balance_cents"] == 11600
+            assert stamped_payment["outstanding_balance_cents"] == 6600
+            assert stamped_payment["uuid"] is None
+            assert stamped_payment["is_simulated"] is True
+            assert [event["event_type"] for event in stamped_payment["events"]] == [
+                "payment_requested",
+                "payment_stamped",
+            ]
+
+            partial = client.get(
+                f"/admin/billing/invoices/{base_id}", headers=accountant
+            ).json()
+            assert partial["paid_cents"] == 5000
+            assert partial["payment_balance_cents"] == 6600
+            assert partial["payment_status"] == "partial"
+
+            second = client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=6600, key="ppd-payment-2"),
+            )
+            assert second.status_code == 201, second.text
+            second_payment = second.json()["payment"]
+            assert second_payment["partiality_number"] == 2
+            assert second_payment["prior_balance_cents"] == 6600
+            assert second_payment["outstanding_balance_cents"] == 0
+            assert client.post(
+                f"/admin/billing/payment-complements/{second_payment['id']}/stamp",
+                headers=accountant,
+            ).status_code == 200
+
+            paid = client.get(
+                f"/admin/billing/invoices/{base_id}", headers=accountant
+            ).json()
+            assert paid["paid_cents"] == 11600
+            assert paid["payment_balance_cents"] == 0
+            assert paid["payment_status"] == "paid"
+
+            extra = client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=100, key="ppd-payment-extra"),
+            )
+            assert extra.status_code == 409
+            assert "pagada en su totalidad" in extra.json()["detail"]
+
+            blocked_cancel = client.post(
+                f"/admin/billing/invoices/{base_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "02"},
+            )
+            assert blocked_cancel.status_code == 409
+            assert "complementos de pago" in blocked_cancel.json()["detail"]
+
+            old_partiality = client.post(
+                f"/admin/billing/payment-complements/{payment_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "02"},
+            )
+            assert old_partiality.status_code == 409
+            assert "última parcialidad" in old_partiality.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ppd_payment_stamp_rechecks_balance_and_downloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    _, _, _, _, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            base = _stamped_ppd_invoice(client, accountant, sale_id)
+            base_id = str(base["id"])
+            first = client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=11600, key="ppd-race-1"),
+            ).json()["payment"]
+            second = client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=11600, key="ppd-race-2"),
+            ).json()["payment"]
+
+            assert client.post(
+                f"/admin/billing/payment-complements/{first['id']}/stamp",
+                headers=accountant,
+            ).status_code == 200
+            rejected = client.post(
+                f"/admin/billing/payment-complements/{second['id']}/stamp",
+                headers=accountant,
+            )
+            assert rejected.status_code == 422, rejected.text
+            assert "saldo pendiente de pago" in rejected.json()["detail"]
+
+            failed = client.get(
+                f"/admin/billing/payment-complements/{second['id']}",
+                headers=accountant,
+            ).json()
+            assert failed["status"] == "failed"
+            assert failed["events"][-1]["event_type"] == "payment_stamp_failed"
+            assert failed["events"][-1]["detail"]["code"] == "payment_balance_exceeded"
+
+            xml = client.get(
+                f"/admin/billing/payment-complements/{first['id']}/xml",
+                headers=accountant,
+            )
+            assert xml.status_code == 200, xml.text
+            assert (
+                f"PAGO-P-{first['folio']:06d}-simulada.xml"
+                in xml.headers["content-disposition"]
+            )
+            assert 'TipoDeComprobante="P"' in xml.text
+            assert 'UsoCFDI="CP01"' in xml.text
+            assert '<pago20:Pagos Version="2.0">' in xml.text
+            assert 'FormaDePagoP="03"' in xml.text
+            assert 'Monto="116.00"' in xml.text
+            assert 'NumParcialidad="1"' in xml.text
+            assert 'ImpSaldoAnt="116.00"' in xml.text
+            assert 'ImpPagado="116.00"' in xml.text
+            assert 'ImpSaldoInsoluto="0.00"' in xml.text
+            assert 'ImpuestoDR="002"' in xml.text
+            assert 'TasaOCuotaDR="0.160000"' in xml.text
+            assert "SIMULACION: la factura pagada" in xml.text
+            assert "IdDocumento=" not in xml.text
+            assert 'TipoRelacion="07"' not in xml.text
+
+            pdf = client.get(
+                f"/admin/billing/payment-complements/{first['id']}/pdf",
+                headers=accountant,
+            )
+            assert pdf.status_code == 200, pdf.text
+            assert pdf.content.startswith(b"%PDF")
+            assert len(pdf.content) > 1000
+            assert (
+                f"PAGO-P-{first['folio']:06d}-simulada.pdf"
+                in pdf.headers["content-disposition"]
+            )
+            assert client.get(
+                f"/admin/billing/payment-complements/{second['id']}/pdf",
+                headers=accountant,
+            ).status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ppd_payment_xml_links_the_invoice_uuid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    engine, _, _, _, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            base = _stamped_ppd_invoice(client, accountant, sale_id)
+            base_uuid = "12345678-1234-1234-1234-123456789012"
+            with Session(engine) as session:
+                row = session.get(Invoice, UUID(str(base["id"])))
+                assert row is not None
+                row.uuid = base_uuid
+                row.is_simulated = False
+                session.add(row)
+                session.commit()
+
+            payment = client.post(
+                f"/admin/billing/invoices/{base['id']}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=5000, key="ppd-uuid"),
+            ).json()["payment"]
+            assert client.post(
+                f"/admin/billing/payment-complements/{payment['id']}/stamp",
+                headers=accountant,
+            ).status_code == 200
+
+            xml = client.get(
+                f"/admin/billing/payment-complements/{payment['id']}/xml",
+                headers=accountant,
+            ).text
+            assert 'TipoDeComprobante="P"' in xml
+            assert 'TipoRelacion="07"' in xml
+            assert f'UUID="{base_uuid}"' in xml
+            assert f'IdDocumento="{base_uuid}"' in xml
+            assert 'UsoCFDI="CP01"' in xml
+            assert "<pago20:ImpuestosP>" in xml
+            assert "SIMULACION: la factura pagada" not in xml
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ppd_payment_cancellation_restores_balance_and_unblocks_invoice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    _, _, _, _, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            base = _stamped_ppd_invoice(client, accountant, sale_id)
+            base_id = str(base["id"])
+            payment = client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=5000, key="ppd-cancel"),
+            ).json()["payment"]
+            assert client.post(
+                f"/admin/billing/payment-complements/{payment['id']}/stamp",
+                headers=accountant,
+            ).status_code == 200
+
+            blocked = client.post(
+                f"/admin/billing/invoices/{base_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "02"},
+            )
+            assert blocked.status_code == 409
+            assert "complementos de pago" in blocked.json()["detail"]
+
+            cancelled = client.post(
+                f"/admin/billing/payment-complements/{payment['id']}/cancel",
+                headers=accountant,
+                json={"reason_code": "02", "note": "Pago registrado por error"},
+            )
+            assert cancelled.status_code == 200, cancelled.text
+            assert cancelled.json()["status"] == "cancelled"
+            assert cancelled.json()["cancellation_note"] == "Pago registrado por error"
+
+            restored = client.get(
+                f"/admin/billing/invoices/{base_id}", headers=accountant
+            ).json()
+            assert restored["paid_cents"] == 0
+            assert restored["payment_balance_cents"] == 11600
+            assert restored["payment_status"] == "unpaid"
+            assert restored["payment_complements"][0]["status"] == "cancelled"
+
+            assert client.get(
+                f"/admin/billing/payment-complements/{payment['id']}/pdf",
+                headers=accountant,
+            ).status_code == 200
+            released = client.post(
+                f"/admin/billing/invoices/{base_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "02"},
+            )
+            assert released.status_code == 200, released.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ppd_payment_permissions_and_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    engine, member_id, _, payment_id, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            trainer = _login(client, "trainer@example.com", "trainer-strong-password")
+            base = _stamped_ppd_invoice(client, accountant, sale_id)
+            base_id = str(base["id"])
+
+            denied = client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=reception,
+                json=_payment_payload(amount_cents=1000, key="ppd-reception"),
+            )
+            assert denied.status_code == 403
+
+            payment = client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=1000, key="ppd-permissions"),
+            ).json()["payment"]
+            payment_id_created = payment["id"]
+            assert client.post(
+                f"/admin/billing/payment-complements/{payment_id_created}/stamp",
+                headers=accountant,
+            ).status_code == 200
+
+            assert client.get(
+                f"/admin/billing/payment-complements/{payment_id_created}",
+                headers=reception,
+            ).status_code == 200
+            assert client.get(
+                f"/admin/billing/payment-complements/{payment_id_created}/xml",
+                headers=reception,
+            ).status_code == 200
+            assert client.get(
+                f"/admin/billing/payment-complements/{payment_id_created}/pdf",
+                headers=reception,
+            ).status_code == 200
+            assert client.get(
+                f"/admin/billing/payment-complements/{payment_id_created}",
+                headers=trainer,
+            ).status_code == 403
+            assert client.post(
+                f"/admin/billing/payment-complements/{payment_id_created}/stamp",
+                headers=reception,
+            ).status_code == 403
+            assert client.post(
+                f"/admin/billing/payment-complements/{payment_id_created}/cancel",
+                headers=reception,
+                json={"reason_code": "02"},
+            ).status_code == 403
+
+            invalid_form = client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(
+                    amount_cents=1000, key="ppd-bad-form", payment_form="99"
+                ),
+            )
+            assert invalid_form.status_code == 422, invalid_form.text
+            future = (
+                club_date(datetime.now(timezone.utc)) + timedelta(days=1)
+            ).isoformat()
+            assert client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(
+                    amount_cents=1000, key="ppd-future", paid_on=future
+                ),
+            ).status_code == 422
+            before_issue = (
+                club_date(datetime.now(timezone.utc)) - timedelta(days=2)
+            ).isoformat()
+            assert client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(
+                    amount_cents=1000, key="ppd-before", paid_on=before_issue
+                ),
+            ).status_code == 422
+            assert client.post(
+                f"/admin/billing/invoices/{base_id}/payment-complements",
+                headers=accountant,
+                json={
+                    "amount_cents": 0,
+                    "payment_form": "03",
+                    "idempotency_key": "ppd-zero",
+                },
+            ).status_code == 422
+            assert client.get(
+                f"/admin/billing/payment-complements/{uuid4()}", headers=accountant
+            ).status_code == 404
+
+            with Session(engine) as session:
+                product = session.exec(select(Product)).first()
+                assert product is not None
+                pending_sale_id = _seed_sale(
+                    session, member_id=member_id, product_id=product.id
+                )
+            pending_payload = _invoice_payload(
+                "sale", pending_sale_id, key="ppd-pending"
+            )
+            pending_payload["payment_method"] = "PPD"
+            pending_payload["payment_form"] = "99"
+            pending_invoice = client.post(
+                "/admin/billing/invoices",
+                headers=accountant,
+                json=pending_payload,
+            ).json()["invoice"]
+            not_stamped = client.post(
+                f"/admin/billing/invoices/{pending_invoice['id']}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=1000, key="ppd-not-stamped"),
+            )
+            assert not_stamped.status_code == 409
+            assert "timbrada" in not_stamped.json()["detail"]
+
+            pue = client.post(
+                "/admin/billing/invoices",
+                headers=accountant,
+                json=_invoice_payload("membership_payment", payment_id, key="ppd-pue"),
+            )
+            assert pue.status_code == 201, pue.text
+            pue_id = pue.json()["invoice"]["id"]
+            assert client.post(
+                f"/admin/billing/invoices/{pue_id}/stamp", headers=accountant
+            ).status_code == 200
+            not_ppd = client.post(
+                f"/admin/billing/invoices/{pue_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=1000, key="ppd-not-ppd"),
+            )
+            assert not_ppd.status_code == 409
+            assert "PPD" in not_ppd.json()["detail"]
     finally:
         app.dependency_overrides.clear()

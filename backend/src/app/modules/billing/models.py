@@ -13,7 +13,7 @@ An invoice never stores the card data or the PAC credentials: only the fiscal
 snapshot, the SAT references, the resulting UUID/XML/status and the operator.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -22,6 +22,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -44,6 +45,17 @@ from sqlmodel import Field, SQLModel
 INVOICE_ORIGIN_TYPES = ("sale", "membership_payment", "global", "credit_note")
 
 INVOICE_STATUSES = ("requested", "failed", "stamped", "cancelled")
+
+# A payment complement (CFDI tipo P, complemento de pago 2.0) records one
+# partiality of an invoice issued with MétodoPago PPD. It is a fiscal document
+# of its own: it has its own folio, UUID and cancellation, and the income
+# invoice keeps its original total untouched.
+PAYMENT_COMPLEMENT_STATUSES = ("requested", "failed", "stamped", "cancelled")
+
+# Only an individual income invoice with a known receptor can receive payment
+# complements. The global invoice is paid at sale time and a credit note is
+# already a fiscal adjustment.
+PAYMENT_COMPLEMENT_SOURCE_TYPES = frozenset({"sale", "membership_payment"})
 
 
 def utc_now() -> datetime:
@@ -331,6 +343,135 @@ class InvoiceEvent(SQLModel, table=True):
     )
 
 
+class InvoicePayment(SQLModel, table=True):
+    """One payment complement (partiality) for a PPD invoice.
+
+    The income invoice keeps its original totals; the sum of the live stamped
+    complements is the amount collected. ``prior_balance_cents``,
+    ``amount_cents`` and ``outstanding_balance_cents`` are a snapshot taken when
+    the complement was stamped, so the PDF and XML stay reproducible even if a
+    later complement is cancelled.
+    """
+
+    __tablename__ = "invoice_payments"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('requested', 'failed', 'stamped', 'cancelled')",
+            name="ck_invoice_payments_status",
+        ),
+        CheckConstraint("folio > 0", name="ck_invoice_payments_folio_positive"),
+        CheckConstraint(
+            "partiality_number > 0", name="ck_invoice_payments_partiality_positive"
+        ),
+        CheckConstraint("amount_cents > 0", name="ck_invoice_payments_amount_positive"),
+        CheckConstraint(
+            "prior_balance_cents > 0 AND amount_cents <= prior_balance_cents "
+            "AND outstanding_balance_cents = prior_balance_cents - amount_cents",
+            name="ck_invoice_payments_balances",
+        ),
+        UniqueConstraint("series", "folio", name="uq_invoice_payments_series_folio"),
+        UniqueConstraint("idempotency_key", name="uq_invoice_payments_idempotency_key"),
+        UniqueConstraint("uuid", name="uq_invoice_payments_uuid"),
+        Index("ix_invoice_payments_invoice_time", "invoice_id", "created_at"),
+        Index("ix_invoice_payments_invoice_partiality", "invoice_id", "partiality_number"),
+        Index("ix_invoice_payments_status_created", "status", "created_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    invoice_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("invoices.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    series: str = Field(default="P", max_length=10)
+    folio: int
+    status: str = Field(
+        default="requested",
+        sa_column=Column(String(16), nullable=False, server_default=text("'requested'")),
+    )
+    partiality_number: int
+    amount_cents: int = Field(sa_type=BigInteger)
+    currency: str = Field(
+        default="MXN",
+        sa_column=Column(String(3), nullable=False, server_default=text("'MXN'")),
+    )
+    payment_form: str = Field(max_length=2)
+    paid_on: date = Field(sa_type=Date)
+    prior_balance_cents: int = Field(sa_type=BigInteger)
+    outstanding_balance_cents: int = Field(sa_type=BigInteger)
+    tax_rate_percent: int = Field(default=16)
+
+    uuid: str | None = Field(default=None, max_length=36)
+    is_simulated: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+    provider: str | None = Field(default=None, max_length=40)
+    provider_reference: str | None = Field(default=None, max_length=160)
+    xml_content: str | None = Field(default=None, sa_column=Column(Text))
+    issued_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    stamped_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+    cancellation_reason_code: str | None = Field(default=None, max_length=2)
+    cancellation_note: str | None = Field(default=None, max_length=300)
+    cancelled_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+    idempotency_key: str = Field(max_length=128)
+    request_fingerprint: str = Field(max_length=64)
+    created_by: UUID | None = Field(default=None, sa_type=Uuid(as_uuid=True))
+    stamped_by: UUID | None = Field(default=None, sa_type=Uuid(as_uuid=True))
+    cancelled_by: UUID | None = Field(default=None, sa_type=Uuid(as_uuid=True))
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+            onupdate=func.now(),
+        ),
+    )
+
+
+class InvoicePaymentEvent(SQLModel, table=True):
+    """Append-only audit trail of a payment complement."""
+
+    __tablename__ = "invoice_payment_events"
+    __table_args__ = (
+        Index("ix_invoice_payment_events_payment_time", "payment_id", "occurred_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    payment_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("invoice_payments.id", ondelete="CASCADE"),
+            nullable=False,
+        )
+    )
+    event_type: str = Field(max_length=40)
+    from_status: str | None = Field(default=None, max_length=16)
+    to_status: str | None = Field(default=None, max_length=16)
+    actor_id: UUID | None = Field(default=None, sa_type=Uuid(as_uuid=True))
+    detail: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(
+            JSON().with_variant(JSONB(astext_type=Text()), "postgresql"),
+            nullable=False,
+            server_default=text("'{}'"),
+        ),
+    )
+    occurred_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
 class GlobalInvoiceSale(SQLModel, table=True):
     """A walk-in sale included in a monthly global invoice.
 
@@ -383,6 +524,10 @@ __all__ = [
     "Invoice",
     "InvoiceEvent",
     "InvoiceItem",
+    "InvoicePayment",
+    "InvoicePaymentEvent",
     "MemberFiscalProfile",
+    "PAYMENT_COMPLEMENT_SOURCE_TYPES",
+    "PAYMENT_COMPLEMENT_STATUSES",
     "utc_now",
 ]

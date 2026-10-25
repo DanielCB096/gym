@@ -54,13 +54,19 @@ from app.modules.billing.errors import (
     OriginNotFound,
     OriginNotInvoiceable,
     PacRejected,
+    PaymentComplementBalanceExceeded,
+    PaymentComplementNotAllowed,
+    PaymentComplementNotFound,
 )
 from app.modules.billing.models import (
     INVOICE_ORIGIN_TYPES,
+    PAYMENT_COMPLEMENT_SOURCE_TYPES,
     GlobalInvoiceSale,
     Invoice,
     InvoiceEvent,
     InvoiceItem,
+    InvoicePayment,
+    InvoicePaymentEvent,
     MemberFiscalProfile,
     utc_now,
 )
@@ -74,6 +80,11 @@ UUID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 DEFAULT_SERIES = "A"
+DEFAULT_PAYMENT_SERIES = "P"
+PAYMENT_METHODS = frozenset({"PUE", "PPD"})
+# The invoice that will be paid as PPD uses FormaPago 99, but each complement
+# must state how the money actually arrived; "por definir" is not a payment.
+PAYMENT_COMPLEMENT_FORMS = cfdi.PAYMENT_FORMS - {"99"}
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 GLOBAL_MONTH_NAMES = (
@@ -145,6 +156,54 @@ class CreditNoteRef:
 
 
 @dataclass(frozen=True)
+class PaymentComplementRef:
+    payment_id: UUID
+    folio_label: str
+    status: str
+    partiality_number: int
+    amount_cents: int
+    payment_form: str
+    paid_on: date
+    prior_balance_cents: int
+    outstanding_balance_cents: int
+    uuid: str | None
+    is_simulated: bool
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class PaymentComplementView:
+    id: UUID
+    invoice_id: UUID
+    invoice_folio_label: str
+    series: str
+    folio: int
+    folio_label: str
+    status: str
+    partiality_number: int
+    amount_cents: int
+    currency: str
+    payment_form: str
+    paid_on: date
+    prior_balance_cents: int
+    outstanding_balance_cents: int
+    tax_rate_percent: int
+    uuid: str | None
+    is_simulated: bool
+    provider: str | None
+    provider_reference: str | None
+    xml_available: bool
+    issued_at: datetime | None
+    stamped_at: datetime | None
+    cancelled_at: datetime | None
+    cancellation_reason_code: str | None
+    cancellation_note: str | None
+    created_at: datetime
+    created_by: UUID | None
+    events: tuple[InvoiceEventView, ...] = field(default=())
+
+
+@dataclass(frozen=True)
 class InvoiceView:
     id: UUID
     series: str
@@ -192,6 +251,10 @@ class InvoiceView:
     credited_cents: int = 0
     credit_balance_cents: int = 0
     credit_notes: tuple[CreditNoteRef, ...] = field(default=())
+    paid_cents: int = 0
+    payment_balance_cents: int = 0
+    payment_status: str = "not_applicable"
+    payment_complements: tuple[PaymentComplementRef, ...] = field(default=())
     items: tuple[InvoiceItemView, ...] = field(default=())
     events: tuple[InvoiceEventView, ...] = field(default=())
     global_sales: tuple[GlobalInvoiceSaleView, ...] = field(default=())
@@ -430,6 +493,10 @@ def _invoice_view(
     credit_notes: tuple[CreditNoteRef, ...] = ()
     credited_cents = 0
     credit_balance_cents = 0
+    payment_complements: tuple[PaymentComplementRef, ...] = ()
+    paid_cents = 0
+    payment_balance_cents = 0
+    payment_status = "not_applicable"
     if full:
         items = tuple(
             InvoiceItemView(
@@ -512,6 +579,44 @@ def _invoice_view(
                 note.total_cents for note in note_rows if note.status == "stamped"
             )
             credit_balance_cents = max(0, invoice.total_cents - credited_cents)
+        if invoice.payment_method == "PPD":
+            payment_rows = tuple(
+                session.exec(
+                    select(InvoicePayment)
+                    .where(InvoicePayment.invoice_id == invoice.id)
+                    .order_by(InvoicePayment.created_at, InvoicePayment.folio)
+                ).all()
+            )
+            payment_complements = tuple(
+                PaymentComplementRef(
+                    payment_id=payment.id,
+                    folio_label=f"{payment.series}-{payment.folio:06d}",
+                    status=payment.status,
+                    partiality_number=payment.partiality_number,
+                    amount_cents=payment.amount_cents,
+                    payment_form=payment.payment_form,
+                    paid_on=payment.paid_on,
+                    prior_balance_cents=payment.prior_balance_cents,
+                    outstanding_balance_cents=payment.outstanding_balance_cents,
+                    uuid=payment.uuid,
+                    is_simulated=payment.is_simulated,
+                    created_at=payment.created_at,
+                )
+                for payment in payment_rows
+            )
+            paid_cents = sum(
+                payment.amount_cents
+                for payment in payment_rows
+                if payment.status == "stamped"
+            )
+            payment_balance_cents = max(0, invoice.total_cents - paid_cents)
+            payment_status = (
+                "paid"
+                if payment_balance_cents == 0
+                else "partial"
+                if paid_cents > 0
+                else "unpaid"
+            )
 
     return InvoiceView(
         id=invoice.id,
@@ -560,6 +665,10 @@ def _invoice_view(
         credited_cents=credited_cents,
         credit_balance_cents=credit_balance_cents,
         credit_notes=credit_notes,
+        paid_cents=paid_cents,
+        payment_balance_cents=payment_balance_cents,
+        payment_status=payment_status,
+        payment_complements=payment_complements,
         items=items,
         events=events,
         global_sales=global_sales,
@@ -1079,13 +1188,16 @@ def create_invoice(
     idempotency_key: str,
     email: str | None = None,
     payment_form: str | None = None,
+    payment_method: str | None = None,
     actor_id: UUID | None = None,
 ) -> tuple[InvoiceView, bool]:
     """Request an invoice for one sale or membership payment.
 
     Returns ``(invoice, created)``: ``created`` is ``False`` when the same
     idempotency key replays an existing request, which lets the caller answer
-    without duplicating folios, XML or events.
+    without duplicating folios, XML or events. A PPD invoice is issued with
+    FormaPago 99 (payment still undefined); each partiality is a payment
+    complement created later from the billing panel.
     """
 
     key = (idempotency_key or "").strip()
@@ -1103,6 +1215,11 @@ def create_invoice(
         email=email,
     )
     requested_form = (payment_form or "").strip()
+    requested_method = (payment_method or "PUE").strip().upper()
+    if requested_method not in ("PUE", "PPD"):
+        raise FiscalDataInvalid(
+            "El método de pago debe ser PUE o PPD.", field="payment_method"
+        )
     fingerprint = _fingerprint(
         {
             "origin_type": origin_type,
@@ -1114,6 +1231,7 @@ def create_invoice(
             "cfdi_use": fiscal.cfdi_use,
             "email": fiscal.email,
             "payment_form": requested_form,
+            "payment_method": requested_method,
         }
     )
 
@@ -1129,6 +1247,13 @@ def create_invoice(
 
     origin = _resolve_origin(session, origin_type, origin_id)
     form = requested_form or cfdi.payment_form_for_method(origin.method)
+    if requested_method == "PPD":
+        if requested_form and requested_form != "99":
+            raise FiscalDataInvalid(
+                "Una factura PPD debe usar la forma de pago 99 (por definir).",
+                field="payment_form",
+            )
+        form = "99"
     if form not in cfdi.PAYMENT_FORMS:
         raise FiscalDataInvalid(
             "La forma de pago no es una clave del SAT válida.", field="payment_form"
@@ -1203,7 +1328,7 @@ def create_invoice(
         total_cents=origin.total_cents,
         tax_rate_percent=rate,
         payment_form=form,
-        payment_method="PUE",
+        payment_method=requested_method,
         idempotency_key=key,
         request_fingerprint=fingerprint,
         created_by=actor_id,
@@ -1233,6 +1358,8 @@ def create_invoice(
             "origin_id": str(origin.origin_id),
             "origin_reference": origin.reference,
             "total_cents": origin.total_cents,
+            "payment_method": requested_method,
+            "payment_form": form,
         },
     )
     try:
@@ -1383,6 +1510,12 @@ def create_credit_note(
             )
         raise CreditNoteNotAllowed(
             "Una nota de crédito no se puede ajustar con otra nota de crédito."
+        )
+    if related.payment_method == "PPD":
+        raise CreditNoteNotAllowed(
+            "La factura está emitida con método PPD; los ajustes se realizan sobre "
+            "sus complementos de pago. Esta versión no permite notas de crédito "
+            "sobre facturas PPD."
         )
     balance = _credit_balance_cents(session, related)
     if balance <= 0:
@@ -1634,6 +1767,17 @@ def cancel_invoice(
                 "La factura tiene notas de crédito timbradas vigentes; cancélalas "
                 "antes de cancelar la factura."
             )
+    live_payment = session.exec(
+        select(InvoicePayment.folio).where(
+            InvoicePayment.invoice_id == invoice.id,
+            InvoicePayment.status == "stamped",
+        )
+    ).first()
+    if live_payment is not None:
+        raise PaymentComplementNotAllowed(
+            "La factura tiene complementos de pago timbrados vigentes; cancélalos "
+            "antes de cancelar la factura."
+        )
     reason = (reason_code or "").strip()
     if reason not in CANCELLATION_REASONS:
         raise FiscalDataInvalid(
@@ -1692,6 +1836,581 @@ def cancel_invoice(
     session.commit()
     session.refresh(invoice)
     return _invoice_view(session, invoice, full=True)
+
+
+def payment_series() -> str:
+    raw = (
+        os.getenv("CFDI_PAYMENT_SERIES", DEFAULT_PAYMENT_SERIES)
+        or DEFAULT_PAYMENT_SERIES
+    ).strip().upper()
+    if not raw or len(raw) > 10:
+        return DEFAULT_PAYMENT_SERIES
+    return raw
+
+
+def _get_payment(session: Session, payment_id: UUID) -> InvoicePayment:
+    payment = session.get(InvoicePayment, payment_id)
+    if payment is None:
+        raise PaymentComplementNotFound("El complemento de pago no existe.")
+    return payment
+
+
+def _next_payment_folio(session: Session, series: str) -> int:
+    last = session.exec(
+        select(func.max(InvoicePayment.folio)).where(InvoicePayment.series == series)
+    ).first()
+    return int(last or 0) + 1
+
+
+def _stamped_paid_cents(session: Session, invoice_id: UUID) -> int:
+    return int(
+        session.exec(
+            select(func.coalesce(func.sum(InvoicePayment.amount_cents), 0)).where(
+                InvoicePayment.invoice_id == invoice_id,
+                InvoicePayment.status == "stamped",
+            )
+        ).first()
+        or 0
+    )
+
+
+def _payment_balance_cents(session: Session, invoice: Invoice) -> int:
+    return max(0, invoice.total_cents - _stamped_paid_cents(session, invoice.id))
+
+
+def _next_partiality_number(session: Session, invoice_id: UUID) -> int:
+    last = session.exec(
+        select(func.max(InvoicePayment.partiality_number)).where(
+            InvoicePayment.invoice_id == invoice_id,
+            InvoicePayment.status == "stamped",
+        )
+    ).first()
+    return int(last or 0) + 1
+
+
+def _payment_events(session: Session, payment_id: UUID) -> tuple[InvoiceEventView, ...]:
+    return tuple(
+        InvoiceEventView(
+            event_type=event.event_type,
+            from_status=event.from_status,
+            to_status=event.to_status,
+            actor_id=event.actor_id,
+            detail=event.detail,
+            occurred_at=event.occurred_at,
+        )
+        for event in session.exec(
+            select(InvoicePaymentEvent)
+            .where(InvoicePaymentEvent.payment_id == payment_id)
+            .order_by(InvoicePaymentEvent.occurred_at)
+        ).all()
+    )
+
+
+def _payment_view(session: Session, payment: InvoicePayment) -> PaymentComplementView:
+    invoice = session.get(Invoice, payment.invoice_id)
+    return PaymentComplementView(
+        id=payment.id,
+        invoice_id=payment.invoice_id,
+        invoice_folio_label=(
+            f"{invoice.series}-{invoice.folio:06d}" if invoice is not None else ""
+        ),
+        series=payment.series,
+        folio=payment.folio,
+        folio_label=f"{payment.series}-{payment.folio:06d}",
+        status=payment.status,
+        partiality_number=payment.partiality_number,
+        amount_cents=payment.amount_cents,
+        currency=payment.currency,
+        payment_form=payment.payment_form,
+        paid_on=payment.paid_on,
+        prior_balance_cents=payment.prior_balance_cents,
+        outstanding_balance_cents=payment.outstanding_balance_cents,
+        tax_rate_percent=payment.tax_rate_percent,
+        uuid=payment.uuid,
+        is_simulated=payment.is_simulated,
+        provider=payment.provider,
+        provider_reference=payment.provider_reference,
+        xml_available=bool(payment.xml_content),
+        issued_at=payment.issued_at,
+        stamped_at=payment.stamped_at,
+        cancelled_at=payment.cancelled_at,
+        cancellation_reason_code=payment.cancellation_reason_code,
+        cancellation_note=payment.cancellation_note,
+        created_at=payment.created_at,
+        created_by=payment.created_by,
+        events=_payment_events(session, payment.id),
+    )
+
+
+def _record_payment_event(
+    session: Session,
+    payment: InvoicePayment,
+    event_type: str,
+    *,
+    from_status: str | None,
+    to_status: str | None,
+    actor_id: UUID | None,
+    detail: dict[str, object],
+) -> None:
+    session.add(
+        InvoicePaymentEvent(
+            payment_id=payment.id,
+            event_type=event_type,
+            from_status=from_status,
+            to_status=to_status,
+            actor_id=actor_id,
+            detail=detail,
+        )
+    )
+
+
+def _fail_payment(
+    session: Session,
+    payment: InvoicePayment,
+    *,
+    code: str,
+    message: str,
+    actor_id: UUID | None,
+) -> None:
+    previous = payment.status
+    payment.status = "failed"
+    payment.updated_at = utc_now()
+    _record_payment_event(
+        session,
+        payment,
+        "payment_stamp_failed",
+        from_status=previous,
+        to_status="failed",
+        actor_id=actor_id,
+        detail={"code": code, "error": message},
+    )
+    session.commit()
+
+
+def _build_payment_xml(
+    payment: InvoicePayment,
+    invoice: Invoice,
+    *,
+    simulated: bool = False,
+) -> str:
+    return cfdi.build_payment_complement_xml(
+        payment=payment,
+        invoice=invoice,
+        issuer=issuer_config(),
+        related_uuid=invoice.uuid,
+        simulated=simulated,
+    )
+
+
+def _parse_paid_on(value: date | datetime | str | None) -> date:
+    if value is None:
+        return club_date(datetime.now(timezone.utc))
+    if isinstance(value, datetime):
+        return club_date(value)
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value).strip())
+    except ValueError as error:
+        raise FiscalDataInvalid(
+            "La fecha de pago no es válida (usa el formato AAAA-MM-DD).",
+            field="paid_on",
+        ) from error
+
+
+def create_payment_complement(
+    session: Session,
+    *,
+    invoice_id: UUID,
+    amount_cents: int,
+    payment_form: str,
+    idempotency_key: str,
+    paid_on: date | datetime | str | None = None,
+    actor_id: UUID | None = None,
+) -> tuple[PaymentComplementView, bool]:
+    """Request a payment complement (partiality) for a stamped PPD invoice.
+
+    A requested complement does not consume the balance until it is stamped;
+    ``stamp_payment_complement`` validates it again while holding the invoice
+    lock. The amount may be partial or the whole outstanding balance.
+    """
+
+    key = (idempotency_key or "").strip()
+    if not key:
+        raise FiscalDataInvalid(
+            "La clave de idempotencia es obligatoria.", field="idempotency_key"
+        )
+    if len(key) > 128:
+        raise FiscalDataInvalid(
+            "La clave de idempotencia excede 128 caracteres.",
+            field="idempotency_key",
+        )
+    if amount_cents <= 0:
+        raise FiscalDataInvalid(
+            "El importe del complemento debe ser mayor que cero.",
+            field="amount_cents",
+        )
+    form = (payment_form or "").strip()
+    if form not in PAYMENT_COMPLEMENT_FORMS:
+        raise FiscalDataInvalid(
+            "La forma de pago del complemento no es válida; elige cómo se pagó "
+            "(no puede ser 99).",
+            field="payment_form",
+        )
+    payment_date = _parse_paid_on(paid_on)
+    fingerprint = _fingerprint(
+        {
+            "origin_type": "payment_complement",
+            "invoice_id": str(invoice_id),
+            "amount_cents": str(amount_cents),
+            "payment_form": form,
+            "paid_on": payment_date.isoformat(),
+        }
+    )
+    existing = session.exec(
+        select(InvoicePayment).where(InvoicePayment.idempotency_key == key)
+    ).first()
+    if existing is not None:
+        if existing.request_fingerprint != fingerprint:
+            raise InvoiceIdempotencyConflict(
+                "La clave de idempotencia ya se usó con otro complemento de pago."
+            )
+        return _payment_view(session, existing), False
+
+    invoice = session.exec(
+        select(Invoice).where(Invoice.id == invoice_id).with_for_update()
+    ).first()
+    if invoice is None:
+        raise InvoiceNotFound("La factura no existe.")
+    if invoice.status != "stamped":
+        raise PaymentComplementNotAllowed(
+            "Solo una factura timbrada y vigente puede recibir complementos de pago."
+        )
+    if invoice.payment_method != "PPD":
+        raise PaymentComplementNotAllowed(
+            "Solo las facturas emitidas con método PPD (pago en parcialidades o "
+            "diferido) requieren complementos de pago."
+        )
+    if invoice.origin_type not in PAYMENT_COMPLEMENT_SOURCE_TYPES:
+        raise PaymentComplementNotAllowed(
+            "Este tipo de comprobante no admite complementos de pago."
+        )
+    issued_on = club_date(invoice.issued_at or invoice.created_at)
+    if payment_date < issued_on:
+        raise FiscalDataInvalid(
+            "La fecha de pago no puede ser anterior a la emisión de la factura.",
+            field="paid_on",
+        )
+    if payment_date > club_date(datetime.now(timezone.utc)):
+        raise FiscalDataInvalid(
+            "La fecha de pago no puede ser futura.", field="paid_on"
+        )
+    balance = _payment_balance_cents(session, invoice)
+    if balance <= 0:
+        raise PaymentComplementNotAllowed(
+            "La factura ya está pagada en su totalidad."
+        )
+    if amount_cents > balance:
+        raise PaymentComplementBalanceExceeded(
+            "El importe excede el saldo pendiente de pago "
+            f"({_money_label(balance)}).",
+            field="amount_cents",
+        )
+
+    series = payment_series()
+    payment = InvoicePayment(
+        invoice_id=invoice.id,
+        series=series,
+        folio=_next_payment_folio(session, series),
+        status="requested",
+        partiality_number=_next_partiality_number(session, invoice.id),
+        amount_cents=amount_cents,
+        currency=invoice.currency,
+        payment_form=form,
+        paid_on=payment_date,
+        prior_balance_cents=balance,
+        outstanding_balance_cents=balance - amount_cents,
+        tax_rate_percent=invoice.tax_rate_percent,
+        idempotency_key=key,
+        request_fingerprint=fingerprint,
+        created_by=actor_id,
+    )
+    session.add(payment)
+    session.flush()
+    payment.xml_content = _build_payment_xml(payment, invoice)
+    _record_payment_event(
+        session,
+        payment,
+        "payment_requested",
+        from_status=None,
+        to_status="requested",
+        actor_id=actor_id,
+        detail={
+            "invoice_id": str(invoice.id),
+            "invoice_folio": f"{invoice.series}-{invoice.folio:06d}",
+            "partiality_number": payment.partiality_number,
+            "amount_cents": amount_cents,
+            "prior_balance_cents": balance,
+            "outstanding_balance_cents": balance - amount_cents,
+            "payment_form": form,
+            "paid_on": payment_date.isoformat(),
+        },
+    )
+    try:
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        replay = session.exec(
+            select(InvoicePayment).where(InvoicePayment.idempotency_key == key)
+        ).first()
+        if replay is not None and replay.request_fingerprint == fingerprint:
+            return _payment_view(session, replay), False
+        raise InvoiceNumberingError(
+            "No fue posible asignar el folio del complemento de pago; intenta de nuevo."
+        ) from error
+
+    session.refresh(payment)
+    return _payment_view(session, payment), True
+
+
+def stamp_payment_complement(
+    session: Session,
+    payment_id: UUID,
+    *,
+    actor_id: UUID | None = None,
+) -> PaymentComplementView:
+    preview = _get_payment(session, payment_id)
+    invoice = session.exec(
+        select(Invoice).where(Invoice.id == preview.invoice_id).with_for_update()
+    ).first()
+    payment = session.exec(
+        select(InvoicePayment)
+        .where(InvoicePayment.id == payment_id)
+        .with_for_update()
+    ).first()
+    if payment is None:
+        raise PaymentComplementNotFound("El complemento de pago no existe.")
+    if payment.status == "stamped":
+        return _payment_view(session, payment)
+    if payment.status == "cancelled":
+        raise PaymentComplementNotAllowed(
+            "Un complemento de pago cancelado no se puede volver a timbrar."
+        )
+
+    if (
+        invoice is None
+        or invoice.status != "stamped"
+        or invoice.payment_method != "PPD"
+        or invoice.origin_type not in PAYMENT_COMPLEMENT_SOURCE_TYPES
+    ):
+        message = (
+            "La factura relacionada ya no está timbrada y vigente; el complemento "
+            "de pago no se puede timbrar."
+        )
+        _fail_payment(
+            session,
+            payment,
+            code="invoice_not_payable",
+            message=message,
+            actor_id=actor_id,
+        )
+        raise PaymentComplementNotAllowed(message)
+
+    balance = _payment_balance_cents(session, invoice)
+    if payment.amount_cents > balance:
+        message = (
+            "El importe del complemento excede el saldo pendiente de pago "
+            f"({_money_label(balance)})."
+        )
+        _fail_payment(
+            session,
+            payment,
+            code="payment_balance_exceeded",
+            message=message,
+            actor_id=actor_id,
+        )
+        raise PaymentComplementBalanceExceeded(message, field="amount_cents")
+
+    payment.partiality_number = _next_partiality_number(session, invoice.id)
+    payment.prior_balance_cents = balance
+    payment.outstanding_balance_cents = balance - payment.amount_cents
+    payment.tax_rate_percent = invoice.tax_rate_percent
+    payment.xml_content = _build_payment_xml(payment, invoice)
+    try:
+        outcome = pac_gateway().stamp(payment.xml_content)
+    except PacRejected as error:
+        _fail_payment(
+            session,
+            payment,
+            code=error.code or "pac_rejected",
+            message=str(error),
+            actor_id=actor_id,
+        )
+        raise
+
+    previous = payment.status
+    payment.status = "stamped"
+    payment.uuid = outcome.uuid
+    payment.is_simulated = outcome.simulated
+    payment.provider = outcome.provider
+    payment.provider_reference = outcome.provider_reference
+    payment.xml_content = outcome.stamped_xml
+    payment.issued_at = outcome.issued_at
+    payment.stamped_at = utc_now()
+    payment.stamped_by = actor_id
+    _record_payment_event(
+        session,
+        payment,
+        "payment_stamped",
+        from_status=previous,
+        to_status="stamped",
+        actor_id=actor_id,
+        detail={
+            "provider": outcome.provider,
+            "provider_reference": outcome.provider_reference,
+            "simulated": outcome.simulated,
+            "uuid": outcome.uuid,
+            "partiality_number": payment.partiality_number,
+            "prior_balance_cents": payment.prior_balance_cents,
+            "outstanding_balance_cents": payment.outstanding_balance_cents,
+        },
+    )
+    session.commit()
+    session.refresh(payment)
+    return _payment_view(session, payment)
+
+
+def cancel_payment_complement(
+    session: Session,
+    payment_id: UUID,
+    *,
+    reason_code: str,
+    replacement_uuid: str | None = None,
+    note: str | None = None,
+    actor_id: UUID | None = None,
+) -> PaymentComplementView:
+    payment = session.exec(
+        select(InvoicePayment)
+        .where(InvoicePayment.id == payment_id)
+        .with_for_update()
+    ).first()
+    if payment is None:
+        raise PaymentComplementNotFound("El complemento de pago no existe.")
+    if payment.status != "stamped":
+        raise PaymentComplementNotAllowed(
+            "Solo se puede cancelar un complemento de pago timbrado."
+        )
+    latest = session.exec(
+        select(func.max(InvoicePayment.partiality_number)).where(
+            InvoicePayment.invoice_id == payment.invoice_id,
+            InvoicePayment.status == "stamped",
+        )
+    ).first()
+    if payment.partiality_number != int(latest or 0):
+        raise PaymentComplementNotAllowed(
+            "Solo se puede cancelar la última parcialidad vigente; los saldos de "
+            "los complementos posteriores dependen de ella."
+        )
+    reason = (reason_code or "").strip()
+    if reason not in CANCELLATION_REASONS:
+        raise FiscalDataInvalid(
+            "El motivo de cancelación debe ser 01, 02, 03 o 04.", field="reason_code"
+        )
+    replacement = (replacement_uuid or "").strip() or None
+    if reason == "01" and replacement is None:
+        raise FiscalDataInvalid(
+            "El motivo 01 requiere el UUID del comprobante que sustituye.",
+            field="replacement_uuid",
+        )
+    if replacement is not None:
+        if not UUID_PATTERN.match(replacement):
+            raise FiscalDataInvalid(
+                "El UUID de sustitución no tiene un formato válido.",
+                field="replacement_uuid",
+            )
+        if payment.uuid is not None and replacement.lower() == payment.uuid.lower():
+            raise FiscalDataInvalid(
+                "El UUID de sustitución debe ser distinto del complemento cancelado.",
+                field="replacement_uuid",
+            )
+    normalized_note = (note or "").strip() or None
+    if normalized_note is not None and len(normalized_note) > 300:
+        raise FiscalDataInvalid(
+            "La nota de cancelación excede 300 caracteres.", field="note"
+        )
+
+    outcome = pac_gateway().cancel(
+        uuid=payment.uuid,
+        reason_code=reason,
+        replacement_uuid=replacement,
+    )
+    if not outcome.accepted:
+        raise PacRejected("El PAC rechazó la cancelación del complemento de pago.")
+
+    payment.status = "cancelled"
+    payment.cancelled_at = utc_now()
+    payment.cancelled_by = actor_id
+    payment.cancellation_reason_code = reason
+    payment.cancellation_note = normalized_note
+    _record_payment_event(
+        session,
+        payment,
+        "payment_cancelled",
+        from_status="stamped",
+        to_status="cancelled",
+        actor_id=actor_id,
+        detail={
+            "reason_code": reason,
+            "replacement_uuid": replacement,
+            "note": normalized_note,
+            "provider": outcome.provider,
+            "simulated": outcome.simulated,
+        },
+    )
+    session.commit()
+    session.refresh(payment)
+    return _payment_view(session, payment)
+
+
+def get_payment_complement(session: Session, payment_id: UUID) -> PaymentComplementView:
+    return _payment_view(session, _get_payment(session, payment_id))
+
+
+def payment_complement_xml(session: Session, payment_id: UUID) -> tuple[str, str]:
+    payment = _get_payment(session, payment_id)
+    if payment.status not in ("stamped", "cancelled"):
+        raise InvoiceNotDeliverable(
+            "Solo se puede descargar el XML de un complemento de pago timbrado."
+        )
+    invoice = session.get(Invoice, payment.invoice_id)
+    if invoice is None:
+        raise InvoiceNotFound("La factura relacionada no existe.")
+    content = payment.xml_content
+    if not content:
+        content = _build_payment_xml(
+            payment, invoice, simulated=payment.is_simulated
+        )
+    return cfdi.payment_complement_xml_filename(payment), content
+
+
+def payment_complement_pdf(session: Session, payment_id: UUID) -> tuple[str, bytes]:
+    """Render the printable payment complement; only a stamped one qualifies."""
+
+    payment = _get_payment(session, payment_id)
+    if payment.status not in ("stamped", "cancelled"):
+        raise InvoiceNotDeliverable(
+            "Solo se puede descargar la representación impresa de un complemento "
+            "de pago timbrado."
+        )
+    invoice = session.get(Invoice, payment.invoice_id)
+    if invoice is None:
+        raise InvoiceNotFound("La factura relacionada no existe.")
+    content = documents.build_payment_complement_pdf(
+        payment=payment,
+        invoice=invoice,
+        issuer=issuer_config(),
+    )
+    return documents.payment_complement_pdf_filename(payment), content
 
 
 def get_invoice(session: Session, invoice_id: UUID) -> InvoiceView:

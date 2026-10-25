@@ -412,6 +412,54 @@ type BillingCreditNoteRef = {
   created_at: string;
 };
 
+type BillingPaymentBalanceStatus = "not_applicable" | "unpaid" | "partial" | "paid";
+
+type BillingPaymentComplementRef = {
+  payment_id: string;
+  folio_label: string;
+  status: BillingInvoiceStatus;
+  partiality_number: number;
+  amount_cents: number;
+  payment_form: string;
+  paid_on: string;
+  prior_balance_cents: number;
+  outstanding_balance_cents: number;
+  uuid: string | null;
+  is_simulated: boolean;
+  created_at: string;
+};
+
+type BillingPaymentComplement = {
+  id: string;
+  invoice_id: string;
+  invoice_folio_label: string;
+  series: string;
+  folio: number;
+  folio_label: string;
+  status: BillingInvoiceStatus;
+  partiality_number: number;
+  amount_cents: number;
+  currency: string;
+  payment_form: string;
+  paid_on: string;
+  prior_balance_cents: number;
+  outstanding_balance_cents: number;
+  tax_rate_percent: number;
+  uuid: string | null;
+  is_simulated: boolean;
+  provider: string | null;
+  provider_reference: string | null;
+  xml_available: boolean;
+  issued_at: string | null;
+  stamped_at: string | null;
+  cancelled_at: string | null;
+  cancellation_reason_code: string | null;
+  cancellation_note: string | null;
+  created_at: string;
+  created_by: string | null;
+  events: BillingInvoiceEvent[];
+};
+
 type BillingInvoiceItem = {
   position: number;
   description: string;
@@ -488,6 +536,10 @@ type BillingInvoice = {
   credited_cents: number;
   credit_balance_cents: number;
   credit_notes: BillingCreditNoteRef[];
+  paid_cents: number;
+  payment_balance_cents: number;
+  payment_status: BillingPaymentBalanceStatus;
+  payment_complements: BillingPaymentComplementRef[];
   items: BillingInvoiceItem[];
   events: BillingInvoiceEvent[];
   global_sales: BillingGlobalInvoiceSale[];
@@ -766,6 +818,32 @@ const billingPaymentMethodLabels: Record<string, string> = {
   account: "Cuenta del socio",
 };
 
+const BILLING_INVOICE_PAYMENT_METHODS: ["PUE" | "PPD", string][] = [
+  ["PUE", "PUE · Pago en una sola exhibición"],
+  ["PPD", "PPD · Pago en parcialidades o diferido"],
+];
+
+const billingPaymentStatusLabels: Record<BillingInvoiceStatus, string> = {
+  requested: "Solicitado",
+  failed: "Error de timbrado",
+  stamped: "Timbrado",
+  cancelled: "Cancelado",
+};
+
+const billingPaymentBalanceLabels: Record<BillingPaymentBalanceStatus, string> = {
+  not_applicable: "No aplica",
+  unpaid: "Sin pagos",
+  partial: "Pago parcial",
+  paid: "Pagada",
+};
+
+const billingPaymentBalanceBadges: Record<BillingPaymentBalanceStatus, string> = {
+  not_applicable: "status-neutral",
+  unpaid: "status-warn",
+  partial: "status-warn",
+  paid: "status-good",
+};
+
 const BILLING_TAX_REGIMES: [string, string][] = [
   ["601", "601 · General de Ley Personas Morales"],
   ["603", "603 · Personas Morales con Fines no Lucrativos"],
@@ -849,6 +927,10 @@ const BILLING_PAYMENT_FORM_BY_METHOD: Record<string, string> = {
   account: "99",
 };
 
+const BILLING_PAYMENT_COMPLEMENT_FORMS: [string, string][] = BILLING_PAYMENT_FORMS.filter(
+  ([value]) => value !== "99",
+);
+
 const BILLING_CANCELLATION_REASONS: [string, string][] = [
   ["01", "01 · Comprobante emitido con errores con relación"],
   ["02", "02 · Comprobante emitido con errores sin relación"],
@@ -864,6 +946,10 @@ function billingInvoiceStatus(status: string): BillingInvoiceStatus {
 
 function billingPaymentFormLabel(code: string): string {
   return BILLING_PAYMENT_FORMS.find(([value]) => value === code)?.[1] ?? code;
+}
+
+function billingInvoicePaymentMethodLabel(method: string): string {
+  return method === "PPD" ? "Pago en parcialidades o diferido" : "Pago en una sola exhibición";
 }
 
 function billingTaxRegimeLabel(code: string): string {
@@ -8544,6 +8630,7 @@ function NewInvoiceModal({ canManage, onClose, onCreated, onUnauthorized }: { ca
   const [cfdiUse, setCfdiUse] = useState("G03");
   const [email, setEmail] = useState("");
   const [paymentForm, setPaymentForm] = useState("01");
+  const [paymentMethod, setPaymentMethod] = useState<"PUE" | "PPD">("PUE");
   const [profileState, setProfileState] = useState<"idle" | "loading" | "found" | "empty">("idle");
   const [saveProfile, setSaveProfile] = useState(false);
   const [stampNow, setStampNow] = useState(canManage);
@@ -8682,7 +8769,8 @@ function NewInvoiceModal({ canManage, onClose, onCreated, onUnauthorized }: { ca
           origin_type: selectedOrigin.origin_type,
           origin_id: selectedOrigin.origin_id,
           idempotency_key: idempotencyKey,
-          payment_form: paymentForm,
+          payment_method: paymentMethod,
+          payment_form: paymentMethod === "PPD" ? "99" : paymentForm,
           receptor: receptorPayload(),
         }),
       });
@@ -8790,7 +8878,11 @@ function NewInvoiceModal({ canManage, onClose, onCreated, onUnauthorized }: { ca
                 <label className="form-field"><span>Código postal fiscal *</span><input value={postalCode} onChange={(event) => { setPostalCode(event.target.value.replace(/\D/g, "").slice(0, 5)); rotateKey(); }} inputMode="numeric" maxLength={5} placeholder="06700" required /></label>
                 <label className="form-field"><span>Correo de entrega</span><input type="email" value={email} onChange={(event) => { setEmail(event.target.value); rotateKey(); }} placeholder="fiscal@correo.com" /></label>
               </div>
-              <label className="form-field"><span>Forma de pago SAT *</span><select value={paymentForm} onChange={(event) => { setPaymentForm(event.target.value); rotateKey(); }}>{BILLING_PAYMENT_FORMS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <div className="form-row">
+                <label className="form-field"><span>Método de pago SAT *</span><select value={paymentMethod} onChange={(event) => { setPaymentMethod(event.target.value as "PUE" | "PPD"); rotateKey(); }}>{BILLING_INVOICE_PAYMENT_METHODS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label className="form-field"><span>Forma de pago SAT *</span><select value={paymentMethod === "PPD" ? "99" : paymentForm} disabled={paymentMethod === "PPD"} onChange={(event) => { setPaymentForm(event.target.value); rotateKey(); }}>{BILLING_PAYMENT_FORMS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              </div>
+              {paymentMethod === "PPD" && <p className="billing-profile-hint"><ShieldAlert size={13} />PPD difiere el cobro: la factura se emite con forma 99 y cada pago se registra después con un complemento de pago.</p>}
               <button type="button" className="text-button" onClick={usePublicGeneral}>Usar público en general</button>
               {selectedOrigin?.member_id && (
                 <label className="form-check"><input type="checkbox" checked={saveProfile} onChange={(event) => setSaveProfile(event.target.checked)} /><span>Guardar estos datos fiscales en la ficha del socio para la próxima factura.</span></label>
@@ -8816,7 +8908,7 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, o
   const [invoice, setInvoice] = useState<BillingInvoice | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState<"stamp" | "cancel" | "send" | "credit" | null>(null);
+  const [busy, setBusy] = useState<"stamp" | "cancel" | "send" | "credit" | "payment" | "payment-stamp" | "payment-cancel" | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reasonCode, setReasonCode] = useState("02");
   const [replacementUuid, setReplacementUuid] = useState("");
@@ -8830,6 +8922,16 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, o
   const [creditNote, setCreditNote] = useState("");
   const [creditStampNow, setCreditStampNow] = useState(true);
   const [creditIdempotencyKey, setCreditIdempotencyKey] = useState(() => globalThis.crypto.randomUUID());
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentForm, setPaymentForm] = useState("03");
+  const [paymentPaidOn, setPaymentPaidOn] = useState(() => todayDateInput());
+  const [paymentStampNow, setPaymentStampNow] = useState(true);
+  const [paymentIdempotencyKey, setPaymentIdempotencyKey] = useState(() => globalThis.crypto.randomUUID());
+  const [paymentCancelId, setPaymentCancelId] = useState<string | null>(null);
+  const [paymentCancelReason, setPaymentCancelReason] = useState("02");
+  const [paymentCancelReplacement, setPaymentCancelReplacement] = useState("");
+  const [paymentCancelNote, setPaymentCancelNote] = useState("");
 
   const load = async () => {
     setLoading(true);
@@ -8988,6 +9090,159 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, o
     }
   };
 
+  const openPaymentForm = () => {
+    if (!invoice) return;
+    setPaymentAmount((invoice.payment_balance_cents / 100).toFixed(2));
+    setPaymentForm("03");
+    setPaymentPaidOn(todayDateInput());
+    setPaymentStampNow(true);
+    setPaymentIdempotencyKey(globalThis.crypto.randomUUID());
+    setPaymentCancelId(null);
+    setPaymentOpen(true);
+    setError("");
+  };
+
+  const createPayment = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!invoice) return;
+    const amountCents = parseMoneyToCents(paymentAmount);
+    if (amountCents === null || amountCents <= 0) {
+      setError("Captura un importe mayor que cero para el complemento de pago.");
+      return;
+    }
+    if (amountCents > invoice.payment_balance_cents) {
+      setError(`El importe excede el saldo pendiente (${formatMoney(invoice.payment_balance_cents)}).`);
+      return;
+    }
+    if (!paymentPaidOn) {
+      setError("Captura la fecha en que se recibió el pago.");
+      return;
+    }
+    setBusy("payment");
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/billing/invoices/${encodeURIComponent(invoice.id)}/payment-complements`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount_cents: amountCents,
+          payment_form: paymentForm,
+          paid_on: paymentPaidOn,
+          idempotency_key: paymentIdempotencyKey,
+        }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudo solicitar el complemento de pago."));
+        return;
+      }
+      const body = await response.json() as { payment: BillingPaymentComplement; idempotent_replay: boolean };
+      let payment = body.payment;
+      let message = body.idempotent_replay
+        ? `El complemento ${payment.folio_label} ya existía; se muestra el comprobante original.`
+        : `Complemento ${payment.folio_label} solicitado por ${formatMoney(amountCents)}.`;
+
+      if (paymentStampNow && (payment.status === "requested" || payment.status === "failed")) {
+        const stampResponse = await fetch(`/api/admin/billing/payment-complements/${encodeURIComponent(payment.id)}/stamp`, { method: "POST" });
+        if (stampResponse.status === 401) { onUnauthorized(); return; }
+        if (stampResponse.ok) {
+          payment = await stampResponse.json() as BillingPaymentComplement;
+          message = payment.is_simulated
+            ? `Complemento ${payment.folio_label} timbrado en modo simulación.`
+            : `Complemento ${payment.folio_label} timbrado.`;
+        } else {
+          const payload = await stampResponse.json().catch(() => ({}));
+          message = `Complemento ${payment.folio_label} solicitado, pero no se pudo timbrar: ${billingErrorDetail(payload, "error del PAC.")}`;
+        }
+      }
+      setPaymentOpen(false);
+      setPaymentIdempotencyKey(globalThis.crypto.randomUUID());
+      await load();
+      onChanged(message);
+    } catch {
+      setError("No se pudo conectar con el backend. Reintenta con la misma solicitud.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const stampPayment = async (payment: BillingPaymentComplementRef) => {
+    setBusy("payment-stamp");
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/billing/payment-complements/${encodeURIComponent(payment.payment_id)}/stamp`, { method: "POST" });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudo timbrar el complemento de pago."));
+        return;
+      }
+      const updated = await response.json() as BillingPaymentComplement;
+      const message = updated.is_simulated
+        ? `Complemento ${updated.folio_label} timbrado en modo simulación.`
+        : `Complemento ${updated.folio_label} timbrado.`;
+      await load();
+      onChanged(message);
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const openPaymentCancel = (paymentId: string) => {
+    setPaymentCancelId(paymentId);
+    setPaymentCancelReason("02");
+    setPaymentCancelReplacement("");
+    setPaymentCancelNote("");
+    setPaymentOpen(false);
+    setError("");
+  };
+
+  const cancelPayment = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!paymentCancelId) return;
+    if (paymentCancelReason === "01") {
+      const uuid = paymentCancelReplacement.trim();
+      if (!uuid) {
+        setError("El motivo 01 exige el UUID del comprobante que sustituye.");
+        return;
+      }
+      if (!BILLING_UUID_PATTERN.test(uuid)) {
+        setError("El UUID del comprobante que sustituye no tiene un formato válido.");
+        return;
+      }
+    }
+    setBusy("payment-cancel");
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/billing/payment-complements/${encodeURIComponent(paymentCancelId)}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reason_code: paymentCancelReason,
+          replacement_uuid: paymentCancelReplacement.trim() || null,
+          note: paymentCancelNote.trim() || null,
+        }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudo cancelar el complemento de pago."));
+        return;
+      }
+      const updated = await response.json() as BillingPaymentComplement;
+      setPaymentCancelId(null);
+      await load();
+      onChanged(`Complemento ${updated.folio_label} cancelado; el saldo pendiente de la factura se actualizó.`);
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const sendInvoiceEmail = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!invoice) return;
@@ -9037,9 +9292,16 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, o
   const canDeliver = invoice !== null && (invoice.status === "stamped" || invoice.status === "cancelled");
   const isCreditNote = invoice?.origin_type === "credit_note";
   const isSourceInvoice = invoice?.origin_type === "sale" || invoice?.origin_type === "membership_payment";
+  const isPpdInvoice = invoice?.payment_method === "PPD";
   const stampedCreditNoteCount = invoice?.credit_notes.filter((entry) => entry.status === "stamped").length ?? 0;
-  const canIssueCreditNote = invoice !== null && canManage && invoice.status === "stamped" && isSourceInvoice && invoice.credit_balance_cents > 0;
-  const canCancelInvoice = invoice !== null && canManage && invoice.status === "stamped" && stampedCreditNoteCount === 0;
+  const stampedPaymentComplements = invoice?.payment_complements.filter((entry) => entry.status === "stamped") ?? [];
+  const latestStampedPayment = stampedPaymentComplements.reduce<BillingPaymentComplementRef | null>(
+    (latest, entry) => (latest === null || entry.partiality_number > latest.partiality_number ? entry : latest),
+    null,
+  );
+  const canIssueCreditNote = invoice !== null && canManage && invoice.status === "stamped" && isSourceInvoice && !isPpdInvoice && invoice.credit_balance_cents > 0;
+  const canAddPayment = invoice !== null && canManage && invoice.status === "stamped" && isSourceInvoice && isPpdInvoice && invoice.payment_balance_cents > 0;
+  const canCancelInvoice = invoice !== null && canManage && invoice.status === "stamped" && stampedCreditNoteCount === 0 && stampedPaymentComplements.length === 0;
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -9056,6 +9318,7 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, o
               <span className={`status-badge ${billingStatusBadges[status]}`}><i />{billingStatusLabels[status]}</span>
               {invoice.origin_type === "global" && invoice.global_year && invoice.global_month && <span className="status-badge status-neutral"><i />{billingGlobalPeriodLabel(invoice.global_year, invoice.global_month)}</span>}
               {isCreditNote && <span className="status-badge status-neutral"><i />CFDI de egreso</span>}
+              {isPpdInvoice && invoice.status === "stamped" && <span className={`status-badge ${billingPaymentBalanceBadges[invoice.payment_status]}`}><i />{billingPaymentBalanceLabels[invoice.payment_status]}</span>}
               {invoice.is_simulated && <span className="status-badge status-warn"><i />Simulada · sin validez fiscal</span>}
               <span className="billing-detail-date">Creada {formatMoment(invoice.created_at)}</span>
             </div>
@@ -9068,7 +9331,7 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, o
               <div><span>SUBTOTAL</span><strong>{formatMoney(invoice.subtotal_cents)}</strong></div>
               <div><span>IVA ({invoice.tax_rate_percent}%)</span><strong>{formatMoney(invoice.tax_cents)}</strong></div>
               <div><span>FORMA DE PAGO</span><strong>{invoice.payment_form}</strong><small>{billingPaymentFormLabel(invoice.payment_form)}</small></div>
-              <div><span>MÉTODO</span><strong>{invoice.payment_method}</strong><small>Pago en una sola exhibición</small></div>
+              <div><span>MÉTODO</span><strong>{invoice.payment_method}</strong><small>{billingInvoicePaymentMethodLabel(invoice.payment_method)}</small></div>
               <div><span>MONEDA</span><strong>{invoice.currency}</strong><small>Importes con IVA incluido</small></div>
             </div>
 
@@ -9107,7 +9370,7 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, o
               </div>
             )}
 
-            {isSourceInvoice && invoice.status === "stamped" && (
+            {isSourceInvoice && invoice.status === "stamped" && !isPpdInvoice && (
               <div className="detail-section">
                 <div className="modal-section-title"><span>NOTAS DE CRÉDITO</span><span>{invoice.credit_notes.length}</span></div>
                 <div className="billing-totals">
@@ -9152,6 +9415,88 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, o
                     <div className="modal-actions">
                       <button type="button" className="button button-secondary" onClick={() => setCreditOpen(false)}>Volver</button>
                       <button type="submit" className="button button-primary" disabled={busy === "credit"}>{busy === "credit" ? "Procesando…" : "Emitir nota de crédito"}</button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            )}
+
+            {isSourceInvoice && isPpdInvoice && (invoice.status === "stamped" || invoice.status === "cancelled" || invoice.payment_complements.length > 0) && (
+              <div className="detail-section">
+                <div className="modal-section-title"><span>COMPLEMENTOS DE PAGO PPD</span><span>{invoice.payment_complements.length}</span></div>
+                <div className="billing-totals">
+                  <div><span>IMPORTE FACTURA</span><strong>{formatMoney(invoice.total_cents)}</strong></div>
+                  <div><span>PAGADO</span><strong>{formatMoney(invoice.paid_cents)}</strong></div>
+                  <div><span>SALDO PENDIENTE</span><strong>{formatMoney(invoice.payment_balance_cents)}</strong><small>IVA incluido · {billingPaymentBalanceLabels[invoice.payment_status]}</small></div>
+                </div>
+                <p className="billing-empty">Cada parcialidad se emite como un CFDI de pago (tipo P) relacionado con {invoice.folio_label}. El saldo solo disminuye cuando el complemento se timbra.</p>
+                <div className="table-scroll">
+                  <table className="data-table compact-table">
+                    <thead><tr><th>FOLIO</th><th>PARC.</th><th>FECHA PAGO</th><th>FORMA</th><th>IMPORTE</th><th>SALDO</th><th>ESTADO</th><th /></tr></thead>
+                    <tbody>
+                      {invoice.payment_complements.length === 0 ? <tr><td colSpan={8} className="empty-row">Sin complementos de pago registrados.</td></tr>
+                        : invoice.payment_complements.map((entry) => {
+                          const paymentStatus = billingInvoiceStatus(entry.status);
+                          const downloadable = entry.status === "stamped" || entry.status === "cancelled";
+                          const cancellable = canManage && entry.status === "stamped" && latestStampedPayment?.payment_id === entry.payment_id;
+                          return (
+                            <tr key={entry.payment_id}>
+                              <td><strong>{entry.folio_label}</strong>{entry.is_simulated && <small className="billing-inline-note">Simulado</small>}</td>
+                              <td>{entry.partiality_number}</td>
+                              <td>{formatDateOnly(entry.paid_on)}</td>
+                              <td>{billingPaymentFormLabel(entry.payment_form)}</td>
+                              <td>{formatMoney(entry.amount_cents)}</td>
+                              <td>{formatMoney(entry.outstanding_balance_cents)}</td>
+                              <td><span className={`status-badge ${billingStatusBadges[paymentStatus]}`}><i />{billingPaymentStatusLabels[paymentStatus]}</span></td>
+                              <td>
+                                <div className="pos-row-actions">
+                                  {canManage && (entry.status === "requested" || entry.status === "failed") && (
+                                    <button type="button" className="button button-primary button-small" disabled={busy !== null} onClick={() => void stampPayment(entry)}>{busy === "payment-stamp" ? "Timbrando…" : "Timbrar"}</button>
+                                  )}
+                                  {downloadable && <a className="button button-secondary button-small" href={`/api/admin/billing/payment-complements/${encodeURIComponent(entry.payment_id)}/xml`} download>XML</a>}
+                                  {downloadable && <a className="button button-secondary button-small" href={`/api/admin/billing/payment-complements/${encodeURIComponent(entry.payment_id)}/pdf`} download>PDF</a>}
+                                  {cancellable && paymentCancelId !== entry.payment_id && <button type="button" className="button button-secondary button-small" disabled={busy !== null} onClick={() => openPaymentCancel(entry.payment_id)}>Cancelar</button>}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+                {stampedPaymentComplements.length > 0 && <p className="billing-empty">Para cancelar la factura primero cancela su último complemento timbrado ({latestStampedPayment?.folio_label}).</p>}
+                <p className="billing-empty">Las facturas PPD no admiten notas de crédito en esta versión; cualquier ajuste de importe se registra con un complemento de pago.</p>
+                {canAddPayment && !paymentOpen && (
+                  <div className="modal-actions"><button type="button" className="button button-secondary" onClick={openPaymentForm} disabled={busy !== null}>Registrar pago</button></div>
+                )}
+                {paymentOpen && invoice.status === "stamped" && (
+                  <form className="billing-credit-form" onSubmit={createPayment}>
+                    <div className="modal-section-title"><span>NUEVO COMPLEMENTO DE PAGO</span><span>Saldo {formatMoney(invoice.payment_balance_cents)}</span></div>
+                    <p className="billing-empty">Registra una parcialidad o el pago total del saldo. El importe se descuenta hasta que el complemento se timbra.</p>
+                    <div className="form-row">
+                      <label className="form-field"><span>Importe pagado (IVA incluido) *</span><input value={paymentAmount} onChange={(event) => { setPaymentAmount(event.target.value); setError(""); }} inputMode="decimal" placeholder="0.00" /></label>
+                      <label className="form-field"><span>Fecha de pago *</span><input type="date" value={paymentPaidOn} max={todayDateInput()} min={toDateInputValue(invoice.issued_at ?? invoice.created_at)} onChange={(event) => { setPaymentPaidOn(event.target.value); setError(""); }} /></label>
+                    </div>
+                    <label className="form-field"><span>Forma de pago SAT *</span><select value={paymentForm} onChange={(event) => { setPaymentForm(event.target.value); setError(""); }}>{BILLING_PAYMENT_COMPLEMENT_FORMS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                    <label className="form-check"><input type="checkbox" checked={paymentStampNow} onChange={(event) => setPaymentStampNow(event.target.checked)} /><span>Solicitar y timbrar ahora. En vista previa el complemento queda marcado como simulado y sin validez fiscal.</span></label>
+                    <div className="modal-actions">
+                      <button type="button" className="button button-secondary" onClick={() => setPaymentOpen(false)}>Volver</button>
+                      <button type="submit" className="button button-primary" disabled={busy === "payment"}>{busy === "payment" ? "Procesando…" : "Registrar complemento"}</button>
+                    </div>
+                  </form>
+                )}
+                {paymentCancelId && (
+                  <form className="billing-cancel-form" onSubmit={cancelPayment}>
+                    <div className="modal-section-title"><span>CANCELAR COMPLEMENTO DE PAGO</span></div>
+                    <p className="billing-empty">La cancelación conserva el folio y libera el importe en el saldo pendiente de la factura.</p>
+                    <div className="form-row">
+                      <label className="form-field"><span>Motivo SAT *</span><select value={paymentCancelReason} onChange={(event) => { setPaymentCancelReason(event.target.value); setError(""); }}>{BILLING_CANCELLATION_REASONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                      {paymentCancelReason === "01" && <label className="form-field"><span>UUID que sustituye *</span><input value={paymentCancelReplacement} onChange={(event) => setPaymentCancelReplacement(event.target.value)} maxLength={36} placeholder="00000000-0000-0000-0000-000000000000" /></label>}
+                    </div>
+                    <label className="form-field"><span>Nota</span><input value={paymentCancelNote} onChange={(event) => setPaymentCancelNote(event.target.value)} maxLength={300} placeholder="Detalle opcional de la cancelación" /></label>
+                    <div className="modal-actions">
+                      <button type="button" className="button button-secondary" onClick={() => setPaymentCancelId(null)}>Volver</button>
+                      <button type="submit" className="button button-danger" disabled={busy === "payment-cancel"}>{busy === "payment-cancel" ? "Cancelando…" : "Confirmar cancelación"}</button>
                     </div>
                   </form>
                 )}

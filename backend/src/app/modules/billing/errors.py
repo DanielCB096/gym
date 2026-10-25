@@ -60,6 +60,18 @@ class CreditNoteBalanceExceeded(FiscalDataInvalid):
     """The requested amount exceeds the invoice's remaining credit balance."""
 
 
+class PaymentComplementNotFound(BillingError):
+    pass
+
+
+class PaymentComplementNotAllowed(InvoiceStateError):
+    """The invoice cannot receive the requested payment complement."""
+
+
+class PaymentComplementBalanceExceeded(FiscalDataInvalid):
+    """The amount exceeds the invoice's outstanding payment balance."""
+
+
 class InvoiceNumberingError(BillingError):
     pass
 
@@ -138,4 +150,7 @@ __all__ = [
     "OriginNotInvoiceable",
     "PacRejected",
     "PacUnavailable",
+    "PaymentComplementBalanceExceeded",
+    "PaymentComplementNotAllowed",
+    "PaymentComplementNotFound",
 ]

@@ -20,10 +20,11 @@ from typing import Sequence
 from xml.etree import ElementTree as ET
 
 from app.modules.billing.errors import FiscalDataInvalid
-from app.modules.billing.models import Invoice, InvoiceItem
+from app.modules.billing.models import Invoice, InvoiceItem, InvoicePayment
 from app.timezone import to_club_timezone
 
 CFDI_NS = "http://www.sat.gob.mx/cfd/4"
+PAGO20_NS = "http://www.sat.gob.mx/Pagos20"
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 DEFAULT_CURRENCY = "MXN"
 DEFAULT_TAX_RATE_PERCENT = 16
@@ -39,6 +40,13 @@ GLOBAL_PERIODICITY_MONTHLY = "03"
 # SAT relationship used by a credit note (CFDI de egreso) to point at the
 # comprobante it adjusts: 01 = "Nota de crédito de los documentos relacionados".
 CREDIT_NOTE_RELATION_CODE = "01"
+# A payment complement (CFDI tipo P) points at the PPD invoice it pays with
+# TipoRelacion 07 = "CFDI por aplicación de anticipo o pago en parcialidades".
+PAYMENT_COMPLEMENT_RELATION_CODE = "07"
+PAYMENT_COMPLEMENT_USO_CFDI = "CP01"
+PAYMENT_COMPLEMENT_PRODUCT_CODE = "84111506"
+PAYMENT_COMPLEMENT_UNIT_CODE = "ACT"
+PAYMENT_COMPLEMENT_DESCRIPTION = "Pago"
 
 # SAT catalogs. Only the codes the club actually uses are listed; an unknown
 # code is rejected instead of being sent to the PAC and failing there.
@@ -368,9 +376,212 @@ def build_cfdi_xml(
     )
 
 
+def _pago20_totals(payment: InvoicePayment, base_cents: int, tax_cents: int) -> dict[str, str]:
+    totals = {"MontoTotalPagos": _money(payment.amount_cents)}
+    if tax_cents <= 0:
+        return totals
+    suffix = "8" if payment.tax_rate_percent == 8 else "16"
+    totals[f"TotalTrasladosBaseIVA{suffix}"] = _money(base_cents)
+    totals[f"TotalTrasladosImpuestoIVA{suffix}"] = _money(tax_cents)
+    return totals
+
+
+def build_payment_complement_xml(
+    *,
+    payment: InvoicePayment,
+    invoice: Invoice,
+    issuer: IssuerConfig,
+    related_uuid: str | None = None,
+    simulated: bool = False,
+) -> str:
+    """Build the CFDI 4.0 payment complement (tipo P, Pagos 2.0).
+
+    The complement pays one partiality of a PPD invoice: it has no concepts of
+    its own (the fixed "Pago" concept has zero value), carries the related
+    invoice UUID and splits the paid amount into VAT base and tax. Without a
+    UUID for the original (simulated stamping) the relation cannot be written,
+    so the XML keeps an explicit simulation comment instead of inventing one.
+    """
+
+    ET.register_namespace("cfdi", CFDI_NS)
+    ET.register_namespace("pago20", PAGO20_NS)
+    ET.register_namespace("xsi", XSI_NS)
+    base_cents, tax_cents = split_tax_inclusive(
+        payment.amount_cents, payment.tax_rate_percent
+    )
+    root = ET.Element(
+        f"{{{CFDI_NS}}}Comprobante",
+        {
+            "Version": "4.0",
+            "Serie": payment.series,
+            "Folio": str(payment.folio),
+            "Fecha": _cfdi_datetime(payment.issued_at or payment.created_at),
+            "NoCertificado": issuer.certificate_number,
+            "SubTotal": "0.00",
+            "Moneda": "XXX",
+            "Total": "0.00",
+            "TipoDeComprobante": "P",
+            "Exportacion": "01",
+            "LugarExpedicion": issuer.postal_code,
+            f"{{{XSI_NS}}}schemaLocation": (
+                f"{CFDI_NS} http://www.sat.gob.mx/sitio_internet/cfd/4/cfdv40.xsd "
+                f"{PAGO20_NS} http://www.sat.gob.mx/sitio_internet/cfd/Pagos/Pagos20.xsd"
+            ),
+        },
+    )
+
+    if related_uuid:
+        related = ET.SubElement(
+            root,
+            f"{{{CFDI_NS}}}CfdiRelacionados",
+            {"TipoRelacion": PAYMENT_COMPLEMENT_RELATION_CODE},
+        )
+        ET.SubElement(
+            related,
+            f"{{{CFDI_NS}}}CfdiRelacionado",
+            {"UUID": related_uuid},
+        )
+    else:
+        root.append(
+            ET.Comment(
+                " SIMULACION: la factura pagada no tiene UUID del SAT; "
+                "el vinculo se conserva en el sistema. "
+            )
+        )
+
+    ET.SubElement(
+        root,
+        f"{{{CFDI_NS}}}Emisor",
+        {
+            "Rfc": issuer.rfc,
+            "Nombre": issuer.legal_name,
+            "RegimenFiscal": issuer.tax_regime,
+        },
+    )
+    ET.SubElement(
+        root,
+        f"{{{CFDI_NS}}}Receptor",
+        {
+            "Rfc": invoice.receptor_rfc,
+            "Nombre": invoice.receptor_name,
+            "DomicilioFiscalReceptor": invoice.receptor_postal_code,
+            "RegimenFiscalReceptor": invoice.receptor_tax_regime,
+            "UsoCFDI": PAYMENT_COMPLEMENT_USO_CFDI,
+        },
+    )
+
+    concepts = ET.SubElement(root, f"{{{CFDI_NS}}}Conceptos")
+    ET.SubElement(
+        concepts,
+        f"{{{CFDI_NS}}}Concepto",
+        {
+            "ClaveProdServ": PAYMENT_COMPLEMENT_PRODUCT_CODE,
+            "Cantidad": "1",
+            "ClaveUnidad": PAYMENT_COMPLEMENT_UNIT_CODE,
+            "Descripcion": PAYMENT_COMPLEMENT_DESCRIPTION,
+            "ValorUnitario": "0.00",
+            "Importe": "0.00",
+            "ObjetoImp": "01",
+        },
+    )
+
+    complement = ET.SubElement(root, f"{{{CFDI_NS}}}Complemento")
+    pagos = ET.SubElement(
+        complement,
+        f"{{{PAGO20_NS}}}Pagos",
+        {"Version": "2.0"},
+    )
+    ET.SubElement(
+        pagos,
+        f"{{{PAGO20_NS}}}Totales",
+        _pago20_totals(payment, base_cents, tax_cents),
+    )
+    pago = ET.SubElement(
+        pagos,
+        f"{{{PAGO20_NS}}}Pago",
+        {
+            "FechaPago": f"{payment.paid_on.isoformat()}T12:00:00",
+            "FormaDePagoP": payment.payment_form,
+            "MonedaP": payment.currency,
+            "TipoCambioP": "1",
+            "Monto": _money(payment.amount_cents),
+        },
+    )
+    document_attributes = {
+        "Serie": invoice.series,
+        "Folio": str(invoice.folio),
+        "MonedaDR": invoice.currency,
+        "EquivalenciaDR": "1",
+        "NumParcialidad": str(payment.partiality_number),
+        "ImpSaldoAnt": _money(payment.prior_balance_cents),
+        "ImpPagado": _money(payment.amount_cents),
+        "ImpSaldoInsoluto": _money(payment.outstanding_balance_cents),
+        "ObjetoImpDR": "02" if tax_cents > 0 else "01",
+    }
+    if related_uuid:
+        document_attributes = {"IdDocumento": related_uuid, **document_attributes}
+    document = ET.SubElement(
+        pago,
+        f"{{{PAGO20_NS}}}DoctoRelacionado",
+        document_attributes,
+    )
+    if not related_uuid:
+        document.append(
+            ET.Comment(
+                " SIMULACION: IdDocumento se omite porque la factura original "
+                "no tiene UUID del SAT. "
+            )
+        )
+    if tax_cents > 0:
+        taxes_dr = ET.SubElement(document, f"{{{PAGO20_NS}}}ImpuestosDR")
+        transfers_dr = ET.SubElement(taxes_dr, f"{{{PAGO20_NS}}}TrasladosDR")
+        ET.SubElement(
+            transfers_dr,
+            f"{{{PAGO20_NS}}}TrasladoDR",
+            {
+                "BaseDR": _money(base_cents),
+                "ImpuestoDR": "002",
+                "TipoFactorDR": "Tasa",
+                "TasaOCuotaDR": _tax_rate_fraction(payment.tax_rate_percent),
+                "ImporteDR": _money(tax_cents),
+            },
+        )
+        taxes_p = ET.SubElement(pago, f"{{{PAGO20_NS}}}ImpuestosP")
+        transfers_p = ET.SubElement(taxes_p, f"{{{PAGO20_NS}}}TrasladosP")
+        ET.SubElement(
+            transfers_p,
+            f"{{{PAGO20_NS}}}TrasladoP",
+            {
+                "BaseP": _money(base_cents),
+                "ImpuestoP": "002",
+                "TipoFactorP": "Tasa",
+                "TasaOCuotaP": _tax_rate_fraction(payment.tax_rate_percent),
+                "ImporteP": _money(tax_cents),
+            },
+        )
+
+    if simulated:
+        root.append(
+            ET.Comment(
+                " SIMULACION: complemento de pago sin timbre del SAT, sin validez "
+                "fiscal. Generado en modo vista previa. "
+            )
+        )
+
+    ET.indent(root, space="  ")
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(
+        root, encoding="unicode", xml_declaration=False
+    )
+
+
 def invoice_xml_filename(invoice: Invoice) -> str:
     suffix = "-simulada" if invoice.is_simulated else ""
     return f"CFDI-{invoice.series}-{invoice.folio:06d}{suffix}.xml"
+
+
+def payment_complement_xml_filename(payment: InvoicePayment) -> str:
+    suffix = "-simulada" if payment.is_simulated else ""
+    return f"PAGO-{payment.series}-{payment.folio:06d}{suffix}.xml"
 
 
 __all__ = [
@@ -387,6 +598,12 @@ __all__ = [
     "FiscalData",
     "GLOBAL_PERIODICITY_MONTHLY",
     "IssuerConfig",
+    "PAGO20_NS",
+    "PAYMENT_COMPLEMENT_DESCRIPTION",
+    "PAYMENT_COMPLEMENT_PRODUCT_CODE",
+    "PAYMENT_COMPLEMENT_RELATION_CODE",
+    "PAYMENT_COMPLEMENT_UNIT_CODE",
+    "PAYMENT_COMPLEMENT_USO_CFDI",
     "PAYMENT_FORMS",
     "PUBLIC_GENERAL_CFDI_USE",
     "PUBLIC_GENERAL_NAME",
@@ -394,8 +611,10 @@ __all__ = [
     "PUBLIC_GENERAL_TAX_REGIME",
     "TAX_REGIMES",
     "build_cfdi_xml",
+    "build_payment_complement_xml",
     "invoice_xml_filename",
     "normalize_fiscal_data",
+    "payment_complement_xml_filename",
     "payment_form_for_method",
     "split_tax_inclusive",
 ]

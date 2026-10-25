@@ -357,21 +357,28 @@ from app.modules.billing import (
     OriginNotInvoiceable,
     PacRejected,
     PacUnavailable,
+    PaymentComplementNotFound,
     cancel_invoice,
+    cancel_payment_complement,
     create_credit_note,
     create_global_invoice,
     create_invoice,
+    create_payment_complement,
     get_fiscal_profile,
     get_invoice,
+    get_payment_complement,
     invoice_pdf,
     invoice_summary,
     invoice_xml,
     list_global_invoice_eligibility,
     list_invoices,
     list_origin_options,
+    payment_complement_pdf,
+    payment_complement_xml,
     save_fiscal_profile,
     send_invoice_email,
     stamp_invoice,
+    stamp_payment_complement,
 )
 from app.modules.finance import (
     BankAccountNotFound,
@@ -6617,6 +6624,7 @@ class InvoiceCreateRequest(BaseModel):
     origin_id: UUID
     idempotency_key: str = Field(min_length=1, max_length=128)
     payment_form: str | None = Field(default=None, min_length=2, max_length=2)
+    payment_method: Literal["PUE", "PPD"] | None = None
     receptor: FiscalDataRequest
 
 
@@ -6643,8 +6651,29 @@ class CreditNoteCreateRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 
+class PaymentComplementCreateRequest(BaseModel):
+    amount_cents: int = Field(gt=0)
+    payment_form: str = Field(min_length=2, max_length=2)
+    paid_on: date | None = None
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class PaymentComplementCancelRequest(BaseModel):
+    reason_code: Literal["01", "02", "03", "04"]
+    replacement_uuid: str | None = Field(default=None, min_length=36, max_length=36)
+    note: str | None = Field(default=None, max_length=300)
+
+
 def _cfdi_http_status(error: CfdiError) -> int:
-    if isinstance(error, (InvoiceNotFound, OriginNotFound, BillingMemberNotFound)):
+    if isinstance(
+        error,
+        (
+            InvoiceNotFound,
+            OriginNotFound,
+            BillingMemberNotFound,
+            PaymentComplementNotFound,
+        ),
+    ):
         return status.HTTP_404_NOT_FOUND
     if isinstance(
         error,
@@ -6783,6 +6812,7 @@ def request_invoice(
             email=str(receptor.email) if receptor.email is not None else None,
             idempotency_key=payload.idempotency_key,
             payment_form=payload.payment_form,
+            payment_method=payload.payment_method,
             actor_id=principal.user_id,
         )
     except CfdiError as error:
@@ -6922,6 +6952,116 @@ def send_invoice(
         )
     except CfdiError as error:
         _raise_cfdi_error(error)
+
+
+@app.post(
+    "/admin/billing/invoices/{invoice_id}/payment-complements",
+    status_code=status.HTTP_201_CREATED,
+    tags=["billing"],
+)
+def request_payment_complement(
+    invoice_id: UUID,
+    payload: PaymentComplementCreateRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.manage"))],
+) -> dict[str, object]:
+    try:
+        payment, created = create_payment_complement(
+            session,
+            invoice_id=invoice_id,
+            amount_cents=payload.amount_cents,
+            payment_form=payload.payment_form,
+            paid_on=payload.paid_on,
+            idempotency_key=payload.idempotency_key,
+            actor_id=principal.user_id,
+        )
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+    return {"payment": payment, "idempotent_replay": not created}
+
+
+@app.get("/admin/billing/payment-complements/{payment_id}", tags=["billing"])
+def get_payment_complement_detail(
+    payment_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.read"))],
+):
+    try:
+        return get_payment_complement(session, payment_id)
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+
+
+@app.post("/admin/billing/payment-complements/{payment_id}/stamp", tags=["billing"])
+def stamp_payment_complement_detail(
+    payment_id: UUID,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.manage"))],
+):
+    try:
+        return stamp_payment_complement(session, payment_id, actor_id=principal.user_id)
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+
+
+@app.post("/admin/billing/payment-complements/{payment_id}/cancel", tags=["billing"])
+def cancel_payment_complement_detail(
+    payment_id: UUID,
+    payload: PaymentComplementCancelRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.manage"))],
+):
+    try:
+        return cancel_payment_complement(
+            session,
+            payment_id,
+            reason_code=payload.reason_code,
+            replacement_uuid=payload.replacement_uuid,
+            note=payload.note,
+            actor_id=principal.user_id,
+        )
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+
+
+@app.get("/admin/billing/payment-complements/{payment_id}/xml", tags=["billing"])
+def download_payment_complement_xml(
+    payment_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.read"))],
+) -> Response:
+    try:
+        filename, content = payment_complement_xml(session, payment_id)
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+    return Response(
+        content=content,
+        media_type="application/xml; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get("/admin/billing/payment-complements/{payment_id}/pdf", tags=["billing"])
+def download_payment_complement_pdf(
+    payment_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.read"))],
+) -> Response:
+    try:
+        filename, content = payment_complement_pdf(session, payment_id)
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.get("/admin/billing/origins", tags=["billing"])

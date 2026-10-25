@@ -6,7 +6,7 @@ totals already stored in the invoice, and marks simulated or cancelled
 comprobantes so they are never mistaken for a valid stamp.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 import io
 import os
@@ -25,8 +25,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from app.modules.billing.cfdi import IssuerConfig
-from app.modules.billing.models import Invoice, InvoiceItem
+from app.modules.billing.cfdi import IssuerConfig, split_tax_inclusive
+from app.modules.billing.models import Invoice, InvoiceItem, InvoicePayment
 from app.timezone import to_club_timezone
 
 STATUS_LABELS = {
@@ -34,6 +34,12 @@ STATUS_LABELS = {
     "failed": "Timbrado fallido",
     "stamped": "Timbrada",
     "cancelled": "Cancelada",
+}
+PAYMENT_STATUS_LABELS = {
+    "requested": "Solicitado",
+    "failed": "Timbrado fallido",
+    "stamped": "Timbrado",
+    "cancelled": "Cancelado",
 }
 ORIGIN_LABELS = {
     "sale": "Venta",
@@ -134,6 +140,15 @@ def _local_datetime(moment: datetime | None) -> str:
 def invoice_pdf_filename(invoice: Invoice) -> str:
     suffix = "-simulada" if invoice.is_simulated else ""
     return f"CFDI-{invoice.series}-{invoice.folio:06d}{suffix}.pdf"
+
+
+def payment_complement_pdf_filename(payment: InvoicePayment) -> str:
+    suffix = "-simulada" if payment.is_simulated else ""
+    return f"PAGO-{payment.series}-{payment.folio:06d}{suffix}.pdf"
+
+
+def _local_date(day: date | None) -> str:
+    return day.strftime("%d/%m/%Y") if day is not None else "—"
 
 
 def build_invoice_pdf(
@@ -663,7 +678,433 @@ def build_invoice_pdf(
     return buffer.getvalue()
 
 
+def build_payment_complement_pdf(
+    *,
+    payment: InvoicePayment,
+    invoice: Invoice,
+    issuer: IssuerConfig,
+) -> bytes:
+    """Render a stamped payment complement (CFDI tipo P) as a PDF."""
+
+    buffer = io.BytesIO()
+    gym_name = (
+        os.getenv("GYM_NAME", "").strip()
+        or issuer.legal_name
+        or DEFAULT_GYM_NAME
+    )
+    folio_label = f"{payment.series}-{payment.folio:06d}"
+    invoice_folio_label = f"{invoice.series}-{invoice.folio:06d}"
+    base_cents, tax_cents = split_tax_inclusive(
+        payment.amount_cents, payment.tax_rate_percent
+    )
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=17 * mm,
+        bottomMargin=19 * mm,
+        title=f"Complemento de pago {folio_label} - {invoice.receptor_name}",
+        author=gym_name,
+        subject="Representación impresa de complemento de pago (CFDI tipo P)",
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "PaymentTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=17,
+        leading=20,
+        textColor=INK,
+        alignment=0,
+        spaceAfter=2,
+    )
+    subtitle_style = ParagraphStyle(
+        "PaymentSubtitle",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8.5,
+        leading=11,
+        textColor=MUTED,
+    )
+    section_style = ParagraphStyle(
+        "PaymentSection",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=8,
+        leading=10,
+        textColor=ACCENT,
+        spaceBefore=8,
+        spaceAfter=4,
+    )
+    small_style = ParagraphStyle(
+        "PaymentSmall",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7.5,
+        leading=9.5,
+        textColor=colors.HexColor("#26332c"),
+    )
+    small_right_style = ParagraphStyle(
+        "PaymentSmallRight",
+        parent=small_style,
+        alignment=2,
+    )
+    header_style = ParagraphStyle(
+        "PaymentHeader",
+        parent=small_style,
+        textColor=colors.white,
+    )
+    header_right_style = ParagraphStyle(
+        "PaymentHeaderRight",
+        parent=header_style,
+        alignment=2,
+    )
+    label_style = ParagraphStyle(
+        "PaymentLabel",
+        parent=small_style,
+        textColor=MUTED,
+        fontSize=6.8,
+        leading=8.5,
+    )
+    value_style = ParagraphStyle(
+        "PaymentValue",
+        parent=small_style,
+        fontSize=8,
+        leading=10,
+    )
+    note_style = ParagraphStyle(
+        "PaymentNote",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=8,
+        leading=11,
+        textColor=colors.HexColor("#8a3b12"),
+    )
+    final_note_style = ParagraphStyle(
+        "PaymentFinalNote",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7,
+        leading=9.5,
+        textColor=MUTED,
+        alignment=1,
+    )
+
+    status_label = PAYMENT_STATUS_LABELS.get(payment.status, payment.status)
+    payment_form_label = PAYMENT_FORM_LABELS.get(
+        payment.payment_form, "Forma de pago"
+    )
+    cancellation_reason = CANCELLATION_REASON_LABELS.get(
+        payment.cancellation_reason_code or "",
+        payment.cancellation_reason_code or "—",
+    )
+
+    def facts_table() -> Table:
+        rows = [
+            ("FOLIO", folio_label, "ESTADO", status_label),
+            (
+                "FECHA DE PAGO",
+                _local_date(payment.paid_on),
+                "MONTO PAGADO",
+                _money(payment.amount_cents),
+            ),
+            (
+                "FORMA DE PAGO",
+                f"{payment.payment_form} · {payment_form_label}",
+                "PARCIALIDAD",
+                f"{payment.partiality_number} de la factura {invoice_folio_label}",
+            ),
+            ("MONEDA", payment.currency, "TIPO DE CAMBIO", "1.00"),
+            (
+                "REFERENCIA PAC",
+                payment.provider_reference or "—",
+                "PAC",
+                payment.provider or "—",
+            ),
+        ]
+        data = [
+            [
+                Paragraph(label_a, label_style),
+                Paragraph(escape(value_a), value_style),
+                Paragraph(label_b, label_style),
+                Paragraph(escape(value_b), value_style),
+            ]
+            for label_a, value_a, label_b, value_b in rows
+        ]
+        table = Table(data, colWidths=[29 * mm, 62 * mm, 35 * mm, 54 * mm])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ]
+            )
+        )
+        return table
+
+    def related_table() -> Table:
+        rows = [
+            (
+                "FACTURA RELACIONADA",
+                invoice_folio_label,
+                "UUID FACTURA",
+                invoice.uuid or "Sin UUID (simulación)",
+            ),
+            (
+                "RFC RECEPTOR",
+                invoice.receptor_rfc,
+                "RAZÓN SOCIAL",
+                invoice.receptor_name,
+            ),
+            (
+                "FECHA DE LA FACTURA",
+                _local_datetime(invoice.issued_at),
+                "TOTAL DE LA FACTURA",
+                _money(invoice.total_cents),
+            ),
+        ]
+        data = [
+            [
+                Paragraph(label_a, label_style),
+                Paragraph(escape(value_a), value_style),
+                Paragraph(label_b, label_style),
+                Paragraph(escape(value_b), value_style),
+            ]
+            for label_a, value_a, label_b, value_b in rows
+        ]
+        table = Table(data, colWidths=[32 * mm, 60 * mm, 32 * mm, 56 * mm])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ]
+            )
+        )
+        return table
+
+    def application_table() -> Table:
+        header = [
+            Paragraph("<b>Documento</b>", header_style),
+            Paragraph("<b>UUID relacionado</b>", header_style),
+            Paragraph("<b>Parc.</b>", header_style),
+            Paragraph("<b>Saldo anterior</b>", header_right_style),
+            Paragraph("<b>Importe pagado</b>", header_right_style),
+            Paragraph("<b>Saldo insoluto</b>", header_right_style),
+        ]
+        row = [
+            Paragraph(f"<b>{invoice_folio_label}</b>", small_style),
+            Paragraph(
+                escape(invoice.uuid or "Sin UUID (simulación)"),
+                small_style,
+            ),
+            Paragraph(str(payment.partiality_number), small_style),
+            Paragraph(_money(payment.prior_balance_cents), small_right_style),
+            Paragraph(_money(payment.amount_cents), small_right_style),
+            Paragraph(_money(payment.outstanding_balance_cents), small_right_style),
+        ]
+        table = Table(
+            [header, row],
+            colWidths=[28 * mm, 56 * mm, 14 * mm, 28 * mm, 28 * mm, 26 * mm],
+        )
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), INK),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("GRID", (0, 0), (-1, -1), 0.25, LINE),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white]),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        return table
+
+    def totals_table() -> Table:
+        data = [
+            [
+                Paragraph("Subtotal", small_style),
+                Paragraph(_money(base_cents), small_right_style),
+            ],
+            [
+                Paragraph(f"IVA ({payment.tax_rate_percent}%)", small_style),
+                Paragraph(_money(tax_cents), small_right_style),
+            ],
+            [
+                Paragraph("<b>Total pagado</b>", value_style),
+                Paragraph(f"<b>{_money(payment.amount_cents)}</b>", value_style),
+            ],
+        ]
+        table = Table(data, colWidths=[40 * mm, 32 * mm])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
+                    ("LINEABOVE", (0, 0), (-1, 0), 0.25, LINE),
+                    ("LINEBELOW", (0, 1), (-1, 1), 0.25, LINE),
+                    ("BACKGROUND", (0, 2), (-1, 2), SOFT),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+        return table
+
+    def note_box(text: str) -> Table:
+        table = Table(
+            [[Paragraph(escape(text), note_style)]],
+            colWidths=[180 * mm],
+        )
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff4e5")),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e0a35b")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+        return table
+
+    def cancellation_section() -> list[object]:
+        if payment.status != "cancelled":
+            return []
+        rows = [
+            ("MOTIVO SAT", f"{payment.cancellation_reason_code or '—'} · {cancellation_reason}"),
+            ("FECHA DE CANCELACIÓN", _local_datetime(payment.cancelled_at)),
+            ("NOTA", payment.cancellation_note or "—"),
+        ]
+        data = [
+            [Paragraph(label, label_style), Paragraph(escape(value), value_style)]
+            for label, value in rows
+        ]
+        table = Table(data, colWidths=[45 * mm, 135 * mm])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#fdeceb")),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#efd4d1")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ]
+            )
+        )
+        return [Paragraph("Cancelación", section_style), table]
+
+    watermark = "CANCELADO" if payment.status == "cancelled" else (
+        "SIMULADA" if payment.is_simulated else None
+    )
+
+    def draw_page(canvas, doc) -> None:
+        canvas.saveState()
+        if watermark is not None:
+            canvas.saveState()
+            canvas.setFillColor(colors.HexColor("#b3261e"))
+            canvas.setFillAlpha(0.09)
+            canvas.setFont("Helvetica-Bold", 64)
+            canvas.translate(letter[0] / 2, letter[1] / 2)
+            canvas.rotate(38)
+            canvas.drawCentredString(0, 0, watermark)
+            canvas.restoreState()
+        canvas.setStrokeColor(LINE)
+        canvas.line(18 * mm, 14 * mm, letter[0] - 18 * mm, 14 * mm)
+        canvas.setFont("Helvetica", 7)
+        canvas.setFillColor(MUTED)
+        canvas.drawString(
+            18 * mm,
+            9.5 * mm,
+            f"{gym_name} · RFC {issuer.rfc} · Complemento de pago {folio_label}",
+        )
+        canvas.drawRightString(letter[0] - 18 * mm, 9.5 * mm, f"Página {doc.page}")
+        canvas.restoreState()
+
+    story: list[object] = [
+        Paragraph(escape(gym_name), subtitle_style),
+        Paragraph("Complemento de pago", title_style),
+        Paragraph(
+            f"Representación impresa de CFDI de pago · Emisor "
+            f"{escape(issuer.legal_name)} · RFC {issuer.rfc} · "
+            f"Régimen {issuer.tax_regime} · CP {issuer.postal_code}",
+            subtitle_style,
+        ),
+        Spacer(1, 8),
+    ]
+    if payment.is_simulated:
+        story.extend(
+            [
+                note_box(
+                    "SIMULACIÓN: complemento generado con el PAC simulado de la vista "
+                    "previa. No está timbrado ante el SAT y no tiene validez fiscal."
+                ),
+                Spacer(1, 8),
+            ]
+        )
+    if payment.status == "cancelled":
+        story.extend(
+            [
+                note_box(
+                    "COMPLEMENTO CANCELADO: esta representación impresa ya no ampara "
+                    "el pago."
+                ),
+                Spacer(1, 8),
+            ]
+        )
+    story.extend(
+        [
+            facts_table(),
+            Spacer(1, 4),
+            Paragraph(
+                f"<b>UUID SAT:</b> {escape(payment.uuid or 'Sin UUID (complemento simulado)')}",
+                small_style,
+            ),
+            Paragraph("Documento relacionado", section_style),
+            related_table(),
+            Paragraph("Aplicación del pago", section_style),
+            application_table(),
+            Spacer(1, 6),
+            totals_table(),
+        ]
+    )
+    cancellation = cancellation_section()
+    if cancellation:
+        story.extend(cancellation)
+    story.extend(
+        [
+            Spacer(1, 14),
+            Paragraph(
+                "Este documento es una representación impresa de un complemento de "
+                "pago (CFDI tipo P). El archivo XML timbrado es el comprobante "
+                "fiscal válido.",
+                final_note_style,
+            ),
+        ]
+    )
+    document.build(story, onFirstPage=draw_page, onLaterPages=draw_page)
+    return buffer.getvalue()
+
+
 __all__ = [
     "build_invoice_pdf",
+    "build_payment_complement_pdf",
     "invoice_pdf_filename",
+    "payment_complement_pdf_filename",
 ]
