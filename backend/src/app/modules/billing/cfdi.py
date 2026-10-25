@@ -28,6 +28,15 @@ XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 DEFAULT_CURRENCY = "MXN"
 DEFAULT_TAX_RATE_PERCENT = 16
 
+# Receptor of a factura global. The SAT requires this exact name, the generic
+# RFC and the "sin obligaciones fiscales" regime; the fiscal postal code is the
+# issuer's. ``InformacionGlobal`` with a monthly period is mandatory for it.
+PUBLIC_GENERAL_RFC = "XAXX010101000"
+PUBLIC_GENERAL_NAME = "PUBLICO EN GENERAL"
+PUBLIC_GENERAL_TAX_REGIME = "616"
+PUBLIC_GENERAL_CFDI_USE = "S01"
+GLOBAL_PERIODICITY_MONTHLY = "03"
+
 # SAT catalogs. Only the codes the club actually uses are listed; an unknown
 # code is rejected instead of being sent to the PAC and failing there.
 TAX_REGIMES = frozenset(
@@ -233,6 +242,19 @@ def build_cfdi_xml(
         },
     )
 
+    if invoice.origin_type == "global":
+        if invoice.global_year is None or invoice.global_month is None:
+            raise ValueError("A global invoice requires its club-local period")
+        ET.SubElement(
+            root,
+            f"{{{CFDI_NS}}}InformacionGlobal",
+            {
+                "Periodicidad": GLOBAL_PERIODICITY_MONTHLY,
+                "Meses": f"{invoice.global_month:02d}",
+                "Año": str(invoice.global_year),
+            },
+        )
+
     ET.SubElement(
         root,
         f"{{{CFDI_NS}}}Emisor",
@@ -334,8 +356,13 @@ __all__ = [
     "DEFAULT_PRODUCT_CODE",
     "DEFAULT_SERVICE_CODE",
     "FiscalData",
+    "GLOBAL_PERIODICITY_MONTHLY",
     "IssuerConfig",
     "PAYMENT_FORMS",
+    "PUBLIC_GENERAL_CFDI_USE",
+    "PUBLIC_GENERAL_NAME",
+    "PUBLIC_GENERAL_RFC",
+    "PUBLIC_GENERAL_TAX_REGIME",
     "TAX_REGIMES",
     "build_cfdi_xml",
     "invoice_xml_filename",

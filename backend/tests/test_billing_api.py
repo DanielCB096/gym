@@ -8,6 +8,7 @@ from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
+from app import mailer
 from app.main import app, get_session
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.inventory.models import Product, Sale, SaleItem, SaleReturn
@@ -18,6 +19,7 @@ from app.modules.memberships.models import (
     PaymentAttempt,
     Plan,
 )
+from app.timezone import club_date
 
 
 def _build_engine():
@@ -101,11 +103,12 @@ def _seed_product(session: Session) -> UUID:
 def _seed_sale(
     session: Session,
     *,
-    member_id: UUID,
+    member_id: UUID | None,
     product_id: UUID,
     total_cents: int = 11600,
     payment_method: str = "cash",
     status: str = "completed",
+    sold_at: datetime | None = None,
 ) -> UUID:
     sale = Sale(
         folio=f"V-20261023-{uuid4().hex[:6].upper()}",
@@ -114,7 +117,7 @@ def _seed_sale(
         total_cents=total_cents,
         payment_method=payment_method,
         status=status,
-        sold_at=datetime.now(timezone.utc),
+        sold_at=sold_at or datetime.now(timezone.utc),
     )
     session.add(sale)
     session.flush()
@@ -589,5 +592,640 @@ def test_stamp_fails_without_a_configured_pac(monkeypatch: pytest.MonkeyPatch) -
             assert "PAC_PROVIDER" in blocked.json()["detail"]
             current = client.get(f"/admin/billing/invoices/{invoice_id}", headers=accountant)
             assert current.json()["status"] == "requested"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_invoice_pdf_is_only_available_after_stamping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    _, _, _, _, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            trainer = _login(client, "trainer@example.com", "trainer-strong-password")
+            created = client.post(
+                "/admin/billing/invoices",
+                headers=accountant,
+                json=_invoice_payload("sale", sale_id, key="pdf-key"),
+            )
+            assert created.status_code == 201, created.text
+            invoice_id = created.json()["invoice"]["id"]
+
+            assert client.get(
+                f"/admin/billing/invoices/{invoice_id}/pdf", headers=trainer
+            ).status_code == 403
+            not_ready = client.get(
+                f"/admin/billing/invoices/{invoice_id}/pdf", headers=reception
+            )
+            assert not_ready.status_code == 409
+            assert "timbrada" in not_ready.json()["detail"]
+
+            stamped = client.post(
+                f"/admin/billing/invoices/{invoice_id}/stamp", headers=accountant
+            )
+            assert stamped.status_code == 200, stamped.text
+            pdf = client.get(
+                f"/admin/billing/invoices/{invoice_id}/pdf", headers=reception
+            )
+            assert pdf.status_code == 200, pdf.text
+            assert pdf.headers["content-type"].startswith("application/pdf")
+            assert (
+                'filename="CFDI-A-000001-simulada.pdf"'
+                in pdf.headers["content-disposition"]
+            )
+            assert pdf.content.startswith(b"%PDF")
+            assert len(pdf.content) > 1000
+
+            cancelled = client.post(
+                f"/admin/billing/invoices/{invoice_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "02", "note": "Prueba de representación impresa"},
+            )
+            assert cancelled.status_code == 200, cancelled.text
+            after_cancel = client.get(
+                f"/admin/billing/invoices/{invoice_id}/pdf", headers=reception
+            )
+            assert after_cancel.status_code == 200
+            assert after_cancel.content.startswith(b"%PDF")
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_invoice_email_is_simulated_and_audited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    engine, member_id, _, _, sale_id = _prepare()
+    with Session(engine) as session:
+        extra_product = Product(sku="EXTRA-1", name="Extra", price_cents=1000)
+        session.add(extra_product)
+        session.commit()
+        extra_sale_id = _seed_sale(
+            session,
+            member_id=member_id,
+            product_id=extra_product.id,
+            total_cents=1000,
+        )
+    try:
+        with TestClient(app) as client:
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            trainer = _login(client, "trainer@example.com", "trainer-strong-password")
+            created = client.post(
+                "/admin/billing/invoices",
+                headers=accountant,
+                json=_invoice_payload("sale", sale_id, key="mail-key"),
+            )
+            assert created.status_code == 201, created.text
+            invoice_id = created.json()["invoice"]["id"]
+
+            early = client.post(
+                f"/admin/billing/invoices/{invoice_id}/send",
+                headers=reception,
+                json={},
+            )
+            assert early.status_code == 409
+            assert client.post(
+                f"/admin/billing/invoices/{invoice_id}/send",
+                headers=trainer,
+                json={},
+            ).status_code == 403
+
+            stamped = client.post(
+                f"/admin/billing/invoices/{invoice_id}/stamp", headers=accountant
+            )
+            assert stamped.status_code == 200, stamped.text
+
+            sent = client.post(
+                f"/admin/billing/invoices/{invoice_id}/send",
+                headers=reception,
+                json={},
+            )
+            assert sent.status_code == 200, sent.text
+            delivery = sent.json()
+            assert delivery["status"] == "simulated"
+            assert delivery["recipient"] == "ana.lopez@correo.com.mx"
+            assert delivery["attachments"] == ["pdf", "xml"]
+
+            detail = client.get(
+                f"/admin/billing/invoices/{invoice_id}", headers=reception
+            ).json()
+            email_events = [
+                event
+                for event in detail["events"]
+                if event["event_type"] == "invoice_email_sent"
+            ]
+            assert len(email_events) == 1
+            assert email_events[0]["detail"]["recipient"] == "ana.lopez@correo.com.mx"
+            assert email_events[0]["detail"]["delivery_status"] == "simulated"
+            assert email_events[0]["detail"]["attachments"] == ["pdf", "xml"]
+
+            override = client.post(
+                f"/admin/billing/invoices/{invoice_id}/send",
+                headers=reception,
+                json={"email": "facturas@example.com"},
+            )
+            assert override.status_code == 200, override.text
+            assert override.json()["recipient"] == "facturas@example.com"
+
+            extra = client.post(
+                "/admin/billing/invoices",
+                headers=accountant,
+                json=_invoice_payload("sale", extra_sale_id, key="mail-extra", email=None),
+            )
+            assert extra.status_code == 201, extra.text
+            extra_id = extra.json()["invoice"]["id"]
+            assert client.post(
+                f"/admin/billing/invoices/{extra_id}/stamp", headers=accountant
+            ).status_code == 200
+            missing = client.post(
+                f"/admin/billing/invoices/{extra_id}/send",
+                headers=reception,
+                json={},
+            )
+            assert missing.status_code == 422
+            assert "correo" in missing.json()["detail"].lower()
+            explicit = client.post(
+                f"/admin/billing/invoices/{extra_id}/send",
+                headers=reception,
+                json={"email": "otro@example.com"},
+            )
+            assert explicit.status_code == 200, explicit.text
+            assert explicit.json()["recipient"] == "otro@example.com"
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
+def test_invoice_email_transport_attaches_pdf_and_xml(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    monkeypatch.delenv("PREVIEW_MODE", raising=False)
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    _, _, _, _, sale_id = _prepare()
+
+    class FakeSMTP:
+        instances: list["FakeSMTP"] = []
+
+        def __init__(self, host: str, port: int, timeout: float) -> None:
+            self.host = host
+            self.port = port
+            self.timeout = timeout
+            self.started_tls = False
+            self.login_args: tuple[str, str] | None = None
+            self.message = None
+            FakeSMTP.instances.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> bool:
+            return False
+
+        def starttls(self, context=None) -> None:
+            self.started_tls = True
+
+        def login(self, username: str, password: str) -> None:
+            self.login_args = (username, password)
+
+        def send_message(self, message) -> None:
+            self.message = message
+
+    class FailingSMTP(FakeSMTP):
+        def send_message(self, message) -> None:
+            raise mailer.smtplib.SMTPException("smtp down")
+
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            created = client.post(
+                "/admin/billing/invoices",
+                headers=accountant,
+                json=_invoice_payload("sale", sale_id, key="smtp-key"),
+            )
+            assert created.status_code == 201, created.text
+            invoice_id = created.json()["invoice"]["id"]
+            assert client.post(
+                f"/admin/billing/invoices/{invoice_id}/stamp", headers=accountant
+            ).status_code == 200
+
+            not_configured = client.post(
+                f"/admin/billing/invoices/{invoice_id}/send",
+                headers=accountant,
+                json={},
+            )
+            assert not_configured.status_code == 503
+            assert "SMTP_HOST" in not_configured.json()["detail"]
+
+            monkeypatch.setenv("SMTP_HOST", "smtp.test")
+            monkeypatch.setenv("SMTP_PORT", "2525")
+            monkeypatch.setenv("SMTP_FROM", "club@example.test")
+            monkeypatch.setenv("SMTP_USER", "smtp-user")
+            monkeypatch.setenv("SMTP_PASSWORD", "smtp-secret")
+            monkeypatch.setenv("SMTP_USE_TLS", "true")
+            monkeypatch.setenv("SMTP_USE_SSL", "false")
+            monkeypatch.setattr(mailer.smtplib, "SMTP", FakeSMTP)
+
+            sent = client.post(
+                f"/admin/billing/invoices/{invoice_id}/send",
+                headers=accountant,
+                json={},
+            )
+            assert sent.status_code == 200, sent.text
+            assert sent.json()["status"] == "sent"
+            assert len(FakeSMTP.instances) == 1
+            connection = FakeSMTP.instances[0]
+            assert connection.host == "smtp.test"
+            assert connection.port == 2525
+            assert connection.started_tls is True
+            assert connection.login_args == ("smtp-user", "smtp-secret")
+            assert connection.message["From"] == "club@example.test"
+            assert connection.message["To"] == "ana.lopez@correo.com.mx"
+            attachments = {
+                attachment.get_filename(): attachment
+                for attachment in connection.message.iter_attachments()
+            }
+            assert set(attachments) == {
+                "CFDI-A-000001-simulada.pdf",
+                "CFDI-A-000001-simulada.xml",
+            }
+            assert attachments["CFDI-A-000001-simulada.pdf"].get_content().startswith(b"%PDF")
+            xml_content = attachments["CFDI-A-000001-simulada.xml"].get_content()
+            assert b"<cfdi:Comprobante" in xml_content
+            assert b"SIMULACION" in xml_content
+
+            monkeypatch.setattr(mailer.smtplib, "SMTP", FailingSMTP)
+            failed = client.post(
+                f"/admin/billing/invoices/{invoice_id}/send",
+                headers=accountant,
+                json={},
+            )
+            assert failed.status_code == 502, failed.text
+            assert "No se pudo enviar" in failed.json()["detail"]
+
+            detail = client.get(
+                f"/admin/billing/invoices/{invoice_id}", headers=accountant
+            ).json()
+            failed_events = [
+                event
+                for event in detail["events"]
+                if event["event_type"] == "invoice_email_failed"
+            ]
+            assert len(failed_events) == 2
+            assert failed_events[0]["detail"]["reason"] == "not_configured"
+            assert failed_events[1]["detail"]["reason"] == "transport"
+            assert "smtp down" in failed_events[1]["detail"]["error"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _global_payload(year: int, month: int, *, key: str = "global-key-1") -> dict[str, object]:
+    return {"year": year, "month": month, "idempotency_key": key}
+
+
+def test_global_invoice_groups_public_sales_and_keeps_traceability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    monkeypatch.setenv("CFDI_SERIES", "A")
+    monkeypatch.setenv("GYM_POSTAL_CODE", "01000")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    closed_month = datetime(2025, 1, 15, 18, 0, tzinfo=timezone.utc)
+    with Session(engine) as session:
+        _seed_users(session)
+        member_id, _, _ = _seed_member_and_payment(session)
+        product_id = _seed_product(session)
+        eligible_cash = _seed_sale(
+            session,
+            member_id=None,
+            product_id=product_id,
+            total_cents=11600,
+            sold_at=closed_month,
+        )
+        eligible_card = _seed_sale(
+            session,
+            member_id=None,
+            product_id=product_id,
+            total_cents=5800,
+            payment_method="card",
+            sold_at=closed_month,
+        )
+        member_sale = _seed_sale(
+            session,
+            member_id=member_id,
+            product_id=product_id,
+            sold_at=closed_month,
+        )
+        account_sale = _seed_sale(
+            session,
+            member_id=None,
+            product_id=product_id,
+            total_cents=5800,
+            payment_method="account",
+            sold_at=closed_month,
+        )
+        refunded_sale = _seed_sale(
+            session,
+            member_id=None,
+            product_id=product_id,
+            status="refunded",
+            sold_at=closed_month,
+        )
+        zero_sale = _seed_sale(
+            session,
+            member_id=None,
+            product_id=product_id,
+            total_cents=0,
+            sold_at=closed_month,
+        )
+        returned_sale = _seed_sale(
+            session,
+            member_id=None,
+            product_id=product_id,
+            sold_at=closed_month,
+        )
+        individual_sale = _seed_sale(
+            session,
+            member_id=None,
+            product_id=product_id,
+            total_cents=2900,
+            sold_at=closed_month,
+        )
+        session.add(
+            SaleReturn(
+                folio="D-20250115-ABC123",
+                sale_id=returned_sale,
+                refund_method="cash",
+                total_refund_cents=11600,
+                reason="Producto dañado",
+                returned_at=closed_month,
+            )
+        )
+        session.commit()
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            trainer = _login(client, "trainer@example.com", "trainer-strong-password")
+
+            individual = client.post(
+                "/admin/billing/invoices",
+                headers=accountant,
+                json=_invoice_payload("sale", individual_sale, key="individual-jan"),
+            )
+            assert individual.status_code == 201, individual.text
+
+            assert (
+                client.get(
+                    "/admin/billing/global-invoices/eligible",
+                    headers=trainer,
+                    params={"year": 2025, "month": 1},
+                ).status_code
+                == 403
+            )
+            review = client.get(
+                "/admin/billing/global-invoices/eligible",
+                headers=reception,
+                params={"year": 2025, "month": 1, "page_size": 1},
+            )
+            assert review.status_code == 200, review.text
+            review_body = review.json()
+            assert review_body["period_closed"] is True
+            assert review_body["total_candidates"] == 8
+            assert review_body["eligible_count"] == 2
+            assert review_body["eligible_total_cents"] == 17400
+            assert review_body["subtotal_cents"] == 15000
+            assert review_body["tax_cents"] == 2400
+            assert review_body["excluded_counts"] == {
+                "returned": 2,
+                "zero_total": 1,
+                "account": 1,
+                "member": 1,
+                "individual_invoice": 1,
+                "global_invoice": 0,
+            }
+            assert review_body["existing_invoice"] is None
+            assert len(review_body["items"]) == 1
+            assert review_body["items"][0]["sale_id"] in {
+                str(eligible_cash),
+                str(eligible_card),
+            }
+            second_page = client.get(
+                "/admin/billing/global-invoices/eligible",
+                headers=reception,
+                params={"year": 2025, "month": 1, "page": 2, "page_size": 1},
+            )
+            assert len(second_page.json()["items"]) == 1
+
+            assert (
+                client.post(
+                    "/admin/billing/global-invoices",
+                    headers=reception,
+                    json=_global_payload(2025, 1, key="reception-global"),
+                ).status_code
+                == 403
+            )
+
+            created = client.post(
+                "/admin/billing/global-invoices",
+                headers=accountant,
+                json=_global_payload(2025, 1),
+            )
+            assert created.status_code == 201, created.text
+            created_body = created.json()
+            assert created_body["idempotent_replay"] is False
+            invoice = created_body["invoice"]
+            invoice_id = invoice["id"]
+            assert invoice["origin_type"] == "global"
+            assert invoice["origin_reference"] == "GLOBAL-2025-01"
+            assert invoice["global_year"] == 2025
+            assert invoice["global_month"] == 1
+            assert invoice["status"] == "requested"
+            assert invoice["receptor_rfc"] == "XAXX010101000"
+            assert invoice["receptor_name"] == "PUBLICO EN GENERAL"
+            assert invoice["receptor_tax_regime"] == "616"
+            assert invoice["receptor_postal_code"] == "01000"
+            assert invoice["receptor_cfdi_use"] == "S01"
+            assert invoice["payment_form"] == "99"
+            assert invoice["subtotal_cents"] == 15000
+            assert invoice["tax_cents"] == 2400
+            assert invoice["total_cents"] == 17400
+            assert invoice["items"][0]["quantity"] == 2
+            assert invoice["items"][0]["unit_price_cents"] == 7500
+            assert invoice["items"][0]["unit_name"] == "Actividad"
+            assert invoice["items"][0]["sat_unit_code"] == "ACT"
+            assert "enero de 2025" in invoice["items"][0]["description"]
+            assert len(invoice["global_sales"]) == 2
+            assert {sale["sale_id"] for sale in invoice["global_sales"]} == {
+                str(eligible_cash),
+                str(eligible_card),
+            }
+
+            xml = client.get(
+                f"/admin/billing/invoices/{invoice_id}/xml", headers=reception
+            )
+            assert xml.status_code == 200, xml.text
+            assert '<cfdi:InformacionGlobal Periodicidad="03" Meses="01" Año="2025"' in xml.text
+            assert 'Rfc="XAXX010101000"' in xml.text
+            assert 'Nombre="PUBLICO EN GENERAL"' in xml.text
+            assert 'RegimenFiscalReceptor="616"' in xml.text
+            assert 'UsoCFDI="S01"' in xml.text
+            assert 'ClaveUnidad="ACT"' in xml.text
+            assert 'Cantidad="2"' in xml.text
+            assert 'ValorUnitario="75.000000"' in xml.text
+            assert 'Importe="150.00"' in xml.text
+
+            replay = client.post(
+                "/admin/billing/global-invoices",
+                headers=accountant,
+                json=_global_payload(2025, 1),
+            )
+            assert replay.status_code == 201, replay.text
+            assert replay.json()["idempotent_replay"] is True
+            assert replay.json()["invoice"]["id"] == invoice_id
+
+            duplicate_period = client.post(
+                "/admin/billing/global-invoices",
+                headers=accountant,
+                json=_global_payload(2025, 1, key="another-global-key"),
+            )
+            assert duplicate_period.status_code == 409
+            assert "vigente" in duplicate_period.json()["detail"]
+
+            overlap = client.post(
+                "/admin/billing/invoices",
+                headers=accountant,
+                json=_invoice_payload("sale", eligible_cash, key="overlap-key"),
+            )
+            assert overlap.status_code == 409
+            assert "factura global" in overlap.json()["detail"]
+
+            after = client.get(
+                "/admin/billing/global-invoices/eligible",
+                headers=reception,
+                params={"year": 2025, "month": 1},
+            ).json()
+            assert after["eligible_count"] == 0
+            assert after["excluded_counts"]["global_invoice"] == 2
+            assert after["existing_invoice"]["invoice_id"] == invoice_id
+            assert after["existing_invoice"]["status"] == "requested"
+
+            origins = client.get(
+                "/admin/billing/origins",
+                headers=reception,
+                params={"origin_type": "sale"},
+            )
+            assert origins.status_code == 200
+            origin_ids = {item["origin_id"] for item in origins.json()["items"]}
+            assert origin_ids == {str(member_sale)}
+            assert str(eligible_cash) not in origin_ids
+            assert str(eligible_card) not in origin_ids
+            assert str(individual_sale) not in origin_ids
+            assert str(account_sale) not in origin_ids
+            assert str(refunded_sale) not in origin_ids
+            assert str(zero_sale) not in origin_ids
+            assert str(returned_sale) not in origin_ids
+
+            stamped = client.post(
+                f"/admin/billing/invoices/{invoice_id}/stamp", headers=accountant
+            )
+            assert stamped.status_code == 200, stamped.text
+            assert stamped.json()["status"] == "stamped"
+            assert stamped.json()["is_simulated"] is True
+            pdf = client.get(
+                f"/admin/billing/invoices/{invoice_id}/pdf", headers=reception
+            )
+            assert pdf.status_code == 200, pdf.text
+            assert pdf.content.startswith(b"%PDF")
+
+            cancelled = client.post(
+                f"/admin/billing/invoices/{invoice_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "02", "note": "Reemplazo de la factura global"},
+            )
+            assert cancelled.status_code == 200, cancelled.text
+            assert cancelled.json()["global_sales"] == invoice["global_sales"]
+
+            reopened = client.get(
+                "/admin/billing/global-invoices/eligible",
+                headers=reception,
+                params={"year": 2025, "month": 1},
+            ).json()
+            assert reopened["eligible_count"] == 2
+            assert reopened["excluded_counts"]["global_invoice"] == 0
+            assert reopened["existing_invoice"] is None
+
+            replacement = client.post(
+                "/admin/billing/global-invoices",
+                headers=accountant,
+                json=_global_payload(2025, 1, key="global-replacement"),
+            )
+            assert replacement.status_code == 201, replacement.text
+            replacement_invoice = replacement.json()["invoice"]
+            assert replacement_invoice["id"] != invoice_id
+            assert replacement_invoice["folio_label"] != invoice["folio_label"]
+            assert len(replacement_invoice["global_sales"]) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_global_invoice_rejects_open_months_and_empty_periods(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    _prepare()
+    try:
+        with TestClient(app) as client:
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            current = club_date(datetime.now(timezone.utc))
+            review = client.get(
+                "/admin/billing/global-invoices/eligible",
+                headers=reception,
+                params={"year": current.year, "month": current.month},
+            )
+            assert review.status_code == 200, review.text
+            assert review.json()["period_closed"] is False
+
+            open_month = client.post(
+                "/admin/billing/global-invoices",
+                headers=accountant,
+                json=_global_payload(current.year, current.month, key="open-month"),
+            )
+            assert open_month.status_code == 422
+            assert "mes ya cerrado" in open_month.json()["detail"]
+
+            empty = client.post(
+                "/admin/billing/global-invoices",
+                headers=accountant,
+                json=_global_payload(2020, 1, key="empty-month"),
+            )
+            assert empty.status_code == 409
+            assert "no tiene ventas" in empty.json()["detail"]
+
+            assert (
+                client.post(
+                    "/admin/billing/global-invoices",
+                    headers=accountant,
+                    json=_global_payload(2024, 13, key="month-13"),
+                ).status_code
+                == 422
+            )
+            assert (
+                client.get(
+                    "/admin/billing/global-invoices/eligible",
+                    headers=reception,
+                    params={"year": 1999, "month": 1},
+                ).status_code
+                == 422
+            )
     finally:
         app.dependency_overrides.clear()

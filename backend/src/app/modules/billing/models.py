@@ -37,10 +37,10 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
-# The first increment bills one sale or one confirmed membership payment. Other
-# origins (account payments, global invoice batches) are added by later
-# migrations that widen this check.
-INVOICE_ORIGIN_TYPES = ("sale", "membership_payment")
+# A CFDI bills one sale, one confirmed membership payment or one monthly batch
+# of walk-in sales to the public in general. Other origins (account payments,
+# PPD complements) are added by later migrations that widen this check.
+INVOICE_ORIGIN_TYPES = ("sale", "membership_payment", "global")
 
 INVOICE_STATUSES = ("requested", "failed", "stamped", "cancelled")
 
@@ -96,12 +96,21 @@ class Invoice(SQLModel, table=True):
     __tablename__ = "invoices"
     __table_args__ = (
         CheckConstraint(
-            "origin_type IN ('sale', 'membership_payment')",
+            "origin_type IN ('sale', 'membership_payment', 'global')",
             name="ck_invoices_origin_type",
         ),
         CheckConstraint(
             "status IN ('requested', 'failed', 'stamped', 'cancelled')",
             name="ck_invoices_status",
+        ),
+        # The monthly global invoice keeps its period so the XML can be rebuilt
+        # after stamping and a cancelled month can be identified in the history.
+        CheckConstraint(
+            "(origin_type = 'global' AND global_year IS NOT NULL "
+            "AND global_month BETWEEN 1 AND 12) OR "
+            "(origin_type <> 'global' AND global_year IS NULL "
+            "AND global_month IS NULL)",
+            name="ck_invoices_global_period",
         ),
         CheckConstraint(
             "subtotal_cents >= 0 AND tax_cents >= 0 AND total_cents >= 0 "
@@ -128,6 +137,18 @@ class Invoice(SQLModel, table=True):
             postgresql_where=text("status <> 'cancelled'"),
             sqlite_where=text("status <> 'cancelled'"),
         ),
+        # At most one live global invoice per month. Cancelling one frees the
+        # month for a replacement while both batches stay traceable.
+        Index(
+            "uq_invoices_active_global_period",
+            "global_year",
+            "global_month",
+            unique=True,
+            postgresql_where=text(
+                "origin_type = 'global' AND status <> 'cancelled'"
+            ),
+            sqlite_where=text("origin_type = 'global' AND status <> 'cancelled'"),
+        ),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -142,6 +163,9 @@ class Invoice(SQLModel, table=True):
     # Human reference of the origin (sale folio ``V-…`` or payment id) copied at
     # request time so the listing shows it without querying each origin.
     origin_reference: str = Field(max_length=64)
+    # Club-local calendar month of a global invoice; NULL for individual CFDI.
+    global_year: int | None = Field(default=None)
+    global_month: int | None = Field(default=None)
     member_id: UUID | None = Field(
         default=None,
         sa_column=Column(Uuid(as_uuid=True), ForeignKey("members.id", ondelete="RESTRICT")),
@@ -277,7 +301,53 @@ class InvoiceEvent(SQLModel, table=True):
     )
 
 
+class GlobalInvoiceSale(SQLModel, table=True):
+    """A walk-in sale included in a monthly global invoice.
+
+    The row is the traceability link required by the fiscal process: it keeps
+    the sale reference and amount snapshot even if the sale is later refunded.
+    A sale can appear again in a replacement batch when the previous global
+    invoice is cancelled, but never in two live batches at once.
+    """
+
+    __tablename__ = "global_invoice_sales"
+    __table_args__ = (
+        UniqueConstraint(
+            "invoice_id", "sale_id", name="uq_global_invoice_sales_invoice_sale"
+        ),
+        CheckConstraint(
+            "total_cents > 0", name="ck_global_invoice_sales_total_positive"
+        ),
+        Index("ix_global_invoice_sales_sale", "sale_id"),
+        Index("ix_global_invoice_sales_invoice", "invoice_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    invoice_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("invoices.id", ondelete="CASCADE"),
+            nullable=False,
+        )
+    )
+    sale_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("sales.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    sale_folio: str = Field(max_length=32)
+    sold_at: datetime = Field(sa_type=DateTime(timezone=True))
+    total_cents: int = Field(sa_type=BigInteger)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
 __all__ = [
+    "GlobalInvoiceSale",
     "INVOICE_ORIGIN_TYPES",
     "INVOICE_STATUSES",
     "Invoice",

@@ -6,6 +6,7 @@ from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from app import mailer
 from app.main import app, get_session
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.inventory import models as inventory_models
@@ -313,7 +314,7 @@ def test_send_statement_uses_smtp_and_records_failures(monkeypatch) -> None:
 
     class FailingSMTP(FakeSMTP):
         def send_message(self, message) -> None:
-            raise statements.smtplib.SMTPException("smtp down")
+            raise mailer.smtplib.SMTPException("smtp down")
 
     monkeypatch.delenv("PREVIEW_MODE", raising=False)
     monkeypatch.setenv("SMTP_HOST", "smtp.test")
@@ -323,7 +324,7 @@ def test_send_statement_uses_smtp_and_records_failures(monkeypatch) -> None:
     monkeypatch.setenv("SMTP_PASSWORD", "smtp-secret")
     monkeypatch.setenv("SMTP_USE_TLS", "true")
     monkeypatch.setenv("SMTP_USE_SSL", "false")
-    monkeypatch.setattr(statements.smtplib, "SMTP", FakeSMTP)
+    monkeypatch.setattr(mailer.smtplib, "SMTP", FakeSMTP)
 
     app.dependency_overrides[get_session] = _override(engine)
     try:
@@ -358,7 +359,7 @@ def test_send_statement_uses_smtp_and_records_failures(monkeypatch) -> None:
             assert attachments[0].get_filename().startswith("estado-cuenta-ana-lopez-")
             assert attachments[0].get_content_type() == "application/pdf"
 
-            monkeypatch.setattr(statements.smtplib, "SMTP", FailingSMTP)
+            monkeypatch.setattr(mailer.smtplib, "SMTP", FailingSMTP)
             failed = client.post(
                 f"/admin/member-accounts/{member_id}/statement/send",
                 headers=reception,
@@ -380,7 +381,7 @@ def test_send_statement_uses_smtp_and_records_failures(monkeypatch) -> None:
 
             # Retrying a failed attempt uses the original recipient and format
             # and appends a new row linked to the failure.
-            monkeypatch.setattr(statements.smtplib, "SMTP", FakeSMTP)
+            monkeypatch.setattr(mailer.smtplib, "SMTP", FakeSMTP)
             retried = client.post(
                 f"/admin/member-accounts/{member_id}/statement/deliveries/{failed_id}/retry",
                 headers=reception,

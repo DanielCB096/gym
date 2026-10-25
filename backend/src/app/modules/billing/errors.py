@@ -56,6 +56,42 @@ class InvoiceNumberingError(BillingError):
     pass
 
 
+class GlobalInvoicePeriodInvalid(FiscalDataInvalid):
+    """The requested month cannot be the period of a monthly global invoice."""
+
+
+class GlobalInvoicePeriodOpen(GlobalInvoicePeriodInvalid):
+    """The month is still running, so more walk-in sales may arrive."""
+
+
+class GlobalInvoicePeriodConflict(BillingError):
+    """A live global invoice already covers that month."""
+
+    def __init__(self, invoice_id: str) -> None:
+        super().__init__("Ya existe una factura global vigente para ese periodo.")
+        self.invoice_id = invoice_id
+
+
+class GlobalInvoiceNoEligibleSales(BillingError):
+    """The closed month has no pending public-general sales to include."""
+
+
+class InvoiceNotDeliverable(InvoiceStateError):
+    """Only a stamped comprobante can be printed as a fiscal document or sent."""
+
+
+class InvoiceRecipientMissing(FiscalDataInvalid):
+    """The invoice has no receptor email and the caller did not provide one."""
+
+
+class InvoiceEmailNotConfigured(BillingError):
+    """The SMTP transport is not configured."""
+
+
+class InvoiceDeliveryFailed(BillingError):
+    """The SMTP server rejected or could not receive the message."""
+
+
 class PacUnavailable(BillingError):
     """No PAC is configured (or the real integration is not implemented yet)."""
 
@@ -75,9 +111,17 @@ __all__ = [
     "BillingMemberNotFound",
     "CancellationNotAllowed",
     "FiscalDataInvalid",
+    "GlobalInvoiceNoEligibleSales",
+    "GlobalInvoicePeriodConflict",
+    "GlobalInvoicePeriodInvalid",
+    "GlobalInvoicePeriodOpen",
+    "InvoiceDeliveryFailed",
+    "InvoiceEmailNotConfigured",
     "InvoiceIdempotencyConflict",
+    "InvoiceNotDeliverable",
     "InvoiceNotFound",
     "InvoiceNumberingError",
+    "InvoiceRecipientMissing",
     "InvoiceStateError",
     "OriginAlreadyInvoiced",
     "OriginNotFound",

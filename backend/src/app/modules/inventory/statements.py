@@ -5,7 +5,7 @@ the balance is still computed from the sales, returns and payments, never from
 this module. Here we only turn that snapshot into a printable PDF, a CSV for a
 spreadsheet, or an email attachment.
 
-The email transport is deliberately small (stdlib ``smtplib``): the club's SMTP
+The email transport is the shared :mod:`app.mailer` module: the club's SMTP
 account is configured through environment variables and preview mode simulates
 the delivery instead of contacting a real server. Every attempt is appended to
 ``member_account_statement_deliveries`` so the club can audit who sent what.
@@ -13,13 +13,10 @@ the delivery instead of contacting a real server. Every attempt is appended to
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from email.message import EmailMessage
 import csv
 import io
 import os
 import re
-import smtplib
-import ssl
 import unicodedata
 from uuid import UUID
 from xml.sax.saxutils import escape
@@ -32,6 +29,12 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from app.mailer import (
+    EmailAttachment,
+    MailDeliveryFailed,
+    MailNotConfigured,
+    send_email,
+)
 from app.modules.identity.models import AppUser
 from app.modules.inventory.models import (
     MEMBER_ACCOUNT_STATEMENT_FORMATS,
@@ -591,13 +594,6 @@ def build_member_account_statement_pdf(statement: MemberAccountStatement) -> byt
     return buffer.getvalue()
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _send_email(
     *,
     recipient: str,
@@ -607,62 +603,31 @@ def _send_email(
     filename: str,
     document_format: str,
 ) -> str:
-    """Send the email and return ``sent`` or ``simulated``.
+    """Send the statement and translate transport errors to statement errors."""
 
-    Preview mode never contacts a real SMTP server, even when ``SMTP_HOST`` is
-    configured: it records a ``simulated`` delivery so the panel and the audit
-    trail behave exactly like a production send without sending private
-    financial data during a demo.
-    """
-
-    if _env_bool("PREVIEW_MODE", False):
-        return "simulated"
-
-    host = os.getenv("SMTP_HOST", "").strip()
-    if not host:
-        raise StatementEmailNotConfigured(
-            "El envío de estados de cuenta no está configurado (SMTP_HOST)."
+    is_pdf = document_format == "pdf"
+    try:
+        return send_email(
+            recipient=recipient,
+            subject=subject,
+            body=body,
+            attachments=[
+                EmailAttachment(
+                    content=attachment,
+                    filename=filename,
+                    maintype="application" if is_pdf else "text",
+                    subtype="pdf" if is_pdf else "csv",
+                )
+            ],
+            not_configured_message=(
+                "El envío de estados de cuenta no está configurado (SMTP_HOST)."
+            ),
+            failure_label="No se pudo enviar el estado de cuenta",
         )
-
-    try:
-        port = int(os.getenv("SMTP_PORT", "587"))
-        timeout = float(os.getenv("SMTP_TIMEOUT", "20"))
-    except ValueError as error:
-        raise StatementEmailNotConfigured(
-            "SMTP_PORT o SMTP_TIMEOUT no tienen un número válido."
-        ) from error
-    use_ssl = _env_bool("SMTP_USE_SSL", False)
-    use_tls = _env_bool("SMTP_USE_TLS", True)
-    username = os.getenv("SMTP_USER", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "")
-    sender = os.getenv("SMTP_FROM", "").strip() or username or "no-reply@localhost"
-
-    message = EmailMessage()
-    message["From"] = sender
-    message["To"] = recipient
-    message["Subject"] = subject
-    message.set_content(body)
-    maintype, subtype = ("application", "pdf") if document_format == "pdf" else ("text", "csv")
-    message.add_attachment(attachment, maintype=maintype, subtype=subtype, filename=filename)
-
-    context = ssl.create_default_context()
-    try:
-        if use_ssl:
-            connection = smtplib.SMTP_SSL(host, port, timeout=timeout, context=context)
-        else:
-            connection = smtplib.SMTP(host, port, timeout=timeout)
-        with connection as server:
-            if use_tls and not use_ssl:
-                server.starttls(context=context)
-            if username and password:
-                server.login(username, password)
-            server.send_message(message)
-    except (OSError, smtplib.SMTPException, ValueError) as error:
-        detail = str(error).strip() or error.__class__.__name__
-        raise StatementDeliveryFailed(
-            f"No se pudo enviar el estado de cuenta: {detail}"
-        ) from error
-    return "sent"
+    except MailNotConfigured as error:
+        raise StatementEmailNotConfigured(str(error)) from error
+    except MailDeliveryFailed as error:
+        raise StatementDeliveryFailed(str(error)) from error
 
 
 def _delivery_view(

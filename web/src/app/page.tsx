@@ -416,15 +416,24 @@ type BillingInvoiceEvent = {
   occurred_at: string;
 };
 
+type BillingGlobalInvoiceSale = {
+  sale_id: string;
+  sale_folio: string;
+  sold_at: string;
+  total_cents: number;
+};
+
 type BillingInvoice = {
   id: string;
   series: string;
   folio: number;
   folio_label: string;
   status: BillingInvoiceStatus;
-  origin_type: "sale" | "membership_payment";
+  origin_type: "sale" | "membership_payment" | "global";
   origin_id: string;
   origin_reference: string;
+  global_year: number | null;
+  global_month: number | null;
   member_id: string | null;
   member_name: string | null;
   receptor_rfc: string;
@@ -455,6 +464,7 @@ type BillingInvoice = {
   created_by: string | null;
   items: BillingInvoiceItem[];
   events: BillingInvoiceEvent[];
+  global_sales: BillingGlobalInvoiceSale[];
 };
 
 type BillingInvoicePage = {
@@ -462,6 +472,14 @@ type BillingInvoicePage = {
   total: number;
   page: number;
   page_size: number;
+};
+
+type BillingDelivery = {
+  invoice_id: string;
+  recipient: string;
+  status: "sent" | "simulated";
+  attachments: string[];
+  sent_at: string;
 };
 
 type BillingSummary = {
@@ -505,6 +523,39 @@ type BillingFiscalProfile = {
   updated_at: string;
 };
 
+type BillingGlobalSale = {
+  sale_id: string;
+  folio: string;
+  sold_at: string;
+  total_cents: number;
+  payment_method: string;
+  description: string;
+};
+
+type BillingGlobalInvoiceRef = {
+  invoice_id: string;
+  folio_label: string;
+  status: BillingInvoiceStatus;
+};
+
+type BillingGlobalEligibility = {
+  year: number;
+  month: number;
+  period_start: string;
+  period_end: string;
+  period_closed: boolean;
+  total_candidates: number;
+  eligible_count: number;
+  eligible_total_cents: number;
+  subtotal_cents: number;
+  tax_cents: number;
+  excluded_counts: Record<string, number>;
+  items: BillingGlobalSale[];
+  page: number;
+  page_size: number;
+  existing_invoice: BillingGlobalInvoiceRef | null;
+};
+
 const BILLING_PAGE_SIZE = 10;
 
 const billingStatusLabels: Record<BillingInvoiceStatus, string> = {
@@ -524,6 +575,18 @@ const billingStatusBadges: Record<BillingInvoiceStatus, string> = {
 const billingOriginLabels: Record<BillingInvoice["origin_type"], string> = {
   sale: "Venta en mostrador",
   membership_payment: "Cobro de membresía",
+  global: "Factura global",
+};
+
+const billingMonthLabels = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+
+const billingGlobalExclusionLabels: Record<string, string> = {
+  returned: "Con devolución",
+  zero_total: "Importe cero",
+  account: "Cargo a cuenta",
+  member: "Venta con socio",
+  individual_invoice: "Factura individual",
+  global_invoice: "En otra global",
 };
 
 const billingPaymentMethodLabels: Record<string, string> = {
@@ -654,6 +717,31 @@ function billingErrorDetail(payload: unknown, fallback: string): string {
     if (messages.length > 0) return messages.join(" ");
   }
   return fallback;
+}
+
+function billingGlobalPeriodLabel(year: number, month: number): string {
+  const name = billingMonthLabels[month - 1] ?? String(month);
+  return `${name.charAt(0).toUpperCase()}${name.slice(1)} de ${year}`;
+}
+
+function billingGlobalPeriodValue(year: number, month: number): string {
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function billingGlobalPeriodOptions(): { value: string; label: string }[] {
+  const now = new Date();
+  return Array.from({ length: 24 }, (_, index) => {
+    const period = new Date(now.getFullYear(), now.getMonth() - index, 1);
+    const year = period.getFullYear();
+    const month = period.getMonth() + 1;
+    return { value: billingGlobalPeriodValue(year, month), label: billingGlobalPeriodLabel(year, month) };
+  });
+}
+
+function defaultBillingGlobalPeriod(): { year: number; month: number } {
+  const now = new Date();
+  const previous = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  return { year: previous.getFullYear(), month: previous.getMonth() + 1 };
 }
 
 type SaleSummary = {
@@ -7782,6 +7870,8 @@ function billingEventLabel(eventType: string): string {
     invoice_stamped: "Comprobante timbrado",
     invoice_stamp_failed: "Intento de timbrado fallido",
     invoice_cancelled: "Comprobante cancelado",
+    invoice_email_sent: "Factura enviada por correo",
+    invoice_email_failed: "Envío de factura fallido",
   };
   return labels[eventType] ?? eventType;
 }
@@ -7807,6 +7897,7 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
   const [newInvoiceOpen, setNewInvoiceOpen] = useState(false);
   const [activeInvoiceId, setActiveInvoiceId] = useState<string | null>(null);
   const [stampingId, setStampingId] = useState<string | null>(null);
+  const [tab, setTab] = useState<"invoices" | "global">("invoices");
 
   useEffect(() => {
     const handle = window.setTimeout(() => setQuery(search.trim()), 300);
@@ -7894,12 +7985,20 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
         <div className="summary-stat"><span>TIMBRADAS</span><strong>{summary?.stamped ?? "—"}</strong></div>
         <div className="summary-stat"><span>CANCELADAS</span><strong>{summary?.cancelled ?? "—"}</strong></div>
         <div className="summary-stat"><span>IMPORTE TIMBRADO</span><strong>{summary ? formatMoney(summary.stamped_cents) : "—"}</strong></div>
-        {canRequest && <button className="button button-primary" onClick={() => setNewInvoiceOpen(true)}><Plus size={17} />Nueva factura</button>}
+        {canRequest && tab === "invoices" && <button className="button button-primary" onClick={() => setNewInvoiceOpen(true)}><Plus size={17} />Nueva factura</button>}
       </section>
 
-      {error && <div className="billing-alert" role="alert">{error}</div>}
+      <div className="staff-tabs pos-tabs billing-view-tabs">
+        <button type="button" className={tab === "invoices" ? "staff-tab-active" : ""} onClick={() => setTab("invoices")}>Comprobantes</button>
+        <button type="button" className={tab === "global" ? "staff-tab-active" : ""} onClick={() => setTab("global")}>Factura global</button>
+        <span className="staff-tabs-note"><ShieldCheck size={14} />{tab === "invoices" ? "Solicitud, timbrado, entrega y cancelación" : "Un CFDI mensual para ventas al público en general"}</span>
+      </div>
 
-      <section className="panel full-panel">
+      {tab === "invoices" ? (
+        <>
+          {error && <div className="billing-alert" role="alert">{error}</div>}
+
+          <section className="panel full-panel">
         <div className="panel-header access-list-heading">
           <div><p className="section-kicker">COMPROBANTES FISCALES</p><h2>Facturas</h2></div>
           {summary !== null && summary.simulated > 0 && <span className="status-badge status-warn"><i />{summary.simulated} simuladas</span>}
@@ -7950,7 +8049,18 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
           )}
         </div>
       </section>
-      <footer className="page-footer"><span>Centro Fit · Facturación CFDI 4.0</span><span>{canManage ? "SOLICITUD, TIMBRADO Y CANCELACIÓN" : "CONSULTA DE COMPROBANTES"}</span></footer>
+        </>
+      ) : (
+        <GlobalInvoicePanel
+          canManage={canManage}
+          refreshToken={refresh}
+          onOpenInvoice={setActiveInvoiceId}
+          onChanged={() => setRefresh((value) => value + 1)}
+          onUnauthorized={onUnauthorized}
+          onToast={onToast}
+        />
+      )}
+      <footer className="page-footer"><span>Centro Fit · Facturación CFDI 4.0</span><span>{tab === "global" ? "FACTURA GLOBAL MENSUAL · PÚBLICO EN GENERAL" : canManage ? "SOLICITUD, TIMBRADO Y CANCELACIÓN" : "CONSULTA DE COMPROBANTES"}</span></footer>
 
       {newInvoiceOpen && (
         <NewInvoiceModal
@@ -7969,11 +8079,270 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
         <InvoiceDetailModal
           invoiceId={activeInvoiceId}
           canManage={canManage}
+          canRequest={canRequest}
           onClose={() => setActiveInvoiceId(null)}
           onChanged={(message) => { setRefresh((value) => value + 1); onToast(message); }}
           onUnauthorized={onUnauthorized}
         />
       )}
+    </>
+  );
+}
+
+function GlobalInvoicePanel({ canManage, refreshToken, onOpenInvoice, onChanged, onUnauthorized, onToast }: { canManage: boolean; refreshToken: number; onOpenInvoice: (invoiceId: string) => void; onChanged: () => void; onUnauthorized: () => void; onToast: (message: string) => void }) {
+  const periods = useMemo(() => billingGlobalPeriodOptions(), []);
+  const [period, setPeriod] = useState(() => {
+    const initial = defaultBillingGlobalPeriod();
+    return billingGlobalPeriodValue(initial.year, initial.month);
+  });
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState<BillingGlobalEligibility | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [stampNow, setStampNow] = useState(true);
+  const [idempotencyKey, setIdempotencyKey] = useState(() => globalThis.crypto.randomUUID());
+  const [history, setHistory] = useState<BillingInvoice[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState("");
+
+  const periodYear = Number(period.slice(0, 4));
+  const periodMonth = Number(period.slice(5, 7));
+
+  const changePeriod = (value: string) => {
+    setPeriod(value);
+    setPage(1);
+    setIdempotencyKey(globalThis.crypto.randomUUID());
+  };
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const params = new URLSearchParams({ year: String(periodYear), month: String(periodMonth), page: String(page), page_size: "10" });
+        const response = await fetch(`/api/admin/billing/global-invoices/eligible?${params.toString()}`, { cache: "no-store" });
+        if (response.status === 401) { onUnauthorized(); return; }
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(billingErrorDetail(payload, "No se pudieron consultar las ventas del periodo."));
+        }
+        const payload = await response.json() as BillingGlobalEligibility;
+        if (active) setData(payload);
+      } catch (caught) {
+        if (active) setError(caught instanceof Error ? caught.message : "Error al consultar el periodo.");
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [onUnauthorized, page, periodMonth, periodYear, refreshToken]);
+
+  useEffect(() => {
+    if (!data) return;
+    const lastPage = Math.max(1, Math.ceil(data.eligible_count / data.page_size));
+    if (page > lastPage) setPage(lastPage);
+  }, [data, page]);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      setHistoryLoading(true);
+      setHistoryError("");
+      try {
+        const response = await fetch("/api/admin/billing/invoices?search=global&page=1&page_size=50", { cache: "no-store" });
+        if (response.status === 401) { onUnauthorized(); return; }
+        if (!response.ok) throw new Error("No se pudo consultar el historial de facturas globales.");
+        const payload = await response.json() as BillingInvoicePage;
+        if (active) setHistory(payload.items.filter((invoice) => invoice.origin_type === "global"));
+      } catch (caught) {
+        if (active) setHistoryError(caught instanceof Error ? caught.message : "Error al consultar el historial.");
+      } finally {
+        if (active) setHistoryLoading(false);
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [onUnauthorized, refreshToken]);
+
+  const createGlobalInvoice = async () => {
+    if (!data) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/billing/global-invoices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ year: data.year, month: data.month, idempotency_key: idempotencyKey }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudo emitir la factura global."));
+        return;
+      }
+      const body = await response.json() as { invoice: BillingInvoice; idempotent_replay: boolean };
+      let invoice = body.invoice;
+      let message = body.idempotent_replay
+        ? `La factura global ${invoice.folio_label} ya existía; se muestra el comprobante original.`
+        : `Factura global ${invoice.folio_label} solicitada para ${billingGlobalPeriodLabel(data.year, data.month)}.`;
+
+      if (stampNow && (invoice.status === "requested" || invoice.status === "failed")) {
+        const stampResponse = await fetch(`/api/admin/billing/invoices/${encodeURIComponent(invoice.id)}/stamp`, { method: "POST" });
+        if (stampResponse.status === 401) { onUnauthorized(); return; }
+        if (stampResponse.ok) {
+          invoice = await stampResponse.json() as BillingInvoice;
+          message = invoice.is_simulated
+            ? `Factura global ${invoice.folio_label} timbrada en modo simulación.`
+            : `Factura global ${invoice.folio_label} timbrada.`;
+        } else {
+          const payload = await stampResponse.json().catch(() => ({}));
+          message = `Factura global ${invoice.folio_label} solicitada, pero no se pudo timbrar: ${billingErrorDetail(payload, "error del PAC.")}`;
+        }
+      }
+      setIdempotencyKey(globalThis.crypto.randomUUID());
+      onToast(message);
+      onChanged();
+      onOpenInvoice(invoice.id);
+    } catch {
+      setError("No se pudo conectar con el backend. Reintenta con la misma solicitud.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pages = Math.max(1, Math.ceil((data?.eligible_count ?? 0) / (data?.page_size ?? 10)));
+  const excluded = Object.entries(data?.excluded_counts ?? {}).filter(([, count]) => count > 0);
+  const canCreate = canManage && data !== null && data.period_closed && data.eligible_count > 0 && data.existing_invoice === null;
+
+  return (
+    <>
+      <section className="panel full-panel billing-global-panel">
+        <div className="panel-header access-list-heading">
+          <div><p className="section-kicker">CFDI 4.0 · PÚBLICO EN GENERAL</p><h2>Factura global mensual</h2></div>
+          {data && <span className={`status-badge ${data.period_closed ? "status-neutral" : "status-warn"}`}><i />{data.period_closed ? "Periodo cerrado" : "Periodo en curso"}</span>}
+        </div>
+        <p className="panel-hint">Agrupa en un solo comprobante las ventas de mostrador sin socio, sin devolución y sin factura individual. La elegibilidad se recalcula al emitir, así que una venta facturada por separado queda fuera.</p>
+        <div className="table-toolbar billing-global-toolbar">
+          <label className="table-select">
+            <span>Periodo</span>
+            <select value={period} onChange={(event) => changePeriod(event.target.value)}>
+              {periods.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          <span className="table-hint">Receptor fijo: XAXX010101000 · Público en general · Uso S01</span>
+        </div>
+
+        {error && <div className="billing-alert" role="alert">{error}</div>}
+        {loading ? <p className="billing-empty">Consultando ventas del periodo…</p> : !data ? null : (
+          <>
+            <div className="billing-totals billing-global-summary">
+              <div><span>VENTAS DEL PERIODO</span><strong>{data.total_candidates}</strong><small>{billingGlobalPeriodLabel(data.year, data.month)}</small></div>
+              <div><span>ELEGIBLES</span><strong>{data.eligible_count}</strong><small>Público en general</small></div>
+              <div><span>TOTAL A FACTURAR</span><strong>{formatMoney(data.eligible_total_cents)}</strong><small>IVA incluido</small></div>
+              <div><span>SUBTOTAL</span><strong>{formatMoney(data.subtotal_cents)}</strong><small>Base gravable</small></div>
+              <div><span>IVA</span><strong>{formatMoney(data.tax_cents)}</strong><small>Traslado federal</small></div>
+              <div><span>ESTADO</span><strong>{data.period_closed ? "Cerrado" : "Abierto"}</strong><small>{data.period_closed ? "Listo para emitir" : "Espera el cierre del mes"}</small></div>
+            </div>
+
+            {!data.period_closed && (
+              <div className="billing-simulated-note"><Clock3 size={16} /><span>Solo se puede emitir la factura global de un mes ya cerrado. Este periodo estará disponible a partir del {formatMoment(data.period_end)}</span></div>
+            )}
+
+            {data.existing_invoice && (
+              <div className="billing-global-existing">
+                <ShieldCheck size={16} />
+                <div>
+                  <strong>El periodo ya tiene una factura global vigente: {data.existing_invoice.folio_label}.</strong>
+                  <small>Para rehacerla, cancela ese comprobante; el periodo y sus ventas quedarán libres para una sustitución.</small>
+                </div>
+                <button type="button" className="button button-secondary button-small" onClick={() => onOpenInvoice(data.existing_invoice!.invoice_id)}>Ver comprobante</button>
+              </div>
+            )}
+
+            {excluded.length > 0 && (
+              <div className="billing-global-exclusions">
+                <span>Excluidas del periodo</span>
+                {excluded.map(([key, count]) => <span className="billing-global-chip" key={key}>{billingGlobalExclusionLabels[key] ?? key} · {count}</span>)}
+              </div>
+            )}
+
+            <div className="table-scroll">
+              <table className="data-table compact-table">
+                <thead><tr><th>FOLIO</th><th>FECHA</th><th>DESCRIPCIÓN</th><th>MÉTODO</th><th>TOTAL</th></tr></thead>
+                <tbody>
+                  {data.items.length === 0 ? <tr><td colSpan={5} className="empty-row">{data.period_closed ? "No hay ventas elegibles en este periodo." : "Aún no hay ventas elegibles en el mes en curso."}</td></tr>
+                    : data.items.map((sale) => (
+                      <tr key={sale.sale_id}>
+                        <td><strong>{sale.folio}</strong></td>
+                        <td className="time-cell">{formatMoment(sale.sold_at)}</td>
+                        <td>{sale.description}</td>
+                        <td>{billingPaymentMethodLabels[sale.payment_method] ?? sale.payment_method}</td>
+                        <td>{formatMoney(sale.total_cents)}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="table-bottom">
+              <span>{data.eligible_count} {data.eligible_count === 1 ? "venta elegible" : "ventas elegibles"} de {data.total_candidates} del periodo</span>
+              {pages > 1 && (
+                <span className="member-pagination">
+                  <span>Página {page} de {pages}</span>
+                  <button type="button" aria-label="Página anterior" disabled={page <= 1} onClick={() => setPage(Math.max(1, page - 1))}>‹</button>
+                  <button type="button" aria-label="Página siguiente" disabled={page >= pages} onClick={() => setPage(Math.min(pages, page + 1))}>›</button>
+                </span>
+              )}
+            </div>
+
+            <div className="billing-global-actionbar">
+              {canManage ? (
+                <label className="form-check"><input type="checkbox" checked={stampNow} onChange={(event) => setStampNow(event.target.checked)} /><span>Solicitar y timbrar ahora. En vista previa el comprobante queda marcado como simulado y sin validez fiscal.</span></label>
+              ) : (
+                <p className="billing-empty">La emisión requiere el permiso de gestión fiscal. Puedes revisar el periodo y consultar los comprobantes existentes.</p>
+              )}
+              {canManage && (
+                <button type="button" className="button button-primary" onClick={() => void createGlobalInvoice()} disabled={!canCreate || busy}>
+                  <Receipt size={16} />{busy ? "Procesando…" : "Emitir factura global"}
+                </button>
+              )}
+            </div>
+          </>
+        )}
+      </section>
+
+      <section className="panel full-panel billing-global-history">
+        <div className="panel-header access-list-heading">
+          <div><p className="section-kicker">HISTORIAL</p><h2>Facturas globales</h2></div>
+          {historyLoading && <span className="billing-empty">Consultando…</span>}
+        </div>
+        {historyError && <div className="billing-alert" role="alert">{historyError}</div>}
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead><tr><th>FOLIO</th><th>PERIODO</th><th>RECEPTOR</th><th>EMITIDA</th><th>TOTAL</th><th>ESTADO</th><th /></tr></thead>
+            <tbody>
+              {historyLoading ? <tr><td colSpan={7} className="empty-row">Cargando facturas globales…</td></tr>
+                : history.length === 0 ? <tr><td colSpan={7} className="empty-row">Aún no se ha emitido ninguna factura global.</td></tr>
+                : history.map((invoice) => {
+                  const status = billingInvoiceStatus(invoice.status);
+                  return (
+                    <tr key={invoice.id}>
+                      <td><strong>{invoice.folio_label}</strong>{invoice.is_simulated && <small className="billing-inline-note">Simulada</small>}</td>
+                      <td><strong>{invoice.global_year && invoice.global_month ? billingGlobalPeriodLabel(invoice.global_year, invoice.global_month) : invoice.origin_reference}</strong></td>
+                      <td>{invoice.receptor_name}<small className="billing-inline-note">{invoice.receptor_rfc}</small></td>
+                      <td className="time-cell">{formatMoment(invoice.created_at)}</td>
+                      <td>{formatMoney(invoice.total_cents)}</td>
+                      <td><span className={`status-badge ${billingStatusBadges[status]}`}><i />{billingStatusLabels[status]}</span></td>
+                      <td><div className="pos-row-actions"><button className="button button-secondary button-small" onClick={() => onOpenInvoice(invoice.id)}>Ver</button></div></td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </>
   );
 }
@@ -8263,15 +8632,18 @@ function NewInvoiceModal({ canManage, onClose, onCreated, onUnauthorized }: { ca
   );
 }
 
-function InvoiceDetailModal({ invoiceId, canManage, onClose, onChanged, onUnauthorized }: { invoiceId: string; canManage: boolean; onClose: () => void; onChanged: (message: string) => void; onUnauthorized: () => void }) {
+function InvoiceDetailModal({ invoiceId, canManage, canRequest, onClose, onChanged, onUnauthorized }: { invoiceId: string; canManage: boolean; canRequest: boolean; onClose: () => void; onChanged: (message: string) => void; onUnauthorized: () => void }) {
   const [invoice, setInvoice] = useState<BillingInvoice | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState<"stamp" | "cancel" | null>(null);
+  const [busy, setBusy] = useState<"stamp" | "cancel" | "send" | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reasonCode, setReasonCode] = useState("02");
   const [replacementUuid, setReplacementUuid] = useState("");
   const [note, setNote] = useState("");
+  const [emailOpen, setEmailOpen] = useState(false);
+  const [emailTo, setEmailTo] = useState("");
+  const [emailNotice, setEmailNotice] = useState("");
 
   const load = async () => {
     setLoading(true);
@@ -8358,8 +8730,53 @@ function InvoiceDetailModal({ invoiceId, canManage, onClose, onChanged, onUnauth
     }
   };
 
+  const sendInvoiceEmail = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!invoice) return;
+    const recipient = emailTo.trim();
+    if (!recipient) {
+      setError("Captura el correo del destinatario.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+      setError("El correo del destinatario no es válido.");
+      return;
+    }
+    setBusy("send");
+    setError("");
+    setEmailNotice("");
+    try {
+      const response = await fetch(`/api/admin/billing/invoices/${encodeURIComponent(invoice.id)}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: recipient }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudo enviar la factura."));
+        return;
+      }
+      const delivery = await response.json() as BillingDelivery;
+      setEmailOpen(false);
+      const message = delivery.status === "simulated"
+        ? `Envío simulado a ${delivery.recipient}.`
+        : `Factura enviada a ${delivery.recipient}.`;
+      setEmailNotice(delivery.status === "simulated"
+        ? `${message} En vista previa no se contactó un servidor SMTP.`
+        : message);
+      onChanged(message);
+      await load();
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const status = invoice ? billingInvoiceStatus(invoice.status) : "requested";
   const canStamp = invoice !== null && canManage && (invoice.status === "requested" || invoice.status === "failed");
+  const canDeliver = invoice !== null && (invoice.status === "stamped" || invoice.status === "cancelled");
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -8374,6 +8791,7 @@ function InvoiceDetailModal({ invoiceId, canManage, onClose, onChanged, onUnauth
             <p className="modal-subtitle">{invoice.receptor_rfc} · {billingOriginLabels[invoice.origin_type]} {invoice.origin_reference}</p>
             <div className="billing-detail-status">
               <span className={`status-badge ${billingStatusBadges[status]}`}><i />{billingStatusLabels[status]}</span>
+              {invoice.origin_type === "global" && invoice.global_year && invoice.global_month && <span className="status-badge status-neutral"><i />{billingGlobalPeriodLabel(invoice.global_year, invoice.global_month)}</span>}
               {invoice.is_simulated && <span className="status-badge status-warn"><i />Simulada · sin validez fiscal</span>}
               <span className="billing-detail-date">Creada {formatMoment(invoice.created_at)}</span>
             </div>
@@ -8401,7 +8819,7 @@ function InvoiceDetailModal({ invoiceId, canManage, onClose, onChanged, onUnauth
                         <td><strong>{item.description}</strong><small className="billing-inline-note">{item.sat_unit_code} · {item.unit_name}</small></td>
                         <td>{item.sat_product_code}</td>
                         <td>{item.quantity}</td>
-                        <td>{formatMoney(item.unit_price_cents)}</td>
+                        <td>{formatMoney(item.subtotal_cents / item.quantity)}</td>
                         <td>{formatMoney(item.subtotal_cents)}</td>
                         <td>{formatMoney(item.tax_cents)}</td>
                         <td>{formatMoney(item.total_cents)}</td>
@@ -8412,6 +8830,27 @@ function InvoiceDetailModal({ invoiceId, canManage, onClose, onChanged, onUnauth
               </div>
             </div>
 
+            {invoice.origin_type === "global" && (
+              <div className="detail-section">
+                <div className="modal-section-title"><span>VENTAS INCLUIDAS</span><span>{invoice.global_sales.length}</span></div>
+                <div className="table-scroll">
+                  <table className="data-table compact-table">
+                    <thead><tr><th>FOLIO</th><th>FECHA</th><th>TOTAL</th></tr></thead>
+                    <tbody>
+                      {invoice.global_sales.length === 0 ? <tr><td colSpan={3} className="empty-row">Sin ventas registradas en el lote.</td></tr>
+                        : invoice.global_sales.map((sale) => (
+                          <tr key={sale.sale_id}>
+                            <td><strong>{sale.sale_folio}</strong></td>
+                            <td className="time-cell">{formatMoment(sale.sold_at)}</td>
+                            <td>{formatMoney(sale.total_cents)}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             <div className="detail-section">
               <div className="modal-section-title"><span>RECEPTOR</span></div>
               <div className="billing-detail-grid">
@@ -8420,7 +8859,7 @@ function InvoiceDetailModal({ invoiceId, canManage, onClose, onChanged, onUnauth
                 <div><span>CÓDIGO POSTAL</span><strong>{invoice.receptor_postal_code}</strong></div>
                 <div><span>USO DEL CFDI</span><strong>{billingCfdiUseLabel(invoice.receptor_cfdi_use)}</strong></div>
                 <div><span>CORREO</span><strong>{invoice.receptor_email ?? "—"}</strong></div>
-                <div><span>SOCIO</span><strong>{invoice.member_name ?? "Sin socio"}</strong></div>
+                <div><span>{invoice.origin_type === "global" ? "VENTAS INCLUIDAS" : "SOCIO"}</span><strong>{invoice.origin_type === "global" ? invoice.global_sales.length : (invoice.member_name ?? "Sin socio")}</strong></div>
               </div>
             </div>
 
@@ -8459,6 +8898,8 @@ function InvoiceDetailModal({ invoiceId, canManage, onClose, onChanged, onUnauth
                       <small>{formatMoment(event.occurred_at)}{event.to_status && billingStatusLabels[billingInvoiceStatus(event.to_status)] ? ` · ${billingStatusLabels[billingInvoiceStatus(event.to_status)]}` : ""}</small>
                       {billingEventValue(event, "provider_reference") && <small>Referencia: {billingEventValue(event, "provider_reference")}</small>}
                       {billingEventValue(event, "reason_code") && <small>Motivo SAT: {billingEventValue(event, "reason_code")}</small>}
+                      {billingEventValue(event, "recipient") && <small>Destinatario: {billingEventValue(event, "recipient")}</small>}
+                      {billingEventValue(event, "delivery_status") && <small>{billingEventValue(event, "delivery_status") === "simulated" ? "Entrega simulada en vista previa" : "Entrega confirmada por SMTP"}</small>}
                       {billingEventValue(event, "error") && <small>{billingEventValue(event, "error")}</small>}
                     </div>
                   </div>
@@ -8466,12 +8907,25 @@ function InvoiceDetailModal({ invoiceId, canManage, onClose, onChanged, onUnauth
               </div>
             </div>
 
+            {emailNotice && <div className="billing-delivery-success" role="status">{emailNotice}</div>}
             {error && <div className="login-error" role="alert">{error}</div>}
+
+            {emailOpen && (
+              <form className="billing-cancel-form billing-email-form" onSubmit={sendInvoiceEmail}>
+                <div className="modal-section-title"><span>ENVIAR POR CORREO</span></div>
+                <p className="billing-empty">Se adjuntarán el PDF y el XML del comprobante. En vista previa el envío se registra como simulado.</p>
+                <label className="form-field"><span>Correo del destinatario *</span><input type="email" value={emailTo} onChange={(event) => { setEmailTo(event.target.value); setError(""); }} maxLength={254} placeholder="facturas@example.com" /></label>
+                <div className="modal-actions">
+                  <button type="button" className="button button-secondary" onClick={() => setEmailOpen(false)}>Volver</button>
+                  <button type="submit" className="button button-primary" disabled={busy === "send"}>{busy === "send" ? "Enviando…" : "Enviar factura"}</button>
+                </div>
+              </form>
+            )}
 
             {cancelOpen && (
               <form className="billing-cancel-form" onSubmit={cancel}>
                 <div className="modal-section-title"><span>CANCELAR COMPROBANTE</span></div>
-                <p className="billing-empty">La cancelación conserva la factura y su folio; libera la operación para emitir un reemplazo.</p>
+                <p className="billing-empty">La cancelación conserva la factura y su folio; {invoice.origin_type === "global" ? "libera el periodo y sus ventas para emitir un reemplazo." : "libera la operación para emitir un reemplazo."}</p>
                 <div className="form-row">
                   <label className="form-field"><span>Motivo SAT *</span><select value={reasonCode} onChange={(event) => { setReasonCode(event.target.value); setError(""); }}>{BILLING_CANCELLATION_REASONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
                   {reasonCode === "01" && <label className="form-field"><span>UUID que sustituye *</span><input value={replacementUuid} onChange={(event) => setReplacementUuid(event.target.value)} maxLength={36} placeholder="00000000-0000-0000-0000-000000000000" /></label>}
@@ -8485,7 +8939,9 @@ function InvoiceDetailModal({ invoiceId, canManage, onClose, onChanged, onUnauth
             )}
 
             <div className="modal-actions billing-detail-actions">
+              {canDeliver && <a className="button button-secondary" href={`/api/admin/billing/invoices/${encodeURIComponent(invoice.id)}/pdf`} download><Download size={16} />Descargar PDF</a>}
               <a className="button button-secondary" href={`/api/admin/billing/invoices/${encodeURIComponent(invoice.id)}/xml`} download><Download size={16} />Descargar XML</a>
+              {canRequest && invoice.status === "stamped" && invoice.origin_type !== "global" && !emailOpen && <button className="button button-secondary" onClick={() => { setEmailOpen(true); setEmailTo(invoice.receptor_email ?? ""); setEmailNotice(""); setError(""); }} disabled={busy !== null}><Mail size={16} />Enviar por correo</button>}
               {canStamp && <button className="button button-primary" onClick={() => void stamp()} disabled={busy !== null}><ShieldCheck size={16} />{busy === "stamp" ? "Timbrando…" : invoice.status === "failed" ? "Reintentar timbrado" : "Timbrar ahora"}</button>}
               {canManage && invoice.status === "stamped" && !cancelOpen && <button className="button button-danger" onClick={() => setCancelOpen(true)} disabled={busy !== null}>Cancelar factura</button>}
               <button className="button button-secondary" onClick={onClose}>Cerrar</button>

@@ -344,6 +344,10 @@ from app.modules.billing import (
     BillingMemberNotFound,
     CancellationNotAllowed,
     FiscalDataInvalid,
+    GlobalInvoiceNoEligibleSales,
+    GlobalInvoicePeriodConflict,
+    InvoiceDeliveryFailed,
+    InvoiceEmailNotConfigured,
     InvoiceIdempotencyConflict,
     InvoiceNotFound,
     InvoiceNumberingError,
@@ -354,14 +358,18 @@ from app.modules.billing import (
     PacRejected,
     PacUnavailable,
     cancel_invoice,
+    create_global_invoice,
     create_invoice,
     get_fiscal_profile,
     get_invoice,
+    invoice_pdf,
     invoice_summary,
     invoice_xml,
+    list_global_invoice_eligibility,
     list_invoices,
     list_origin_options,
     save_fiscal_profile,
+    send_invoice_email,
     stamp_invoice,
 )
 from app.modules.reports import (
@@ -6596,6 +6604,16 @@ class InvoiceCancelRequest(BaseModel):
     note: str | None = Field(default=None, max_length=300)
 
 
+class InvoiceSendRequest(BaseModel):
+    email: EmailStr | None = None
+
+
+class GlobalInvoiceCreateRequest(BaseModel):
+    year: int = Field(ge=2000, le=2100)
+    month: int = Field(ge=1, le=12)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
 def _cfdi_http_status(error: CfdiError) -> int:
     if isinstance(error, (InvoiceNotFound, OriginNotFound, BillingMemberNotFound)):
         return status.HTTP_404_NOT_FOUND
@@ -6607,12 +6625,14 @@ def _cfdi_http_status(error: CfdiError) -> int:
             InvoiceIdempotencyConflict,
             InvoiceStateError,
             CancellationNotAllowed,
+            GlobalInvoiceNoEligibleSales,
+            GlobalInvoicePeriodConflict,
         ),
     ):
         return status.HTTP_409_CONFLICT
-    if isinstance(error, PacUnavailable):
+    if isinstance(error, (PacUnavailable, InvoiceEmailNotConfigured)):
         return status.HTTP_503_SERVICE_UNAVAILABLE
-    if isinstance(error, PacRejected):
+    if isinstance(error, (PacRejected, InvoiceDeliveryFailed)):
         return status.HTTP_502_BAD_GATEWAY
     if isinstance(error, FiscalDataInvalid):
         return status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -6639,6 +6659,50 @@ def get_billing_summary(
         "stamped_cents": summary.stamped_cents,
         "cancelled_cents": summary.cancelled_cents,
     }
+
+
+@app.get("/admin/billing/global-invoices/eligible", tags=["billing"])
+def get_global_invoice_eligibility(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.read"))],
+    year: Annotated[int, Query(ge=2000, le=2100)],
+    month: Annotated[int, Query(ge=1, le=12)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+):
+    try:
+        return list_global_invoice_eligibility(
+            session,
+            year=year,
+            month=month,
+            page=page,
+            page_size=page_size,
+        )
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+
+
+@app.post(
+    "/admin/billing/global-invoices",
+    status_code=status.HTTP_201_CREATED,
+    tags=["billing"],
+)
+def request_global_invoice(
+    payload: GlobalInvoiceCreateRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.manage"))],
+) -> dict[str, object]:
+    try:
+        invoice, created = create_global_invoice(
+            session,
+            year=payload.year,
+            month=payload.month,
+            idempotency_key=payload.idempotency_key,
+            actor_id=principal.user_id,
+        )
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+    return {"invoice": invoice, "idempotent_replay": not created}
 
 
 @app.get("/admin/billing/invoices", tags=["billing"])
@@ -6751,6 +6815,50 @@ def download_invoice_xml(
             "Cache-Control": "no-store",
         },
     )
+
+
+@app.get("/admin/billing/invoices/{invoice_id}/pdf", tags=["billing"])
+def download_invoice_pdf(
+    invoice_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.read"))],
+) -> Response:
+    try:
+        filename, content = invoice_pdf(session, invoice_id)
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post("/admin/billing/invoices/{invoice_id}/send", tags=["billing"])
+def send_invoice(
+    invoice_id: UUID,
+    session: SessionDependency,
+    principal: Annotated[
+        AuthenticatedUser, Depends(require_api_permission("billing.request"))
+    ],
+    payload: InvoiceSendRequest | None = None,
+):
+    try:
+        return send_invoice_email(
+            session,
+            invoice_id,
+            recipient=(
+                str(payload.email)
+                if payload is not None and payload.email is not None
+                else None
+            ),
+            actor_id=principal.user_id,
+        )
+    except CfdiError as error:
+        _raise_cfdi_error(error)
 
 
 @app.get("/admin/billing/origins", tags=["billing"])

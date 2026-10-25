@@ -25,7 +25,10 @@
 
 ## Facturación y documentos fiscales
 
-- el XML y los datos del timbre se guardan en `invoices.xml_content` y se descargan con `billing.read` y `Cache-Control: no-store`; no hay PDF ni envío por correo en este incremento.
+- el XML y los datos del timbre se guardan en `invoices.xml_content` y se descargan con `billing.read` y `Cache-Control: no-store`. El PDF se genera al momento (no se almacena) y solo se entrega para facturas timbradas o canceladas; las simuladas llevan marca de agua y aviso de que no tienen validez fiscal.
+- la factura global se consulta con `billing.read` y se emite o cancela con `billing.manage`; su lote (`global_invoice_sales`) solo conserva folio, fecha y total de ventas de público en general, sin datos del socio, y el receptor fijo no tiene correo ni envío. Una global viva bloquea la factura individual de sus ventas hasta cancelarla.
+- el envío por correo del CFDI exige `billing.request`, solo acepta facturas timbradas y adjunta PDF y XML al correo del receptor o a un destinatario explícito. Cada envío queda en `invoice_events` con destinatario, adjuntos, estado (`sent`/`simulated`) y error, sin guardar los archivos ni credenciales; en vista previa se simula y no contacta SMTP. En producción el transporte debe usar TLS y una cuenta dedicada; el envío es síncrono y no hay confirmación de entrega.
+- el PDF y el correo contienen datos fiscales personales (RFC, razón social, domicilio y correo): se aplican las mismas reglas de acceso que el XML y falta definir con asesoría legal su retención y el procedimiento ARCO.
 - las credenciales del PAC y del emisor viven solo en variables de entorno; nunca se guardan en la base, en la factura ni en la bitácora.
 - `invoice_events` es append-only: solicitudes, intentos de timbrado y cancelaciones conservan actor, fecha, estado anterior/nuevo y detalle sin secretos. Una factura no se borra; cancelar conserva folio, motivo y UUID sustituto.
 - en vista previa el timbrado es **simulado**: `SimulatedPac` no contacta al SAT, no produce UUID ni `TimbreFiscalDigital` y la UI lo marca como SIMULACIÓN. Nunca debe presentarse como comprobante fiscal válido. Con un PAC real configurado sin adaptador, el timbrado falla con `503` en vez de simular.

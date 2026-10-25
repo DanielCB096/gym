@@ -20,7 +20,7 @@
 - se prioriza variedad popular y bien documentada
 - el backend Python con FastAPI permite casos de uso claros y pruebas de negocio
 - PostgreSQL y Redis son suficientes para la primera fase y permiten crecer por módulos
-- los estados de cuenta se generan con **ReportLab** (PDF) y el módulo estándar `csv`, y se envían con `smtplib` contra un SMTP configurable por variables de entorno; no se agregó un proveedor de correo externo en esta fase. El reintento es manual desde el historial (solo `failed`/`simulated`); la cola y el reintento automático siguen pendientes
+- los estados de cuenta y la representación impresa del CFDI se generan con **ReportLab** (PDF); los estados de cuenta también exportan CSV con el módulo estándar `csv`. El correo sale por `smtplib` a través de un módulo compartido (`backend/src/app/mailer.py`) contra un SMTP configurable por variables de entorno; no se agregó un proveedor de correo externo en esta fase. El CFDI envía PDF y XML adjuntos y registra cada intento en `invoice_events`; el reintento es manual desde el historial de estados de cuenta (solo `failed`/`simulated`), y la cola y el reintento automático siguen pendientes
 
 ## Otras opciones sensatas
 
