@@ -37,10 +37,11 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
-# A CFDI bills one sale, one confirmed membership payment or one monthly batch
-# of walk-in sales to the public in general. Other origins (account payments,
-# PPD complements) are added by later migrations that widen this check.
-INVOICE_ORIGIN_TYPES = ("sale", "membership_payment", "global")
+# A CFDI bills one sale, one confirmed membership payment, one monthly batch of
+# walk-in sales to the public in general or one credit note (CFDI de egreso)
+# linked to a previous invoice. Other origins (account payments, PPD
+# complements) are added by later migrations that widen this check.
+INVOICE_ORIGIN_TYPES = ("sale", "membership_payment", "global", "credit_note")
 
 INVOICE_STATUSES = ("requested", "failed", "stamped", "cancelled")
 
@@ -96,7 +97,7 @@ class Invoice(SQLModel, table=True):
     __tablename__ = "invoices"
     __table_args__ = (
         CheckConstraint(
-            "origin_type IN ('sale', 'membership_payment', 'global')",
+            "origin_type IN ('sale', 'membership_payment', 'global', 'credit_note')",
             name="ck_invoices_origin_type",
         ),
         CheckConstraint(
@@ -112,6 +113,15 @@ class Invoice(SQLModel, table=True):
             "AND global_month IS NULL)",
             name="ck_invoices_global_period",
         ),
+        # A credit note always points to the invoice it adjusts and records why;
+        # no other invoice type may carry those fields.
+        CheckConstraint(
+            "(origin_type = 'credit_note' AND related_invoice_id IS NOT NULL "
+            "AND credit_note_reason IS NOT NULL) OR "
+            "(origin_type <> 'credit_note' AND related_invoice_id IS NULL "
+            "AND credit_note_reason IS NULL AND credit_note_note IS NULL)",
+            name="ck_invoices_credit_note",
+        ),
         CheckConstraint(
             "subtotal_cents >= 0 AND tax_cents >= 0 AND total_cents >= 0 "
             "AND subtotal_cents + tax_cents = total_cents",
@@ -126,16 +136,23 @@ class Invoice(SQLModel, table=True):
         Index("ix_invoices_origin", "origin_type", "origin_id"),
         Index("ix_invoices_status_created", "status", "created_at"),
         Index("ix_invoices_member_created", "member_id", "created_at"),
+        Index("ix_invoices_related", "related_invoice_id"),
         # At most one live (not cancelled) invoice per origin. A cancelled
         # invoice keeps its folio and history but frees the origin for a new
-        # one, which is how a replacement comprobante is issued.
+        # one, which is how a replacement comprobante is issued. Credit notes
+        # are excluded: an invoice accepts several partial notes, and its
+        # remaining balance is validated in the service instead.
         Index(
             "uq_invoices_active_origin",
             "origin_type",
             "origin_id",
             unique=True,
-            postgresql_where=text("status <> 'cancelled'"),
-            sqlite_where=text("status <> 'cancelled'"),
+            postgresql_where=text(
+                "status <> 'cancelled' AND origin_type <> 'credit_note'"
+            ),
+            sqlite_where=text(
+                "status <> 'cancelled' AND origin_type <> 'credit_note'"
+            ),
         ),
         # At most one live global invoice per month. Cancelling one frees the
         # month for a replacement while both batches stay traceable.
@@ -170,6 +187,19 @@ class Invoice(SQLModel, table=True):
         default=None,
         sa_column=Column(Uuid(as_uuid=True), ForeignKey("members.id", ondelete="RESTRICT")),
     )
+    # Credit note (CFDI de egreso) linkage and reason. ``origin_id`` also points
+    # to the related invoice, but this FK keeps the relation enforced and lets
+    # the database reject deleting a credited comprobante.
+    related_invoice_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("invoices.id", ondelete="RESTRICT"),
+            nullable=True,
+        ),
+    )
+    credit_note_reason: str | None = Field(default=None, max_length=24)
+    credit_note_note: str | None = Field(default=None, max_length=300)
 
     # Receptor snapshot (CFDI 4.0). It is copied into the invoice so a later
     # change to the member profile cannot alter an issued comprobante.

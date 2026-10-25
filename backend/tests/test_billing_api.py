@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app import mailer
 from app.main import app, get_session
+from app.modules.billing.models import Invoice
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.inventory.models import Product, Sale, SaleItem, SaleReturn
 from app.modules.memberships.models import (
@@ -1227,5 +1228,560 @@ def test_global_invoice_rejects_open_months_and_empty_periods(
                 ).status_code
                 == 422
             )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _stamped_sale_invoice(
+    client: TestClient,
+    headers: dict[str, str],
+    sale_id: UUID,
+    *,
+    key: str = "credit-base",
+) -> dict[str, object]:
+    created = client.post(
+        "/admin/billing/invoices",
+        headers=headers,
+        json=_invoice_payload("sale", sale_id, key=key),
+    )
+    assert created.status_code == 201, created.text
+    invoice_id = created.json()["invoice"]["id"]
+    stamped = client.post(
+        f"/admin/billing/invoices/{invoice_id}/stamp", headers=headers
+    )
+    assert stamped.status_code == 200, stamped.text
+    return stamped.json()
+
+
+def test_credit_note_partial_then_full_controls_invoice_balance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    _, _, _, _, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            base = _stamped_sale_invoice(client, accountant, sale_id)
+            base_id = str(base["id"])
+            assert base["credit_balance_cents"] == 11600
+            assert base["credited_cents"] == 0
+            assert base["credit_notes"] == []
+
+            created = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 5000,
+                    "reason": "discount",
+                    "note": "Descuento acordado",
+                    "idempotency_key": "credit-note-1",
+                },
+            )
+            assert created.status_code == 201, created.text
+            body = created.json()
+            assert body["idempotent_replay"] is False
+            note = body["invoice"]
+            note_id = note["id"]
+            assert note["origin_type"] == "credit_note"
+            assert note["status"] == "requested"
+            assert note["related_invoice_id"] == base_id
+            assert note["related_invoice_folio_label"] == base["folio_label"]
+            assert note["origin_reference"] == base["folio_label"]
+            assert note["credit_note_reason"] == "discount"
+            assert note["credit_note_note"] == "Descuento acordado"
+            assert note["receptor_rfc"] == base["receptor_rfc"]
+            assert note["receptor_email"] == base["receptor_email"]
+            assert note["total_cents"] == 5000
+            assert note["subtotal_cents"] == 4310
+            assert note["tax_cents"] == 690
+            assert note["items"][0]["description"].startswith("Nota de crédito")
+
+            xml = client.get(
+                f"/admin/billing/invoices/{note_id}/xml", headers=accountant
+            )
+            assert xml.status_code == 200
+            assert 'TipoDeComprobante="E"' in xml.text
+            assert "SIMULACION: la factura relacionada" in xml.text
+            assert "TipoRelacion" not in xml.text
+
+            stamped_note = client.post(
+                f"/admin/billing/invoices/{note_id}/stamp", headers=accountant
+            )
+            assert stamped_note.status_code == 200, stamped_note.text
+            assert stamped_note.json()["status"] == "stamped"
+            assert [event["event_type"] for event in stamped_note.json()["events"]] == [
+                "invoice_requested",
+                "invoice_stamped",
+            ]
+
+            after_partial = client.get(
+                f"/admin/billing/invoices/{base_id}", headers=accountant
+            ).json()
+            assert after_partial["credited_cents"] == 5000
+            assert after_partial["credit_balance_cents"] == 6600
+            assert len(after_partial["credit_notes"]) == 1
+            assert after_partial["credit_notes"][0]["folio_label"] == note["folio_label"]
+            assert after_partial["credit_notes"][0]["status"] == "stamped"
+
+            replay = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 5000,
+                    "reason": "discount",
+                    "note": "Descuento acordado",
+                    "idempotency_key": "credit-note-1",
+                },
+            )
+            assert replay.status_code == 201, replay.text
+            assert replay.json()["idempotent_replay"] is True
+            assert replay.json()["invoice"]["id"] == note_id
+
+            conflict = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 4000,
+                    "reason": "discount",
+                    "note": "Descuento acordado",
+                    "idempotency_key": "credit-note-1",
+                },
+            )
+            assert conflict.status_code == 409
+
+            over = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 6601,
+                    "reason": "correction",
+                    "idempotency_key": "credit-note-over",
+                },
+            )
+            assert over.status_code == 422
+            assert "saldo acreditable" in over.json()["detail"]
+
+            full = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 6600,
+                    "reason": "return",
+                    "idempotency_key": "credit-note-full",
+                },
+            )
+            assert full.status_code == 201, full.text
+            full_note_id = full.json()["invoice"]["id"]
+            full_note = full.json()["invoice"]
+            assert full_note["subtotal_cents"] == 5690
+            assert full_note["tax_cents"] == 910
+            assert client.post(
+                f"/admin/billing/invoices/{full_note_id}/stamp", headers=accountant
+            ).status_code == 200
+
+            exhausted = client.get(
+                f"/admin/billing/invoices/{base_id}", headers=accountant
+            ).json()
+            assert exhausted["credited_cents"] == 11600
+            assert exhausted["credit_balance_cents"] == 0
+            assert len(exhausted["credit_notes"]) == 2
+
+            no_balance = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 1,
+                    "reason": "other",
+                    "idempotency_key": "credit-note-exhausted",
+                },
+            )
+            assert no_balance.status_code == 409
+            assert "totalmente acreditada" in no_balance.json()["detail"]
+
+            summary = client.get("/admin/billing/summary", headers=accountant).json()
+            assert summary["credit_notes"] == 2
+            assert summary["credit_note_cents"] == 11600
+            assert summary["stamped_cents"] == 11600
+            assert summary["net_stamped_cents"] == 0
+
+            notes_list = client.get(
+                "/admin/billing/invoices",
+                headers=accountant,
+                params={"origin_type": "credit_note"},
+            )
+            assert notes_list.status_code == 200
+            assert notes_list.json()["total"] == 2
+            assert {item["related_invoice_id"] for item in notes_list.json()["items"]} == {
+                base_id
+            }
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_credit_note_permissions_validation_and_related_restrictions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    _, _, _, payment_id, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            base = _stamped_sale_invoice(client, accountant, sale_id)
+            base_id = str(base["id"])
+
+            denied = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=reception,
+                json={
+                    "amount_cents": 1000,
+                    "reason": "discount",
+                    "idempotency_key": "credit-denied",
+                },
+            )
+            assert denied.status_code == 403
+
+            assert client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 1000,
+                    "reason": "refund",
+                    "idempotency_key": "credit-bad-reason",
+                },
+            ).status_code == 422
+            assert client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 0,
+                    "reason": "discount",
+                    "idempotency_key": "credit-zero",
+                },
+            ).status_code == 422
+            assert client.post(
+                f"/admin/billing/invoices/{uuid4()}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 1000,
+                    "reason": "discount",
+                    "idempotency_key": "credit-missing",
+                },
+            ).status_code == 404
+
+            requested_payment = client.post(
+                "/admin/billing/invoices",
+                headers=accountant,
+                json=_invoice_payload(
+                    "membership_payment", payment_id, key="payment-requested"
+                ),
+            )
+            assert requested_payment.status_code == 201, requested_payment.text
+            payment_invoice_id = requested_payment.json()["invoice"]["id"]
+            not_stamped = client.post(
+                f"/admin/billing/invoices/{payment_invoice_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 1000,
+                    "reason": "correction",
+                    "idempotency_key": "credit-not-stamped",
+                },
+            )
+            assert not_stamped.status_code == 409
+            assert "timbrada" in not_stamped.json()["detail"]
+
+            note = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 1000,
+                    "reason": "correction",
+                    "idempotency_key": "credit-note-chain",
+                },
+            )
+            assert note.status_code == 201, note.text
+            note_id = note.json()["invoice"]["id"]
+            assert client.post(
+                f"/admin/billing/invoices/{note_id}/stamp", headers=accountant
+            ).status_code == 200
+            chained = client.post(
+                f"/admin/billing/invoices/{note_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 500,
+                    "reason": "correction",
+                    "idempotency_key": "credit-note-chain-2",
+                },
+            )
+            assert chained.status_code == 409
+            assert "otra nota de crédito" in chained.json()["detail"]
+            assert client.post(
+                f"/admin/billing/invoices/{note_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "02", "note": "Prueba de cadena"},
+            ).status_code == 200
+
+            pending_note = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 100,
+                    "reason": "other",
+                    "idempotency_key": "credit-note-pending",
+                },
+            )
+            assert pending_note.status_code == 201, pending_note.text
+            pending_id = pending_note.json()["invoice"]["id"]
+            cancelled_base = client.post(
+                f"/admin/billing/invoices/{base_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "02", "note": "Sin notas timbradas"},
+            )
+            assert cancelled_base.status_code == 200, cancelled_base.text
+            cancelled_note = client.post(
+                f"/admin/billing/invoices/{pending_id}/stamp", headers=accountant
+            )
+            assert cancelled_note.status_code == 409
+            failed_note = client.get(
+                f"/admin/billing/invoices/{pending_id}", headers=accountant
+            ).json()
+            assert failed_note["status"] == "failed"
+            assert failed_note["events"][-1]["detail"]["code"] == "related_not_stamped"
+            after_cancel = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 100,
+                    "reason": "other",
+                    "idempotency_key": "credit-after-cancel",
+                },
+            )
+            assert after_cancel.status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_credit_note_cancellation_restores_balance_and_unblocks_invoice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    _, _, _, _, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            base = _stamped_sale_invoice(client, accountant, sale_id)
+            base_id = str(base["id"])
+            note = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 3000,
+                    "reason": "return",
+                    "idempotency_key": "credit-cancel",
+                },
+            ).json()["invoice"]
+            note_id = note["id"]
+            assert client.post(
+                f"/admin/billing/invoices/{note_id}/stamp", headers=accountant
+            ).status_code == 200
+
+            blocked = client.post(
+                f"/admin/billing/invoices/{base_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "02"},
+            )
+            assert blocked.status_code == 409
+            assert "notas de crédito" in blocked.json()["detail"]
+
+            cancelled_note = client.post(
+                f"/admin/billing/invoices/{note_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "02", "note": "Nota emitida por error"},
+            )
+            assert cancelled_note.status_code == 200, cancelled_note.text
+            assert cancelled_note.json()["status"] == "cancelled"
+
+            restored = client.get(
+                f"/admin/billing/invoices/{base_id}", headers=accountant
+            ).json()
+            assert restored["credited_cents"] == 0
+            assert restored["credit_balance_cents"] == 11600
+            assert restored["credit_notes"][0]["status"] == "cancelled"
+
+            summary = client.get("/admin/billing/summary", headers=accountant).json()
+            assert summary["credit_notes"] == 0
+            assert summary["credit_note_cents"] == 0
+            assert summary["net_stamped_cents"] == 11600
+
+            cancelled_base = client.post(
+                f"/admin/billing/invoices/{base_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "02"},
+            )
+            assert cancelled_base.status_code == 200, cancelled_base.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_credit_note_stamp_rechecks_the_available_balance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    _, _, _, _, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            base = _stamped_sale_invoice(client, accountant, sale_id)
+            base_id = str(base["id"])
+            first = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 11600,
+                    "reason": "return",
+                    "idempotency_key": "credit-race-1",
+                },
+            )
+            assert first.status_code == 201, first.text
+            second = client.post(
+                f"/admin/billing/invoices/{base_id}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 11600,
+                    "reason": "return",
+                    "idempotency_key": "credit-race-2",
+                },
+            )
+            assert second.status_code == 201, second.text
+            first_id = first.json()["invoice"]["id"]
+            second_id = second.json()["invoice"]["id"]
+
+            assert client.post(
+                f"/admin/billing/invoices/{first_id}/stamp", headers=accountant
+            ).status_code == 200
+            rejected = client.post(
+                f"/admin/billing/invoices/{second_id}/stamp", headers=accountant
+            )
+            assert rejected.status_code == 422
+            assert "saldo acreditable" in rejected.json()["detail"]
+
+            failed = client.get(
+                f"/admin/billing/invoices/{second_id}", headers=accountant
+            ).json()
+            assert failed["status"] == "failed"
+            assert failed["events"][-1]["event_type"] == "invoice_stamp_failed"
+            assert failed["events"][-1]["detail"]["code"] == "credit_balance_exceeded"
+            base_detail = client.get(
+                f"/admin/billing/invoices/{base_id}", headers=accountant
+            ).json()
+            assert base_detail["credited_cents"] == 11600
+            assert base_detail["credit_balance_cents"] == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_credit_note_xml_links_the_related_invoice_uuid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    engine, _, _, _, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            base = _stamped_sale_invoice(client, accountant, sale_id)
+            base_uuid = "12345678-1234-1234-1234-123456789012"
+            with Session(engine) as session:
+                row = session.get(Invoice, UUID(str(base["id"])))
+                assert row is not None
+                row.uuid = base_uuid
+                row.is_simulated = False
+                session.add(row)
+                session.commit()
+
+            note = client.post(
+                f"/admin/billing/invoices/{base['id']}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 1160,
+                    "reason": "correction",
+                    "idempotency_key": "credit-relation",
+                },
+            )
+            assert note.status_code == 201, note.text
+            note_id = note.json()["invoice"]["id"]
+            xml = client.get(
+                f"/admin/billing/invoices/{note_id}/xml", headers=accountant
+            ).text
+            assert 'TipoDeComprobante="E"' in xml
+            assert 'TipoRelacion="01"' in xml
+            assert f'UUID="{base_uuid}"' in xml
+            assert "SIMULACION: la factura relacionada" not in xml
+
+            stamped = client.post(
+                f"/admin/billing/invoices/{note_id}/stamp", headers=accountant
+            )
+            assert stamped.status_code == 200, stamped.text
+            assert f'UUID="{base_uuid}"' in client.get(
+                f"/admin/billing/invoices/{note_id}/xml", headers=accountant
+            ).text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_credit_note_pdf_and_email_are_labeled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    deliveries: list[dict[str, object]] = []
+
+    def fake_send_email(**kwargs: object) -> str:
+        deliveries.append(kwargs)
+        return "simulated"
+
+    monkeypatch.setattr(
+        "app.modules.billing.service.send_email", fake_send_email
+    )
+    _, _, _, _, sale_id = _prepare()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            base = _stamped_sale_invoice(client, accountant, sale_id)
+            note = client.post(
+                f"/admin/billing/invoices/{base['id']}/credit-notes",
+                headers=accountant,
+                json={
+                    "amount_cents": 2500,
+                    "reason": "discount",
+                    "idempotency_key": "credit-delivery",
+                },
+            ).json()["invoice"]
+            note_id = note["id"]
+            assert client.post(
+                f"/admin/billing/invoices/{note_id}/stamp", headers=accountant
+            ).status_code == 200
+
+            pdf = client.get(
+                f"/admin/billing/invoices/{note_id}/pdf", headers=accountant
+            )
+            assert pdf.status_code == 200, pdf.text
+            assert pdf.content.startswith(b"%PDF")
+            assert len(pdf.content) > 1000
+
+            sent = client.post(
+                f"/admin/billing/invoices/{note_id}/send", headers=accountant, json={}
+            )
+            assert sent.status_code == 200, sent.text
+            assert sent.json()["status"] == "simulated"
+            assert len(deliveries) == 1
+            assert str(deliveries[0]["subject"]).startswith("Nota de crédito")
+            assert "Factura relacionada" in str(deliveries[0]["body"])
+            attachment_names = {
+                attachment.filename for attachment in deliveries[0]["attachments"]
+            }
+            assert attachment_names == {
+                f"CFDI-{note['series']}-{note['folio']:06d}-simulada.pdf",
+                f"CFDI-{note['series']}-{note['folio']:06d}-simulada.xml",
+            }
     finally:
         app.dependency_overrides.clear()

@@ -52,6 +52,14 @@ class InvoiceStateError(BillingError):
     """The invoice is not in a state that allows the requested action."""
 
 
+class CreditNoteNotAllowed(InvoiceStateError):
+    """The invoice cannot be adjusted with a credit note."""
+
+
+class CreditNoteBalanceExceeded(FiscalDataInvalid):
+    """The requested amount exceeds the invoice's remaining credit balance."""
+
+
 class InvoiceNumberingError(BillingError):
     pass
 
@@ -110,6 +118,8 @@ __all__ = [
     "BillingError",
     "BillingMemberNotFound",
     "CancellationNotAllowed",
+    "CreditNoteBalanceExceeded",
+    "CreditNoteNotAllowed",
     "FiscalDataInvalid",
     "GlobalInvoiceNoEligibleSales",
     "GlobalInvoicePeriodConflict",

@@ -171,7 +171,7 @@ El **cobro manual de membresía** ya está implementado (2026-10-21) con la migr
 - **Panel**: la ficha del socio muestra el plan actual, la forma de pago, el importe y los botones **Cobrar y activar/Cobrar renovación** y **Activar/Cambiar plan sin cobro** (este último pide confirmación). El resumen del turno de caja agrega los cobros de membresía y su parte en efectivo.
 - **Reportes**: al ser `Payment` confirmados, los cobros manuales entran a los reportes de ingresos y de socios por `paid_at` y por método, sin cambiar el cálculo del MRR esperado.
 
-La pasarela real, el cobro recurrente automático, las promociones/descuentos, el prorrateo por cambio de plan a mitad de ciclo y la facturación fiscal del cobro siguen en diseño.
+La pasarela real, el cobro recurrente automático, las promociones/descuentos y el prorrateo por cambio de plan a mitad de ciclo siguen en diseño. La facturación fiscal del cobro confirmado ya existe: un pago de membresía puede facturarse como CFDI 4.0 individual (`origin_type = "membership_payment"`) y acreditarse con nota de crédito desde el módulo de Facturación; el timbrado sigue siendo simulado hasta integrar el PAC real.
 
 ## 14. Historial de cambios
 

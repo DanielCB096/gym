@@ -40,6 +40,13 @@ ADDED_COLUMNS = {
         "collected_by": "CHAR(32)",
         "note": "VARCHAR(200)",
     },
+    "invoices": {
+        "global_year": "INTEGER",
+        "global_month": "INTEGER",
+        "related_invoice_id": "CHAR(32)",
+        "credit_note_reason": "VARCHAR(24)",
+        "credit_note_note": "VARCHAR(300)",
+    },
 }
 
 # New RBAC rows for features added after the preview database was seeded.
@@ -51,30 +58,79 @@ PREVIEW_PERMISSIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "Administrar límites de crédito de socios",
         ("owner", "manager"),
     ),
+    (
+        "finance.manage",
+        "Conciliar pagos y administrar cuentas bancarias",
+        ("owner", "accountant"),
+    ),
 )
 
 # SQLite cannot alter a CHECK constraint in place, so a table that gains an
 # allowed value is rebuilt: create the replacement under a temporary name, copy
 # the rows, drop the old table and rename. ``foreign_keys`` is off for the
-# duration, so the other tables keep pointing at the final name.
+# duration, so the other tables keep pointing at the final name. Each entry
+# holds one or more (old, new) pairs to replace in the original CREATE TABLE.
 CHECK_UPGRADES = {
     "sales": (
-        "CONSTRAINT ck_sales_payment_method CHECK (payment_method IN "
-        "('cash', 'card', 'transfer'))",
-        "CONSTRAINT ck_sales_payment_method CHECK (payment_method IN "
-        "('cash', 'card', 'transfer', 'account'))",
+        (
+            "CONSTRAINT ck_sales_payment_method CHECK (payment_method IN "
+            "('cash', 'card', 'transfer'))",
+            "CONSTRAINT ck_sales_payment_method CHECK (payment_method IN "
+            "('cash', 'card', 'transfer', 'account'))",
+        ),
     ),
     "sale_returns": (
-        "CONSTRAINT ck_sale_returns_method CHECK (refund_method IN "
-        "('cash', 'card', 'transfer'))",
-        "CONSTRAINT ck_sale_returns_method CHECK (refund_method IN "
-        "('cash', 'card', 'transfer', 'account'))",
+        (
+            "CONSTRAINT ck_sale_returns_method CHECK (refund_method IN "
+            "('cash', 'card', 'transfer'))",
+            "CONSTRAINT ck_sale_returns_method CHECK (refund_method IN "
+            "('cash', 'card', 'transfer', 'account'))",
+        ),
     ),
     "payment_attempts": (
-        "CONSTRAINT ck_payment_attempts_card_method_required CHECK "
-        "(method <> 'card' OR payment_method_id IS NOT NULL)",
-        "CONSTRAINT ck_payment_attempts_card_method_required CHECK "
-        "(method <> 'card' OR payment_method_id IS NOT NULL OR provider IS NULL)",
+        (
+            "CONSTRAINT ck_payment_attempts_card_method_required CHECK "
+            "(method <> 'card' OR payment_method_id IS NOT NULL)",
+            "CONSTRAINT ck_payment_attempts_card_method_required CHECK "
+            "(method <> 'card' OR payment_method_id IS NOT NULL OR provider IS NULL)",
+        ),
+    ),
+    "invoices": (
+        (
+            "CONSTRAINT ck_invoices_origin_type CHECK (origin_type IN "
+            "('sale', 'membership_payment'))",
+            "CONSTRAINT ck_invoices_origin_type CHECK (origin_type IN "
+            "('sale', 'membership_payment', 'global', 'credit_note'))",
+        ),
+    ),
+}
+
+# Constraints added to an existing table. The first value is a marker used to
+# detect whether the constraint is already present; the second is the SQL
+# fragment inserted before the closing parenthesis of CREATE TABLE.
+ADDED_CONSTRAINTS = {
+    "invoices": (
+        (
+            "ck_invoices_global_period",
+            "CONSTRAINT ck_invoices_global_period CHECK "
+            "((origin_type = 'global' AND global_year IS NOT NULL "
+            "AND global_month BETWEEN 1 AND 12) OR "
+            "(origin_type <> 'global' AND global_year IS NULL "
+            "AND global_month IS NULL))",
+        ),
+        (
+            "ck_invoices_credit_note",
+            "CONSTRAINT ck_invoices_credit_note CHECK "
+            "((origin_type = 'credit_note' AND related_invoice_id IS NOT NULL "
+            "AND credit_note_reason IS NOT NULL) OR "
+            "(origin_type <> 'credit_note' AND related_invoice_id IS NULL "
+            "AND credit_note_reason IS NULL AND credit_note_note IS NULL))",
+        ),
+        (
+            "REFERENCES invoices (id) ON DELETE RESTRICT",
+            "FOREIGN KEY(related_invoice_id) REFERENCES invoices (id) "
+            "ON DELETE RESTRICT",
+        ),
     ),
 }
 
@@ -124,8 +180,11 @@ def seed_preview_permissions(connection: sqlite3.Connection) -> None:
         print(f"Granted {code} to {', '.join(role_codes)}")
 
 
-def upgrade_check(
-    connection: sqlite3.Connection, table: str, old_check: str, new_check: str
+def upgrade_checks(
+    connection: sqlite3.Connection,
+    table: str,
+    replacements: tuple[tuple[str, str], ...],
+    additions: tuple[tuple[str, str], ...],
 ) -> None:
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?", (table,)
@@ -133,11 +192,24 @@ def upgrade_check(
     if row is None or row[0] is None:
         return
     sql = row[0]
-    if new_check in sql:
-        print(f"{table}: CHECK already up to date")
+    pending = [
+        (old, new)
+        for old, new in replacements
+        if new not in sql and old in sql
+    ]
+    missing = [
+        (old, new)
+        for old, new in replacements
+        if new not in sql and old not in sql
+    ]
+    if missing:
+        print(f"{table}: expected CHECK not found, leaving it untouched")
         return
-    if old_check not in sql:
-        print(f"{table}: CHECK not found, leaving it untouched")
+    pending_additions = [
+        (marker, clause) for marker, clause in additions if marker not in sql
+    ]
+    if not pending and not pending_additions:
+        print(f"{table}: CHECKs already up to date")
         return
 
     index_sql = [
@@ -148,7 +220,12 @@ def upgrade_check(
         ).fetchall()
     ]
     temporary = f"{table}__upgrade"
-    create_sql = sql.replace(old_check, new_check)
+    create_sql = sql
+    for old, new in pending:
+        create_sql = create_sql.replace(old, new)
+    for _, clause in pending_additions:
+        closing = create_sql.rfind(")")
+        create_sql = create_sql[:closing] + f",\n\t{clause}\n)" + create_sql[closing + 1 :]
     create_sql = create_sql.replace(f"CREATE TABLE {table} ", f"CREATE TABLE {temporary} ", 1)
     connection.execute(create_sql)
     connection.execute(f"INSERT INTO {temporary} SELECT * FROM {table}")
@@ -156,7 +233,7 @@ def upgrade_check(
     connection.execute(f"ALTER TABLE {temporary} RENAME TO {table}")
     for statement in index_sql:
         connection.execute(statement)
-    print(f"{table}: rebuilt with the new CHECK")
+    print(f"{table}: rebuilt with the new CHECKs")
 
 
 def main(reset_maintenance: bool) -> None:
@@ -176,9 +253,14 @@ def main(reset_maintenance: bool) -> None:
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
                 print(f"Added {table}.{column}")
 
-        for table, (old_check, new_check) in CHECK_UPGRADES.items():
+        for table, replacements in CHECK_UPGRADES.items():
             if table in tables:
-                upgrade_check(connection, table, old_check, new_check)
+                upgrade_checks(
+                    connection,
+                    table,
+                    replacements,
+                    ADDED_CONSTRAINTS.get(table, ()),
+                )
 
         seed_preview_permissions(connection)
 
@@ -198,6 +280,22 @@ def main(reset_maintenance: bool) -> None:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS ix_payments_cash_session "
                 "ON payments (cash_session_id)"
+            )
+        if "invoices" in tables:
+            connection.execute("DROP INDEX IF EXISTS uq_invoices_active_origin")
+            connection.execute(
+                "CREATE UNIQUE INDEX uq_invoices_active_origin "
+                "ON invoices (origin_type, origin_id) "
+                "WHERE status <> 'cancelled' AND origin_type <> 'credit_note'"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_invoices_active_global_period "
+                "ON invoices (global_year, global_month) "
+                "WHERE origin_type = 'global' AND status <> 'cancelled'"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS ix_invoices_related "
+                "ON invoices (related_invoice_id)"
             )
 
         if reset_maintenance:

@@ -12,6 +12,7 @@ VAT from it (``split_tax_inclusive``), so the CFDI total always matches the
 receipt and every concept adds up to that total.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -34,6 +35,8 @@ from app.mailer import (
 from app.modules.billing import cfdi, documents
 from app.modules.billing.errors import (
     BillingMemberNotFound,
+    CreditNoteBalanceExceeded,
+    CreditNoteNotAllowed,
     FiscalDataInvalid,
     GlobalInvoiceNoEligibleSales,
     GlobalInvoicePeriodConflict,
@@ -53,6 +56,7 @@ from app.modules.billing.errors import (
     PacRejected,
 )
 from app.modules.billing.models import (
+    INVOICE_ORIGIN_TYPES,
     GlobalInvoiceSale,
     Invoice,
     InvoiceEvent,
@@ -94,6 +98,15 @@ GLOBAL_EXCLUSION_KEYS = (
     "individual_invoice",
     "global_invoice",
 )
+# A credit note only adjusts an income invoice with a known receptor. The
+# public-general global invoice and another credit note cannot be credited.
+CREDIT_NOTE_SOURCE_TYPES = frozenset({"sale", "membership_payment"})
+CREDIT_NOTE_REASONS = {
+    "return": "Devolución",
+    "discount": "Descuento",
+    "correction": "Corrección de importe",
+    "other": "Otro motivo",
+}
 
 
 @dataclass(frozen=True)
@@ -118,6 +131,17 @@ class InvoiceEventView:
     actor_id: UUID | None
     detail: dict[str, object]
     occurred_at: datetime
+
+
+@dataclass(frozen=True)
+class CreditNoteRef:
+    invoice_id: UUID
+    folio_label: str
+    status: str
+    total_cents: int
+    reason: str
+    note: str | None
+    created_at: datetime
 
 
 @dataclass(frozen=True)
@@ -160,6 +184,14 @@ class InvoiceView:
     cancellation_note: str | None
     created_at: datetime
     created_by: UUID | None
+    related_invoice_id: UUID | None = None
+    related_invoice_folio_label: str | None = None
+    related_invoice_status: str | None = None
+    credit_note_reason: str | None = None
+    credit_note_note: str | None = None
+    credited_cents: int = 0
+    credit_balance_cents: int = 0
+    credit_notes: tuple[CreditNoteRef, ...] = field(default=())
     items: tuple[InvoiceItemView, ...] = field(default=())
     events: tuple[InvoiceEventView, ...] = field(default=())
     global_sales: tuple[GlobalInvoiceSaleView, ...] = field(default=())
@@ -183,6 +215,9 @@ class InvoiceSummary:
     simulated: int
     stamped_cents: int
     cancelled_cents: int
+    credit_notes: int
+    credit_note_cents: int
+    net_stamped_cents: int
 
 
 @dataclass(frozen=True)
@@ -390,6 +425,11 @@ def _invoice_view(
     items: tuple[InvoiceItemView, ...] = ()
     events: tuple[InvoiceEventView, ...] = ()
     global_sales: tuple[GlobalInvoiceSaleView, ...] = ()
+    related_invoice_folio_label: str | None = None
+    related_invoice_status: str | None = None
+    credit_notes: tuple[CreditNoteRef, ...] = ()
+    credited_cents = 0
+    credit_balance_cents = 0
     if full:
         items = tuple(
             InvoiceItemView(
@@ -437,6 +477,41 @@ def _invoice_view(
                     .order_by(GlobalInvoiceSale.sold_at, GlobalInvoiceSale.sale_folio)
                 ).all()
             )
+        if invoice.origin_type == "credit_note" and invoice.related_invoice_id is not None:
+            related = session.get(Invoice, invoice.related_invoice_id)
+            if related is not None:
+                related_invoice_folio_label = f"{related.series}-{related.folio:06d}"
+                related_invoice_status = related.status
+        if (
+            invoice.origin_type in CREDIT_NOTE_SOURCE_TYPES
+            and invoice.status == "stamped"
+        ):
+            note_rows = tuple(
+                session.exec(
+                    select(Invoice)
+                    .where(
+                        Invoice.origin_type == "credit_note",
+                        Invoice.related_invoice_id == invoice.id,
+                    )
+                    .order_by(Invoice.created_at, Invoice.folio)
+                ).all()
+            )
+            credit_notes = tuple(
+                CreditNoteRef(
+                    invoice_id=note.id,
+                    folio_label=f"{note.series}-{note.folio:06d}",
+                    status=note.status,
+                    total_cents=note.total_cents,
+                    reason=note.credit_note_reason or "other",
+                    note=note.credit_note_note,
+                    created_at=note.created_at,
+                )
+                for note in note_rows
+            )
+            credited_cents = sum(
+                note.total_cents for note in note_rows if note.status == "stamped"
+            )
+            credit_balance_cents = max(0, invoice.total_cents - credited_cents)
 
     return InvoiceView(
         id=invoice.id,
@@ -477,6 +552,14 @@ def _invoice_view(
         cancellation_note=invoice.cancellation_note,
         created_at=invoice.created_at,
         created_by=invoice.created_by,
+        related_invoice_id=invoice.related_invoice_id,
+        related_invoice_folio_label=related_invoice_folio_label,
+        related_invoice_status=related_invoice_status,
+        credit_note_reason=invoice.credit_note_reason,
+        credit_note_note=invoice.credit_note_note,
+        credited_cents=credited_cents,
+        credit_balance_cents=credit_balance_cents,
+        credit_notes=credit_notes,
         items=items,
         events=events,
         global_sales=global_sales,
@@ -1178,6 +1261,232 @@ class InvoiceNotInvoiceableDetail(FiscalDataInvalid):
     """The amount breakdown does not match; surfaced as a 422."""
 
 
+def _related_invoice_uuid(session: Session, invoice: Invoice) -> str | None:
+    if invoice.origin_type != "credit_note" or invoice.related_invoice_id is None:
+        return None
+    related = session.get(Invoice, invoice.related_invoice_id)
+    return related.uuid if related is not None else None
+
+
+def _build_invoice_xml(
+    session: Session,
+    invoice: Invoice,
+    items: Sequence[InvoiceItem],
+    *,
+    simulated: bool = False,
+) -> str:
+    return cfdi.build_cfdi_xml(
+        invoice=invoice,
+        items=items,
+        issuer=issuer_config(),
+        simulated=simulated,
+        related_uuid=_related_invoice_uuid(session, invoice),
+    )
+
+
+def _stamped_credit_cents(session: Session, invoice_id: UUID) -> int:
+    """Amount already credited by stamped notes, which is the fiscal balance used."""
+
+    return int(
+        session.exec(
+            select(func.coalesce(func.sum(Invoice.total_cents), 0)).where(
+                Invoice.origin_type == "credit_note",
+                Invoice.related_invoice_id == invoice_id,
+                Invoice.status == "stamped",
+            )
+        ).first()
+        or 0
+    )
+
+
+def _credit_balance_cents(session: Session, invoice: Invoice) -> int:
+    return max(0, invoice.total_cents - _stamped_credit_cents(session, invoice.id))
+
+
+def create_credit_note(
+    session: Session,
+    *,
+    invoice_id: UUID,
+    amount_cents: int,
+    reason: str,
+    idempotency_key: str,
+    note: str | None = None,
+    actor_id: UUID | None = None,
+) -> tuple[InvoiceView, bool]:
+    """Request a credit note (CFDI de egreso) for part or all of an invoice.
+
+    Only a stamped income invoice with a known receptor can be credited. The
+    original row is locked while the remaining balance is checked; a requested
+    note does not consume the balance until it is stamped, so ``stamp_invoice``
+    checks it again while holding the same lock.
+    """
+
+    key = (idempotency_key or "").strip()
+    if not key:
+        raise FiscalDataInvalid(
+            "La clave de idempotencia es obligatoria.", field="idempotency_key"
+        )
+    if len(key) > 128:
+        raise FiscalDataInvalid(
+            "La clave de idempotencia excede 128 caracteres.",
+            field="idempotency_key",
+        )
+    normalized_reason = (reason or "").strip().lower()
+    if normalized_reason not in CREDIT_NOTE_REASONS:
+        raise FiscalDataInvalid(
+            "El motivo de la nota de crédito no es válido.", field="reason"
+        )
+    normalized_note = (note or "").strip() or None
+    if normalized_note is not None and len(normalized_note) > 300:
+        raise FiscalDataInvalid(
+            "La nota de la nota de crédito excede 300 caracteres.", field="note"
+        )
+    if amount_cents <= 0:
+        raise FiscalDataInvalid(
+            "El importe de la nota de crédito debe ser mayor que cero.",
+            field="amount_cents",
+        )
+
+    fingerprint = _fingerprint(
+        {
+            "origin_type": "credit_note",
+            "related_invoice_id": str(invoice_id),
+            "amount_cents": str(amount_cents),
+            "reason": normalized_reason,
+            "note": normalized_note,
+        }
+    )
+    existing = session.exec(
+        select(Invoice).where(Invoice.idempotency_key == key)
+    ).first()
+    if existing is not None:
+        if existing.request_fingerprint != fingerprint:
+            raise InvoiceIdempotencyConflict(
+                "La clave de idempotencia ya se usó con otra solicitud de factura."
+            )
+        return _invoice_view(session, existing, full=True), False
+
+    related = session.exec(
+        select(Invoice).where(Invoice.id == invoice_id).with_for_update()
+    ).first()
+    if related is None:
+        raise InvoiceNotFound("La factura no existe.")
+    if related.status != "stamped":
+        raise CreditNoteNotAllowed(
+            "Solo se puede emitir una nota de crédito sobre una factura timbrada y vigente."
+        )
+    if related.origin_type not in CREDIT_NOTE_SOURCE_TYPES:
+        if related.origin_type == "global":
+            raise CreditNoteNotAllowed(
+                "La factura global no admite notas de crédito; ajusta las ventas "
+                "incluidas mediante el procedimiento fiscal correspondiente."
+            )
+        raise CreditNoteNotAllowed(
+            "Una nota de crédito no se puede ajustar con otra nota de crédito."
+        )
+    balance = _credit_balance_cents(session, related)
+    if balance <= 0:
+        raise CreditNoteNotAllowed("La factura ya está totalmente acreditada.")
+    if amount_cents > balance:
+        raise CreditNoteBalanceExceeded(
+            "El importe excede el saldo acreditable disponible "
+            f"({_money_label(balance)}).",
+            field="amount_cents",
+        )
+
+    folio_label = f"{related.series}-{related.folio:06d}"
+    rate = related.tax_rate_percent
+    subtotal_cents, tax_cents = cfdi.split_tax_inclusive(amount_cents, rate)
+    series = invoice_series()
+    issuer = issuer_config()
+    reason_label = CREDIT_NOTE_REASONS[normalized_reason]
+
+    invoice = Invoice(
+        series=series,
+        folio=_next_folio(session, series),
+        status="requested",
+        origin_type="credit_note",
+        origin_id=related.id,
+        origin_reference=folio_label,
+        related_invoice_id=related.id,
+        credit_note_reason=normalized_reason,
+        credit_note_note=normalized_note,
+        member_id=related.member_id,
+        receptor_rfc=related.receptor_rfc,
+        receptor_name=related.receptor_name,
+        receptor_tax_regime=related.receptor_tax_regime,
+        receptor_postal_code=related.receptor_postal_code,
+        receptor_cfdi_use=related.receptor_cfdi_use,
+        receptor_email=related.receptor_email,
+        currency=related.currency,
+        subtotal_cents=subtotal_cents,
+        tax_cents=tax_cents,
+        total_cents=amount_cents,
+        tax_rate_percent=rate,
+        payment_form=related.payment_form,
+        payment_method="PUE",
+        idempotency_key=key,
+        request_fingerprint=fingerprint,
+        created_by=actor_id,
+    )
+    session.add(invoice)
+    session.flush()
+
+    is_service = related.origin_type == "membership_payment"
+    item = InvoiceItem(
+        invoice_id=invoice.id,
+        position=1,
+        description=(
+            f"Nota de crédito · {reason_label.lower()} de la factura {folio_label}"
+        )[:300],
+        sat_product_code=issuer.service_code if is_service else issuer.product_code,
+        sat_unit_code="E48" if is_service else "H87",
+        unit_name="Servicio" if is_service else "Pieza",
+        quantity=1,
+        unit_price_cents=amount_cents,
+        subtotal_cents=subtotal_cents,
+        tax_cents=tax_cents,
+        total_cents=amount_cents,
+    )
+    session.add(item)
+    session.flush()
+
+    invoice.xml_content = _build_invoice_xml(session, invoice, (item,))
+    _record_event(
+        session,
+        invoice,
+        "invoice_requested",
+        from_status=None,
+        to_status="requested",
+        actor_id=actor_id,
+        detail={
+            "origin_type": "credit_note",
+            "origin_id": str(related.id),
+            "origin_reference": folio_label,
+            "related_invoice_id": str(related.id),
+            "reason": normalized_reason,
+            "note": normalized_note,
+            "total_cents": amount_cents,
+            "remaining_balance_cents": balance - amount_cents,
+        },
+    )
+    try:
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        replay = session.exec(
+            select(Invoice).where(Invoice.idempotency_key == key)
+        ).first()
+        if replay is not None and replay.request_fingerprint == fingerprint:
+            return _invoice_view(session, replay, full=True), False
+        raise InvoiceNumberingError(
+            "No fue posible asignar el folio de la nota de crédito; intenta de nuevo."
+        ) from error
+
+    session.refresh(invoice)
+    return _invoice_view(session, invoice, full=True), True
+
+
 def stamp_invoice(
     session: Session,
     invoice_id: UUID,
@@ -1190,12 +1499,65 @@ def stamp_invoice(
     if invoice.status == "cancelled":
         raise InvoiceStateError("Una factura cancelada no se puede volver a timbrar.")
 
+    if invoice.origin_type == "credit_note" and invoice.related_invoice_id is not None:
+        related = session.exec(
+            select(Invoice)
+            .where(Invoice.id == invoice.related_invoice_id)
+            .with_for_update()
+        ).first()
+        if related is None or related.status != "stamped":
+            previous = invoice.status
+            invoice.status = "failed"
+            invoice.updated_at = utc_now()
+            _record_event(
+                session,
+                invoice,
+                "invoice_stamp_failed",
+                from_status=previous,
+                to_status="failed",
+                actor_id=actor_id,
+                detail={
+                    "code": "related_not_stamped",
+                    "error": (
+                        "La factura relacionada ya no está timbrada; la nota de "
+                        "crédito no se puede timbrar."
+                    ),
+                },
+            )
+            session.commit()
+            raise CreditNoteNotAllowed(
+                "La factura relacionada ya no está timbrada; la nota de crédito "
+                "no se puede timbrar."
+            )
+        balance = _credit_balance_cents(session, related)
+        if invoice.total_cents > balance:
+            previous = invoice.status
+            invoice.status = "failed"
+            invoice.updated_at = utc_now()
+            _record_event(
+                session,
+                invoice,
+                "invoice_stamp_failed",
+                from_status=previous,
+                to_status="failed",
+                actor_id=actor_id,
+                detail={
+                    "code": "credit_balance_exceeded",
+                    "error": (
+                        "El importe de la nota de crédito excede el saldo "
+                        f"acreditable disponible ({_money_label(balance)})."
+                    ),
+                },
+            )
+            session.commit()
+            raise CreditNoteBalanceExceeded(
+                "El importe de la nota de crédito excede el saldo acreditable "
+                f"disponible ({_money_label(balance)}).",
+                field="amount_cents",
+            )
+
     items = _invoice_items(session, invoice.id)
-    xml = invoice.xml_content or cfdi.build_cfdi_xml(
-        invoice=invoice,
-        items=items,
-        issuer=issuer_config(),
-    )
+    xml = invoice.xml_content or _build_invoice_xml(session, invoice, items)
     try:
         outcome = pac_gateway().stamp(xml)
     except PacRejected as error:
@@ -1252,9 +1614,26 @@ def cancel_invoice(
     note: str | None = None,
     actor_id: UUID | None = None,
 ) -> InvoiceView:
-    invoice = _get_invoice(session, invoice_id)
+    invoice = session.exec(
+        select(Invoice).where(Invoice.id == invoice_id).with_for_update()
+    ).first()
+    if invoice is None:
+        raise InvoiceNotFound("La factura no existe.")
     if invoice.status != "stamped":
         raise InvoiceStateError("Solo se puede cancelar una factura timbrada.")
+    if invoice.origin_type in CREDIT_NOTE_SOURCE_TYPES:
+        live_note = session.exec(
+            select(Invoice.folio).where(
+                Invoice.origin_type == "credit_note",
+                Invoice.related_invoice_id == invoice.id,
+                Invoice.status == "stamped",
+            )
+        ).first()
+        if live_note is not None:
+            raise CreditNoteNotAllowed(
+                "La factura tiene notas de crédito timbradas vigentes; cancélalas "
+                "antes de cancelar la factura."
+            )
     reason = (reason_code or "").strip()
     if reason not in CANCELLATION_REASONS:
         raise FiscalDataInvalid(
@@ -1323,10 +1702,10 @@ def invoice_xml(session: Session, invoice_id: UUID) -> tuple[str, str]:
     invoice = _get_invoice(session, invoice_id)
     content = invoice.xml_content
     if not content:
-        content = cfdi.build_cfdi_xml(
-            invoice=invoice,
-            items=_invoice_items(session, invoice.id),
-            issuer=issuer_config(),
+        content = _build_invoice_xml(
+            session,
+            invoice,
+            _invoice_items(session, invoice.id),
             simulated=invoice.is_simulated,
         )
     return cfdi.invoice_xml_filename(invoice), content
@@ -1340,29 +1719,52 @@ def invoice_pdf(session: Session, invoice_id: UUID) -> tuple[str, bytes]:
         raise InvoiceNotDeliverable(
             "Solo se puede descargar la representación impresa de una factura timbrada."
         )
+    related = (
+        session.get(Invoice, invoice.related_invoice_id)
+        if invoice.related_invoice_id is not None
+        else None
+    )
     content = documents.build_invoice_pdf(
         invoice=invoice,
         items=_invoice_items(session, invoice.id),
         issuer=issuer_config(),
+        related_invoice=related,
     )
     return documents.invoice_pdf_filename(invoice), content
 
 
-def _invoice_email_body(invoice: Invoice, issuer: cfdi.IssuerConfig) -> str:
+def _invoice_email_body(
+    invoice: Invoice, issuer: cfdi.IssuerConfig, related: Invoice | None = None
+) -> str:
+    is_credit_note = invoice.origin_type == "credit_note"
+    document_label = "nota de crédito" if is_credit_note else "comprobante fiscal"
     lines = [
         f"Hola {invoice.receptor_name},",
         "",
-        "Adjuntamos la representación impresa (PDF) y el XML del comprobante "
-        f"fiscal {invoice.series}-{invoice.folio:06d}.",
+        "Adjuntamos la representación impresa (PDF) y el XML de la "
+        f"{document_label} {invoice.series}-{invoice.folio:06d}.",
         "",
-        f"Total: {_money_label(invoice.total_cents)} {invoice.currency}",
-        f"Forma de pago: {invoice.payment_form}",
-        f"UUID SAT: {invoice.uuid or 'Comprobante simulado sin UUID'}",
-        f"Emisor: {issuer.legal_name} (RFC {issuer.rfc})",
-        "",
-        "Conserva el archivo XML como comprobante fiscal. Este correo se generó "
-        "automáticamente; si no reconoces la operación, contacta al club.",
     ]
+    if is_credit_note and related is not None:
+        lines.extend(
+            [
+                "Factura relacionada: "
+                f"{related.series}-{related.folio:06d}"
+                f"{f' (UUID {related.uuid})' if related.uuid else ''}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            f"Total: {_money_label(invoice.total_cents)} {invoice.currency}",
+            f"Forma de pago: {invoice.payment_form}",
+            f"UUID SAT: {invoice.uuid or 'Comprobante simulado sin UUID'}",
+            f"Emisor: {issuer.legal_name} (RFC {issuer.rfc})",
+            "",
+            "Conserva el archivo XML como comprobante fiscal. Este correo se generó "
+            "automáticamente; si no reconoces la operación, contacta al club.",
+        ]
+    )
     if invoice.is_simulated:
         lines.extend(
             [
@@ -1401,16 +1803,22 @@ def send_invoice_email(
 
     items = _invoice_items(session, invoice.id)
     issuer = issuer_config()
-    xml_content = invoice.xml_content or cfdi.build_cfdi_xml(
-        invoice=invoice,
-        items=items,
-        issuer=issuer,
+    related = (
+        session.get(Invoice, invoice.related_invoice_id)
+        if invoice.related_invoice_id is not None
+        else None
+    )
+    xml_content = invoice.xml_content or _build_invoice_xml(
+        session,
+        invoice,
+        items,
         simulated=invoice.is_simulated,
     )
     pdf_content = documents.build_invoice_pdf(
         invoice=invoice,
         items=items,
         issuer=issuer,
+        related_invoice=related,
     )
     attachments = [
         EmailAttachment(
@@ -1430,14 +1838,15 @@ def send_invoice_email(
         "recipient": target,
         "attachments": ["pdf", "xml"],
     }
+    subject_prefix = "Nota de crédito" if invoice.origin_type == "credit_note" else "Factura"
     try:
         delivery_status = send_email(
             recipient=target,
             subject=(
-                f"Factura {invoice.series}-{invoice.folio:06d} · "
+                f"{subject_prefix} {invoice.series}-{invoice.folio:06d} · "
                 f"{issuer.legal_name}"
             ),
-            body=_invoice_email_body(invoice, issuer),
+            body=_invoice_email_body(invoice, issuer, related),
             attachments=attachments,
             not_configured_message=(
                 "El envío de facturas no está configurado (SMTP_HOST)."
@@ -1497,6 +1906,7 @@ def list_invoices(
     session: Session,
     *,
     status_filter: str | None = None,
+    origin_type: str | None = None,
     search: str | None = None,
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
@@ -1508,6 +1918,10 @@ def list_invoices(
         if status_filter not in ("requested", "failed", "stamped", "cancelled"):
             raise InvoiceStateError("El estado de factura no es válido.")
         conditions.append(Invoice.status == status_filter)
+    if origin_type:
+        if origin_type not in INVOICE_ORIGIN_TYPES:
+            raise InvoiceStateError("El tipo de comprobante no es válido.")
+        conditions.append(Invoice.origin_type == origin_type)
     term = (search or "").strip().lower()
     if term:
         conditions.append(
@@ -1545,17 +1959,35 @@ def invoice_summary(session: Session) -> InvoiceSummary:
             counts[status_value] = int(count)
     stamped_cents = session.exec(
         select(func.coalesce(func.sum(Invoice.total_cents), 0)).where(
-            Invoice.status == "stamped"
+            Invoice.status == "stamped",
+            Invoice.origin_type != "credit_note",
+        )
+    ).first() or 0
+    credit_note_cents = session.exec(
+        select(func.coalesce(func.sum(Invoice.total_cents), 0)).where(
+            Invoice.status == "stamped",
+            Invoice.origin_type == "credit_note",
+        )
+    ).first() or 0
+    credit_notes = session.exec(
+        select(func.count())
+        .select_from(Invoice)
+        .where(
+            Invoice.status == "stamped",
+            Invoice.origin_type == "credit_note",
         )
     ).first() or 0
     cancelled_cents = session.exec(
         select(func.coalesce(func.sum(Invoice.total_cents), 0)).where(
-            Invoice.status == "cancelled"
+            Invoice.status == "cancelled",
+            Invoice.origin_type != "credit_note",
         )
     ).first() or 0
     simulated = session.exec(
         select(func.count()).select_from(Invoice).where(Invoice.is_simulated.is_(True))
     ).first() or 0
+    stamped_total = int(stamped_cents)
+    credit_note_total = int(credit_note_cents)
     return InvoiceSummary(
         total=sum(counts.values()),
         requested=counts["requested"],
@@ -1563,8 +1995,11 @@ def invoice_summary(session: Session) -> InvoiceSummary:
         stamped=counts["stamped"],
         cancelled=counts["cancelled"],
         simulated=int(simulated),
-        stamped_cents=int(stamped_cents),
+        stamped_cents=stamped_total,
         cancelled_cents=int(cancelled_cents),
+        credit_notes=int(credit_notes),
+        credit_note_cents=credit_note_total,
+        net_stamped_cents=stamped_total - credit_note_total,
     )
 
 

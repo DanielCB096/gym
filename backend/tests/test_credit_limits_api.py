@@ -97,6 +97,11 @@ def _local_day(days_ago: int) -> date:
 
 def _sold_at(days_ago: int) -> str:
     noon = local_midnight(_local_day(days_ago), club_timezone()) + timedelta(hours=12)
+    now = datetime.now(timezone.utc)
+    # The offline endpoint rejects future sales; a test run before local noon
+    # would otherwise turn "today at noon" into a future timestamp.
+    if noon > now:
+        noon = now - timedelta(minutes=1)
     return noon.isoformat()
 
 

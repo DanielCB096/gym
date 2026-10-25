@@ -39,6 +39,13 @@ ORIGIN_LABELS = {
     "sale": "Venta",
     "membership_payment": "Pago de membresía",
     "global": "Factura global",
+    "credit_note": "Nota de crédito",
+}
+CREDIT_NOTE_REASON_LABELS = {
+    "return": "Devolución",
+    "discount": "Descuento",
+    "correction": "Corrección de importe",
+    "other": "Otro motivo",
 }
 PAYMENT_FORM_LABELS = {
     "01": "Efectivo",
@@ -134,6 +141,7 @@ def build_invoice_pdf(
     invoice: Invoice,
     items: Sequence[InvoiceItem],
     issuer: IssuerConfig,
+    related_invoice: Invoice | None = None,
 ) -> bytes:
     """Render the stamped invoice as a letter-size PDF."""
 
@@ -144,6 +152,8 @@ def build_invoice_pdf(
         or DEFAULT_GYM_NAME
     )
     folio_label = f"{invoice.series}-{invoice.folio:06d}"
+    is_credit_note = invoice.origin_type == "credit_note"
+    document_label = "Nota de crédito" if is_credit_note else "CFDI"
     document = SimpleDocTemplate(
         buffer,
         pagesize=letter,
@@ -151,9 +161,13 @@ def build_invoice_pdf(
         rightMargin=18 * mm,
         topMargin=17 * mm,
         bottomMargin=19 * mm,
-        title=f"CFDI {folio_label} - {invoice.receptor_name}",
+        title=f"{document_label} {folio_label} - {invoice.receptor_name}",
         author=gym_name,
-        subject="Representación impresa de CFDI",
+        subject=(
+            "Representación impresa de nota de crédito (CFDI de egreso)"
+            if is_credit_note
+            else "Representación impresa de CFDI"
+        ),
     )
 
     styles = getSampleStyleSheet()
@@ -335,9 +349,45 @@ def build_invoice_pdf(
         rows = [
             ("FORMA DE PAGO", f"{payment_form} · {payment_form_label}", "MÉTODO", "PUE · Pago en una sola exhibición"),
             ("MONEDA", invoice.currency, "LUGAR DE EXPEDICIÓN", issuer.postal_code),
-            ("OPERACIÓN", f"{ORIGIN_LABELS.get(invoice.origin_type, invoice.origin_type)} · {invoice.origin_reference}", "PAC", invoice.provider or "—"),
-            ("REFERENCIA PAC", invoice.provider_reference or "—", "TIPO", "Ingreso · CFDI 4.0"),
+            (
+                "OPERACIÓN",
+                (
+                    f"{ORIGIN_LABELS.get(invoice.origin_type, invoice.origin_type)} "
+                    f"de {invoice.origin_reference}"
+                    if is_credit_note
+                    else f"{ORIGIN_LABELS.get(invoice.origin_type, invoice.origin_type)} · {invoice.origin_reference}"
+                ),
+                "TIPO",
+                "Egreso · CFDI 4.0" if is_credit_note else "Ingreso · CFDI 4.0",
+            ),
+            ("REFERENCIA PAC", invoice.provider_reference or "—", "PAC", invoice.provider or "—"),
         ]
+        if is_credit_note:
+            related_folio = (
+                f"{related_invoice.series}-{related_invoice.folio:06d}"
+                if related_invoice is not None
+                else invoice.origin_reference
+            )
+            rows.append(
+                (
+                    "FACTURA RELACIONADA",
+                    related_folio,
+                    "UUID RELACIONADO",
+                    (related_invoice.uuid if related_invoice is not None else None)
+                    or "Sin UUID (simulación)",
+                )
+            )
+            rows.append(
+                (
+                    "MOTIVO",
+                    CREDIT_NOTE_REASON_LABELS.get(
+                        invoice.credit_note_reason or "",
+                        invoice.credit_note_reason or "—",
+                    ),
+                    "NOTA",
+                    invoice.credit_note_note or "—",
+                )
+            )
         if invoice.origin_type == "global" and invoice.global_year and invoice.global_month:
             operations = sum(item.quantity for item in items)
             rows.append(
@@ -542,9 +592,17 @@ def build_invoice_pdf(
 
     story: list[object] = [
         Paragraph(escape(gym_name), subtitle_style),
-        Paragraph("Representación impresa de CFDI", title_style),
         Paragraph(
-            f"Emisor {escape(issuer.legal_name)} · RFC {issuer.rfc} · "
+            "Nota de crédito" if is_credit_note else "Representación impresa de CFDI",
+            title_style,
+        ),
+        Paragraph(
+            (
+                "Representación impresa de CFDI de egreso · "
+                if is_credit_note
+                else ""
+            )
+            + f"Emisor {escape(issuer.legal_name)} · RFC {issuer.rfc} · "
             f"Régimen {issuer.tax_regime} · CP {issuer.postal_code}",
             subtitle_style,
         ),

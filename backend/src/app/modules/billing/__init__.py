@@ -14,6 +14,8 @@ from app.modules.billing.errors import (
     BillingError,
     BillingMemberNotFound,
     CancellationNotAllowed,
+    CreditNoteBalanceExceeded,
+    CreditNoteNotAllowed,
     FiscalDataInvalid,
     GlobalInvoiceNoEligibleSales,
     GlobalInvoicePeriodConflict,
@@ -44,6 +46,8 @@ from app.modules.billing.models import (
 )
 from app.modules.billing.service import (
     CANCELLATION_REASONS,
+    CREDIT_NOTE_REASONS,
+    CreditNoteRef,
     GlobalEligibleSaleView,
     GlobalInvoiceEligibilityView,
     GlobalInvoiceRef,
@@ -58,6 +62,7 @@ from app.modules.billing.service import (
     OriginPage,
     FiscalProfileView,
     cancel_invoice,
+    create_credit_note,
     create_global_invoice,
     create_invoice,
     get_fiscal_profile,
@@ -77,7 +82,11 @@ from app.modules.billing.service import (
 
 __all__ = [
     "CANCELLATION_REASONS",
+    "CREDIT_NOTE_REASONS",
     "CFDI_USES",
+    "CreditNoteBalanceExceeded",
+    "CreditNoteNotAllowed",
+    "CreditNoteRef",
     "FiscalData",
     "FiscalProfileView",
     "GlobalEligibleSaleView",
@@ -125,6 +134,7 @@ __all__ = [
     "PacUnavailable",
     "build_cfdi_xml",
     "cancel_invoice",
+    "create_credit_note",
     "create_global_invoice",
     "create_invoice",
     "get_fiscal_profile",

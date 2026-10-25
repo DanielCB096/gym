@@ -19,7 +19,9 @@ import {
   Download,
   Dumbbell,
   Fingerprint,
+  Flag,
   Home,
+  Landmark,
   Mail,
   LogOut,
   Menu,
@@ -38,6 +40,8 @@ import {
   Tags,
   Trash2,
   Truck,
+  Unlink,
+  Upload,
   UserPlus,
   Users,
   Wallet,
@@ -46,9 +50,9 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
-type PageName = "Resumen" | "Accesos" | "Socios" | "Personal" | "Clases" | "Rutinas" | "Inventario" | "Mantenimiento" | "Facturación" | "Reportes";
+type PageName = "Resumen" | "Accesos" | "Socios" | "Personal" | "Clases" | "Rutinas" | "Inventario" | "Mantenimiento" | "Facturación" | "Conciliación" | "Reportes";
 type AccessState = "Autorizado" | "Denegado" | "Manual";
 
 type AccessEvent = {
@@ -394,6 +398,20 @@ type BackendSale = {
 
 type BillingInvoiceStatus = "requested" | "failed" | "stamped" | "cancelled";
 
+type BillingOriginType = "sale" | "membership_payment" | "global" | "credit_note";
+
+type BillingCreditNoteReason = "return" | "discount" | "correction" | "other";
+
+type BillingCreditNoteRef = {
+  invoice_id: string;
+  folio_label: string;
+  status: BillingInvoiceStatus;
+  total_cents: number;
+  reason: BillingCreditNoteReason;
+  note: string | null;
+  created_at: string;
+};
+
 type BillingInvoiceItem = {
   position: number;
   description: string;
@@ -429,7 +447,7 @@ type BillingInvoice = {
   folio: number;
   folio_label: string;
   status: BillingInvoiceStatus;
-  origin_type: "sale" | "membership_payment" | "global";
+  origin_type: BillingOriginType;
   origin_id: string;
   origin_reference: string;
   global_year: number | null;
@@ -462,6 +480,14 @@ type BillingInvoice = {
   cancellation_note: string | null;
   created_at: string;
   created_by: string | null;
+  related_invoice_id: string | null;
+  related_invoice_folio_label: string | null;
+  related_invoice_status: string | null;
+  credit_note_reason: BillingCreditNoteReason | null;
+  credit_note_note: string | null;
+  credited_cents: number;
+  credit_balance_cents: number;
+  credit_notes: BillingCreditNoteRef[];
   items: BillingInvoiceItem[];
   events: BillingInvoiceEvent[];
   global_sales: BillingGlobalInvoiceSale[];
@@ -491,6 +517,9 @@ type BillingSummary = {
   simulated: number;
   stamped_cents: number;
   cancelled_cents: number;
+  credit_notes: number;
+  credit_note_cents: number;
+  net_stamped_cents: number;
 };
 
 type BillingOrigin = {
@@ -556,6 +585,132 @@ type BillingGlobalEligibility = {
   existing_invoice: BillingGlobalInvoiceRef | null;
 };
 
+type BankAccountStatus = "active" | "inactive";
+type BankMovementStatus = "pending" | "reconciled" | "difference" | "reviewing";
+type BankMovementSource = "membership_payment" | "sale" | "member_account_payment" | "sale_return";
+
+type BankAccount = {
+  id: string;
+  name: string;
+  bank_name: string;
+  account_last4: string;
+  currency: string;
+  status: BankAccountStatus;
+  created_at: string;
+  updated_at: string;
+  movement_count: number;
+  pending_count: number;
+  reconciled_count: number;
+  difference_count: number;
+  reviewing_count: number;
+  balance_cents: number;
+  last_movement_on: string | null;
+};
+
+type BankMovement = {
+  id: string;
+  bank_account_id: string;
+  bank_account_name: string;
+  bank_name: string;
+  account_last4: string;
+  occurred_on: string;
+  amount_cents: number;
+  currency: string;
+  reference: string;
+  description: string;
+  status: BankMovementStatus;
+  matched_source: BankMovementSource | null;
+  matched_id: string | null;
+  matched_label: string | null;
+  difference_cents: number | null;
+  note: string | null;
+  imported_at: string;
+  reconciled_at: string | null;
+  reviewed_at: string | null;
+  suggestion_count: number;
+  suggested_label: string | null;
+};
+
+type BankMovementSummary = {
+  count: number;
+  pending: number;
+  reconciled: number;
+  difference: number;
+  reviewing: number;
+  inflow_cents: number;
+  outflow_cents: number;
+  pending_cents: number;
+  difference_cents: number;
+  oldest_pending_on: string | null;
+};
+
+type BankMovementPage = {
+  items: BankMovement[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+  summary: BankMovementSummary;
+};
+
+type BankMovementCandidate = {
+  source: BankMovementSource;
+  source_id: string;
+  label: string;
+  detail: string;
+  reference: string;
+  occurred_on: string;
+  amount_cents: number;
+  difference_cents: number;
+  amount_match: boolean;
+  reference_score: number;
+  date_distance_days: number;
+};
+
+type BankMovementEvent = {
+  id: string;
+  event_type: string;
+  detail: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  occurred_at: string;
+};
+
+type BankMovementDetail = BankMovement & {
+  candidates: BankMovementCandidate[];
+  events: BankMovementEvent[];
+};
+
+type BankImportRow = {
+  occurred_on: string;
+  amount_cents: number;
+  reference: string;
+  description: string;
+};
+
+const RECONCILIATION_PAGE_SIZE = 25;
+
+const bankMovementStatusLabels: Record<BankMovementStatus, string> = {
+  pending: "Pendiente",
+  reconciled: "Conciliado",
+  difference: "Con diferencia",
+  reviewing: "En revisión",
+};
+
+const bankMovementStatusBadges: Record<BankMovementStatus, string> = {
+  pending: "status-warn",
+  reconciled: "status-good",
+  difference: "status-bad",
+  reviewing: "status-neutral",
+};
+
+const bankSourceLabels: Record<BankMovementSource, string> = {
+  membership_payment: "Cobro de membresía",
+  sale: "Venta en mostrador",
+  member_account_payment: "Pago a cuenta",
+  sale_return: "Devolución de venta",
+};
+
 const BILLING_PAGE_SIZE = 10;
 
 const billingStatusLabels: Record<BillingInvoiceStatus, string> = {
@@ -572,11 +727,26 @@ const billingStatusBadges: Record<BillingInvoiceStatus, string> = {
   cancelled: "status-neutral",
 };
 
-const billingOriginLabels: Record<BillingInvoice["origin_type"], string> = {
+const billingOriginLabels: Record<BillingOriginType, string> = {
   sale: "Venta en mostrador",
   membership_payment: "Cobro de membresía",
   global: "Factura global",
+  credit_note: "Nota de crédito",
 };
+
+const billingCreditNoteReasonLabels: Record<BillingCreditNoteReason, string> = {
+  return: "Devolución",
+  discount: "Descuento",
+  correction: "Corrección de importe",
+  other: "Otro motivo",
+};
+
+const BILLING_CREDIT_NOTE_REASONS: [BillingCreditNoteReason, string][] = [
+  ["return", "Devolución"],
+  ["discount", "Descuento"],
+  ["correction", "Corrección de importe"],
+  ["other", "Otro motivo"],
+];
 
 const billingMonthLabels = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 
@@ -2043,6 +2213,7 @@ const requiredPermission: Record<PageName, string> = {
   Inventario: "inventory.read",
   Mantenimiento: "maintenance.read",
   Facturación: "billing.read",
+  Conciliación: "finance.read",
   Reportes: "finance.read",
 };
 
@@ -2068,6 +2239,7 @@ const operationsNavigation: { label: PageName; icon: LucideIcon }[] = [
   { label: "Inventario", icon: ShoppingBasket },
   { label: "Mantenimiento", icon: Wrench },
   { label: "Facturación", icon: Receipt },
+  { label: "Conciliación", icon: Landmark },
   { label: "Reportes", icon: BarChart3 },
 ];
 
@@ -2094,6 +2266,7 @@ const permissionRows = [
   { group: "Mantenimiento", label: "Consultar mantenimiento", code: "maintenance.read" },
   { group: "Mantenimiento", label: "Administrar mantenimiento", code: "maintenance.manage" },
   { group: "Finanzas", label: "Consultar reportes financieros", code: "finance.read" },
+  { group: "Finanzas", label: "Conciliar pagos y cuentas bancarias", code: "finance.manage" },
   { group: "Facturación", label: "Consultar facturas y datos fiscales", code: "billing.read" },
   { group: "Facturación", label: "Solicitar facturas y capturar datos fiscales", code: "billing.request" },
   { group: "Facturación", label: "Timbrar y cancelar facturas", code: "billing.manage" },
@@ -2491,6 +2664,7 @@ export default function HomePage() {
     Inventario: "Inventario",
     Mantenimiento: "Mantenimiento de equipo",
     Facturación: "Facturación electrónica",
+    Conciliación: "Conciliación bancaria",
     Reportes: "Panel de analítica y reportes",
   };
 
@@ -2638,6 +2812,7 @@ export default function HomePage() {
           {activePage === "Rutinas" && <RoutinesView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Mantenimiento" && <MaintenanceView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Facturación" && <BillingView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
+          {activePage === "Conciliación" && <ReconciliationView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Reportes" && <ReportsView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
         </div>
       </main>
@@ -7892,6 +8067,7 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"" | BillingInvoiceStatus>("");
+  const [originFilter, setOriginFilter] = useState<"" | BillingOriginType>("");
   const [page, setPage] = useState(1);
   const [refresh, setRefresh] = useState(0);
   const [newInvoiceOpen, setNewInvoiceOpen] = useState(false);
@@ -7904,7 +8080,7 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
     return () => window.clearTimeout(handle);
   }, [search]);
 
-  useEffect(() => { setPage(1); }, [query, statusFilter]);
+  useEffect(() => { setPage(1); }, [query, statusFilter, originFilter]);
 
   useEffect(() => {
     let active = true;
@@ -7915,6 +8091,7 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
         const params = new URLSearchParams({ page: String(page), page_size: String(BILLING_PAGE_SIZE) });
         if (query) params.set("search", query);
         if (statusFilter) params.set("status", statusFilter);
+        if (originFilter) params.set("origin_type", originFilter);
         const [summaryResponse, listResponse] = await Promise.all([
           fetch("/api/admin/billing/summary", { cache: "no-store" }),
           fetch(`/api/admin/billing/invoices?${params.toString()}`, { cache: "no-store" }),
@@ -7934,7 +8111,7 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
     };
     void load();
     return () => { active = false; };
-  }, [onUnauthorized, page, query, refresh, statusFilter]);
+  }, [onUnauthorized, originFilter, page, query, refresh, statusFilter]);
 
   const invoices = directory?.items ?? [];
   const total = directory?.total ?? 0;
@@ -7976,15 +8153,15 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
           <span className="summary-icon"><Receipt size={18} /></span>
           <div>
             <span>FACTURACIÓN ELECTRÓNICA</span>
-            <strong>{summary ? `${summary.total} comprobantes · ${summary.stamped} timbrados` : "Consultando comprobantes…"}</strong>
+            <strong>{summary ? `${summary.total} comprobantes · ${summary.stamped} timbrados · ${summary.cancelled} cancelados` : "Consultando comprobantes…"}</strong>
             <small className="report-timezone">CFDI 4.0 · el timbrado en vista previa es simulado y no tiene validez fiscal</small>
           </div>
         </div>
         <div className="summary-divider" />
         <div className="summary-stat"><span>POR TIMBRAR</span><strong>{summary ? summary.requested + summary.failed : "—"}</strong></div>
         <div className="summary-stat"><span>TIMBRADAS</span><strong>{summary?.stamped ?? "—"}</strong></div>
-        <div className="summary-stat"><span>CANCELADAS</span><strong>{summary?.cancelled ?? "—"}</strong></div>
-        <div className="summary-stat"><span>IMPORTE TIMBRADO</span><strong>{summary ? formatMoney(summary.stamped_cents) : "—"}</strong></div>
+        <div className="summary-stat"><span>NOTAS DE CRÉDITO</span><strong>{summary?.credit_notes ?? "—"}</strong></div>
+        <div className="summary-stat"><span>IMPORTE NETO</span><strong title={summary ? `Timbrado ${formatMoney(summary.stamped_cents)} − notas ${formatMoney(summary.credit_note_cents)}` : undefined}>{summary ? formatMoney(summary.net_stamped_cents) : "—"}</strong>{summary && summary.credit_note_cents > 0 && <small>Notas por {formatMoney(summary.credit_note_cents)}</small>}</div>
         {canRequest && tab === "invoices" && <button className="button button-primary" onClick={() => setNewInvoiceOpen(true)}><Plus size={17} />Nueva factura</button>}
       </section>
 
@@ -8006,6 +8183,7 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
         <div className="table-toolbar">
           <label className="table-search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por receptor, RFC u operación" /></label>
           <label className="table-select"><span>Estado</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "" | BillingInvoiceStatus)}>{statusFilters.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+          <label className="table-select"><span>Tipo</span><select value={originFilter} onChange={(event) => setOriginFilter(event.target.value as "" | BillingOriginType)}><option value="">Todos</option>{(Object.keys(billingOriginLabels) as BillingOriginType[]).map((type) => <option key={type} value={type}>{billingOriginLabels[type]}</option>)}</select></label>
           <span className="table-hint">Una factura cancelada conserva su folio y libera la operación para un reemplazo</span>
         </div>
         <div className="table-scroll">
@@ -8020,9 +8198,9 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
                     <tr key={invoice.id}>
                       <td><strong>{invoice.folio_label}</strong>{invoice.is_simulated && <small className="billing-inline-note">Simulada</small>}</td>
                       <td><div className="person-cell"><span className="pos-row-icon"><Receipt size={15} /></span><span><strong>{invoice.receptor_name}</strong><small>{invoice.receptor_rfc}</small></span></div></td>
-                      <td><strong>{billingOriginLabels[invoice.origin_type]}</strong><small className="billing-inline-note">{invoice.origin_reference}</small></td>
+                      <td><strong>{billingOriginLabels[invoice.origin_type]}</strong><small className="billing-inline-note">{invoice.origin_type === "credit_note" && invoice.related_invoice_folio_label ? `Sobre ${invoice.related_invoice_folio_label}` : invoice.origin_reference}</small></td>
                       <td className="time-cell">{formatMoment(invoice.created_at)}</td>
-                      <td>{formatMoney(invoice.total_cents)}</td>
+                      <td>{invoice.origin_type === "credit_note" ? `−${formatMoney(invoice.total_cents)}` : formatMoney(invoice.total_cents)}</td>
                       <td><span className={`status-badge ${billingStatusBadges[status]}`}><i />{billingStatusLabels[status]}</span></td>
                       <td>
                         <div className="pos-row-actions">
@@ -8077,9 +8255,11 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
       )}
       {activeInvoiceId && (
         <InvoiceDetailModal
+          key={activeInvoiceId}
           invoiceId={activeInvoiceId}
           canManage={canManage}
           canRequest={canRequest}
+          onOpenInvoice={setActiveInvoiceId}
           onClose={() => setActiveInvoiceId(null)}
           onChanged={(message) => { setRefresh((value) => value + 1); onToast(message); }}
           onUnauthorized={onUnauthorized}
@@ -8348,7 +8528,7 @@ function GlobalInvoicePanel({ canManage, refreshToken, onOpenInvoice, onChanged,
 }
 
 function NewInvoiceModal({ canManage, onClose, onCreated, onUnauthorized }: { canManage: boolean; onClose: () => void; onCreated: (message: string, invoice: BillingInvoice | null) => void; onUnauthorized: () => void }) {
-  const [originType, setOriginType] = useState<BillingInvoice["origin_type"]>("sale");
+  const [originType, setOriginType] = useState<BillingOrigin["origin_type"]>("sale");
   const [originSearch, setOriginSearch] = useState("");
   const [originQuery, setOriginQuery] = useState("");
   const [originPage, setOriginPage] = useState(1);
@@ -8455,7 +8635,7 @@ function NewInvoiceModal({ canManage, onClose, onCreated, onUnauthorized }: { ca
     return () => { active = false; };
   }, [onUnauthorized, selectedOrigin]);
 
-  const changeOriginType = (type: BillingInvoice["origin_type"]) => {
+  const changeOriginType = (type: BillingOrigin["origin_type"]) => {
     setOriginType(type);
     setSelectedOrigin(null);
     setProfileState("idle");
@@ -8632,11 +8812,11 @@ function NewInvoiceModal({ canManage, onClose, onCreated, onUnauthorized }: { ca
   );
 }
 
-function InvoiceDetailModal({ invoiceId, canManage, canRequest, onClose, onChanged, onUnauthorized }: { invoiceId: string; canManage: boolean; canRequest: boolean; onClose: () => void; onChanged: (message: string) => void; onUnauthorized: () => void }) {
+function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, onClose, onChanged, onUnauthorized }: { invoiceId: string; canManage: boolean; canRequest: boolean; onOpenInvoice: (invoiceId: string) => void; onClose: () => void; onChanged: (message: string) => void; onUnauthorized: () => void }) {
   const [invoice, setInvoice] = useState<BillingInvoice | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState<"stamp" | "cancel" | "send" | null>(null);
+  const [busy, setBusy] = useState<"stamp" | "cancel" | "send" | "credit" | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reasonCode, setReasonCode] = useState("02");
   const [replacementUuid, setReplacementUuid] = useState("");
@@ -8644,6 +8824,12 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onClose, onChang
   const [emailOpen, setEmailOpen] = useState(false);
   const [emailTo, setEmailTo] = useState("");
   const [emailNotice, setEmailNotice] = useState("");
+  const [creditOpen, setCreditOpen] = useState(false);
+  const [creditAmount, setCreditAmount] = useState("");
+  const [creditReason, setCreditReason] = useState<BillingCreditNoteReason>("return");
+  const [creditNote, setCreditNote] = useState("");
+  const [creditStampNow, setCreditStampNow] = useState(true);
+  const [creditIdempotencyKey, setCreditIdempotencyKey] = useState(() => globalThis.crypto.randomUUID());
 
   const load = async () => {
     setLoading(true);
@@ -8730,6 +8916,78 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onClose, onChang
     }
   };
 
+  const openCreditForm = () => {
+    if (!invoice) return;
+    setCreditAmount((invoice.credit_balance_cents / 100).toFixed(2));
+    setCreditReason("return");
+    setCreditNote("");
+    setCreditStampNow(true);
+    setCreditIdempotencyKey(globalThis.crypto.randomUUID());
+    setCreditOpen(true);
+    setError("");
+  };
+
+  const issueCreditNote = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!invoice) return;
+    const amountCents = parseMoneyToCents(creditAmount);
+    if (amountCents === null || amountCents <= 0) {
+      setError("Captura un importe mayor que cero para la nota de crédito.");
+      return;
+    }
+    if (amountCents > invoice.credit_balance_cents) {
+      setError(`El importe excede el saldo acreditable (${formatMoney(invoice.credit_balance_cents)}).`);
+      return;
+    }
+    setBusy("credit");
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/billing/invoices/${encodeURIComponent(invoice.id)}/credit-notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount_cents: amountCents,
+          reason: creditReason,
+          note: creditNote.trim() || null,
+          idempotency_key: creditIdempotencyKey,
+        }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudo solicitar la nota de crédito."));
+        return;
+      }
+      const body = await response.json() as { invoice: BillingInvoice; idempotent_replay: boolean };
+      let creditInvoice = body.invoice;
+      let message = body.idempotent_replay
+        ? `La nota de crédito ${creditInvoice.folio_label} ya existía; se muestra el comprobante original.`
+        : `Nota de crédito ${creditInvoice.folio_label} solicitada por ${formatMoney(amountCents)}.`;
+
+      if (creditStampNow && (creditInvoice.status === "requested" || creditInvoice.status === "failed")) {
+        const stampResponse = await fetch(`/api/admin/billing/invoices/${encodeURIComponent(creditInvoice.id)}/stamp`, { method: "POST" });
+        if (stampResponse.status === 401) { onUnauthorized(); return; }
+        if (stampResponse.ok) {
+          creditInvoice = await stampResponse.json() as BillingInvoice;
+          message = creditInvoice.is_simulated
+            ? `Nota de crédito ${creditInvoice.folio_label} timbrada en modo simulación.`
+            : `Nota de crédito ${creditInvoice.folio_label} timbrada.`;
+        } else {
+          const payload = await stampResponse.json().catch(() => ({}));
+          message = `Nota de crédito ${creditInvoice.folio_label} solicitada, pero no se pudo timbrar: ${billingErrorDetail(payload, "error del PAC.")}`;
+        }
+      }
+      setCreditOpen(false);
+      setCreditIdempotencyKey(globalThis.crypto.randomUUID());
+      onChanged(message);
+      onOpenInvoice(creditInvoice.id);
+    } catch {
+      setError("No se pudo conectar con el backend. Reintenta con la misma solicitud.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const sendInvoiceEmail = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!invoice) return;
@@ -8777,6 +9035,11 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onClose, onChang
   const status = invoice ? billingInvoiceStatus(invoice.status) : "requested";
   const canStamp = invoice !== null && canManage && (invoice.status === "requested" || invoice.status === "failed");
   const canDeliver = invoice !== null && (invoice.status === "stamped" || invoice.status === "cancelled");
+  const isCreditNote = invoice?.origin_type === "credit_note";
+  const isSourceInvoice = invoice?.origin_type === "sale" || invoice?.origin_type === "membership_payment";
+  const stampedCreditNoteCount = invoice?.credit_notes.filter((entry) => entry.status === "stamped").length ?? 0;
+  const canIssueCreditNote = invoice !== null && canManage && invoice.status === "stamped" && isSourceInvoice && invoice.credit_balance_cents > 0;
+  const canCancelInvoice = invoice !== null && canManage && invoice.status === "stamped" && stampedCreditNoteCount === 0;
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -8788,10 +9051,11 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onClose, onChang
           <>
             <p className="section-kicker">CFDI 4.0 · {invoice.folio_label}</p>
             <h2 id="invoice-detail-title">{invoice.receptor_name}</h2>
-            <p className="modal-subtitle">{invoice.receptor_rfc} · {billingOriginLabels[invoice.origin_type]} {invoice.origin_reference}</p>
+            <p className="modal-subtitle">{invoice.receptor_rfc} · {billingOriginLabels[invoice.origin_type]} {isCreditNote && invoice.related_invoice_folio_label ? `sobre ${invoice.related_invoice_folio_label}` : invoice.origin_reference}</p>
             <div className="billing-detail-status">
               <span className={`status-badge ${billingStatusBadges[status]}`}><i />{billingStatusLabels[status]}</span>
               {invoice.origin_type === "global" && invoice.global_year && invoice.global_month && <span className="status-badge status-neutral"><i />{billingGlobalPeriodLabel(invoice.global_year, invoice.global_month)}</span>}
+              {isCreditNote && <span className="status-badge status-neutral"><i />CFDI de egreso</span>}
               {invoice.is_simulated && <span className="status-badge status-warn"><i />Simulada · sin validez fiscal</span>}
               <span className="billing-detail-date">Creada {formatMoment(invoice.created_at)}</span>
             </div>
@@ -8800,7 +9064,7 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onClose, onChang
             )}
 
             <div className="billing-totals">
-              <div><span>TOTAL</span><strong>{formatMoney(invoice.total_cents)}</strong></div>
+              <div><span>{isCreditNote ? "TOTAL ACREDITADO" : "TOTAL"}</span><strong>{formatMoney(invoice.total_cents)}</strong></div>
               <div><span>SUBTOTAL</span><strong>{formatMoney(invoice.subtotal_cents)}</strong></div>
               <div><span>IVA ({invoice.tax_rate_percent}%)</span><strong>{formatMoney(invoice.tax_cents)}</strong></div>
               <div><span>FORMA DE PAGO</span><strong>{invoice.payment_form}</strong><small>{billingPaymentFormLabel(invoice.payment_form)}</small></div>
@@ -8829,6 +9093,70 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onClose, onChang
                 </table>
               </div>
             </div>
+
+            {isCreditNote && (
+              <div className="detail-section">
+                <div className="modal-section-title"><span>RELACIÓN FISCAL</span><span>TipoRelación 01</span></div>
+                <div className="billing-detail-grid">
+                  <div><span>FACTURA ORIGINAL</span><strong>{invoice.related_invoice_folio_label ?? "—"}</strong></div>
+                  <div><span>ESTADO DE LA ORIGINAL</span><strong>{invoice.related_invoice_status ? billingStatusLabels[billingInvoiceStatus(invoice.related_invoice_status)] : "—"}</strong></div>
+                  <div><span>MOTIVO</span><strong>{invoice.credit_note_reason ? billingCreditNoteReasonLabels[invoice.credit_note_reason] : "—"}</strong></div>
+                  <div><span>NOTA</span><strong>{invoice.credit_note_note ?? "—"}</strong></div>
+                </div>
+                {invoice.related_invoice_id && <button type="button" className="text-button" onClick={() => onOpenInvoice(invoice.related_invoice_id!)}>Ver factura original {invoice.related_invoice_folio_label ?? ""}</button>}
+              </div>
+            )}
+
+            {isSourceInvoice && invoice.status === "stamped" && (
+              <div className="detail-section">
+                <div className="modal-section-title"><span>NOTAS DE CRÉDITO</span><span>{invoice.credit_notes.length}</span></div>
+                <div className="billing-totals">
+                  <div><span>IMPORTE FACTURA</span><strong>{formatMoney(invoice.total_cents)}</strong></div>
+                  <div><span>ACREDITADO</span><strong>{formatMoney(invoice.credited_cents)}</strong></div>
+                  <div><span>SALDO ACREDITABLE</span><strong>{formatMoney(invoice.credit_balance_cents)}</strong><small>IVA incluido</small></div>
+                </div>
+                <div className="table-scroll">
+                  <table className="data-table compact-table">
+                    <thead><tr><th>FOLIO</th><th>FECHA</th><th>MOTIVO</th><th>IMPORTE</th><th>ESTADO</th></tr></thead>
+                    <tbody>
+                      {invoice.credit_notes.length === 0 ? <tr><td colSpan={5} className="empty-row">Sin notas de crédito para esta factura.</td></tr>
+                        : invoice.credit_notes.map((entry) => {
+                          const noteStatus = billingInvoiceStatus(entry.status);
+                          return (
+                            <tr key={entry.invoice_id}>
+                              <td><button type="button" className="text-button" onClick={() => onOpenInvoice(entry.invoice_id)}>{entry.folio_label}</button></td>
+                              <td className="time-cell">{formatMoment(entry.created_at)}</td>
+                              <td>{billingCreditNoteReasonLabels[entry.reason] ?? entry.reason}</td>
+                              <td>−{formatMoney(entry.total_cents)}</td>
+                              <td><span className={`status-badge ${billingStatusBadges[noteStatus]}`}><i />{billingStatusLabels[noteStatus]}</span></td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+                {stampedCreditNoteCount > 0 && <p className="billing-empty">Para cancelar la factura primero cancela sus {stampedCreditNoteCount} {stampedCreditNoteCount === 1 ? "nota de crédito timbrada" : "notas de crédito timbradas"}.</p>}
+                {canIssueCreditNote && !creditOpen && (
+                  <div className="modal-actions"><button type="button" className="button button-secondary" onClick={openCreditForm} disabled={busy !== null}>Emitir nota de crédito</button></div>
+                )}
+                {creditOpen && (
+                  <form className="billing-credit-form" onSubmit={issueCreditNote}>
+                    <div className="modal-section-title"><span>NUEVA NOTA DE CRÉDITO</span><span>Saldo {formatMoney(invoice.credit_balance_cents)}</span></div>
+                    <p className="billing-empty">Se emitirá un CFDI de egreso relacionado con {invoice.folio_label}. El importe se descuenta del saldo acreditable cuando la nota se timbra.</p>
+                    <div className="form-row">
+                      <label className="form-field"><span>Importe (IVA incluido) *</span><input value={creditAmount} onChange={(event) => { setCreditAmount(event.target.value); setError(""); }} inputMode="decimal" placeholder="0.00" /></label>
+                      <label className="form-field"><span>Motivo *</span><select value={creditReason} onChange={(event) => { setCreditReason(event.target.value as BillingCreditNoteReason); setError(""); }}>{BILLING_CREDIT_NOTE_REASONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                    </div>
+                    <label className="form-field"><span>Nota</span><input value={creditNote} onChange={(event) => setCreditNote(event.target.value)} maxLength={300} placeholder="Detalle opcional de la nota de crédito" /></label>
+                    <label className="form-check"><input type="checkbox" checked={creditStampNow} onChange={(event) => setCreditStampNow(event.target.checked)} /><span>Solicitar y timbrar ahora. En vista previa el comprobante queda marcado como simulado y sin validez fiscal.</span></label>
+                    <div className="modal-actions">
+                      <button type="button" className="button button-secondary" onClick={() => setCreditOpen(false)}>Volver</button>
+                      <button type="submit" className="button button-primary" disabled={busy === "credit"}>{busy === "credit" ? "Procesando…" : "Emitir nota de crédito"}</button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            )}
 
             {invoice.origin_type === "global" && (
               <div className="detail-section">
@@ -8924,8 +9252,8 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onClose, onChang
 
             {cancelOpen && (
               <form className="billing-cancel-form" onSubmit={cancel}>
-                <div className="modal-section-title"><span>CANCELAR COMPROBANTE</span></div>
-                <p className="billing-empty">La cancelación conserva la factura y su folio; {invoice.origin_type === "global" ? "libera el periodo y sus ventas para emitir un reemplazo." : "libera la operación para emitir un reemplazo."}</p>
+                <div className="modal-section-title"><span>{isCreditNote ? "CANCELAR NOTA DE CRÉDITO" : "CANCELAR COMPROBANTE"}</span></div>
+                <p className="billing-empty">{isCreditNote ? "La cancelación conserva la nota y su folio; libera el importe acreditado en la factura original." : `La cancelación conserva la factura y su folio; ${invoice.origin_type === "global" ? "libera el periodo y sus ventas para emitir un reemplazo." : "libera la operación para emitir un reemplazo."}`}</p>
                 <div className="form-row">
                   <label className="form-field"><span>Motivo SAT *</span><select value={reasonCode} onChange={(event) => { setReasonCode(event.target.value); setError(""); }}>{BILLING_CANCELLATION_REASONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
                   {reasonCode === "01" && <label className="form-field"><span>UUID que sustituye *</span><input value={replacementUuid} onChange={(event) => setReplacementUuid(event.target.value)} maxLength={36} placeholder="00000000-0000-0000-0000-000000000000" /></label>}
@@ -8943,7 +9271,7 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onClose, onChang
               <a className="button button-secondary" href={`/api/admin/billing/invoices/${encodeURIComponent(invoice.id)}/xml`} download><Download size={16} />Descargar XML</a>
               {canRequest && invoice.status === "stamped" && invoice.origin_type !== "global" && !emailOpen && <button className="button button-secondary" onClick={() => { setEmailOpen(true); setEmailTo(invoice.receptor_email ?? ""); setEmailNotice(""); setError(""); }} disabled={busy !== null}><Mail size={16} />Enviar por correo</button>}
               {canStamp && <button className="button button-primary" onClick={() => void stamp()} disabled={busy !== null}><ShieldCheck size={16} />{busy === "stamp" ? "Timbrando…" : invoice.status === "failed" ? "Reintentar timbrado" : "Timbrar ahora"}</button>}
-              {canManage && invoice.status === "stamped" && !cancelOpen && <button className="button button-danger" onClick={() => setCancelOpen(true)} disabled={busy !== null}>Cancelar factura</button>}
+              {canCancelInvoice && !cancelOpen && <button className="button button-danger" onClick={() => setCancelOpen(true)} disabled={busy !== null}>{isCreditNote ? "Cancelar nota de crédito" : "Cancelar factura"}</button>}
               <button className="button button-secondary" onClick={onClose}>Cerrar</button>
             </div>
           </>
@@ -10612,6 +10940,879 @@ function ScheduleShiftModal({ employees, onClose, onCreated }: { employees: Back
           <div className="modal-note"><ShieldCheck size={16} /><span>El turno queda registrado con el responsable y se muestra en la lista de turnos programados.</span></div>
           <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy || employees.length === 0}><Check size={16} />{busy ? "Guardando…" : "Programar turno"}</button></div>
         </form>
+      </section>
+    </div>
+  );
+}
+
+function formatBankSignedAmount(cents: number): string {
+  return `${cents < 0 ? "−" : "+"}${formatMoney(Math.abs(cents))}`;
+}
+
+function bankMovementStatus(value: string): BankMovementStatus {
+  return value === "reconciled" || value === "difference" || value === "reviewing" ? value : "pending";
+}
+
+function bankEventLabel(eventType: string): string {
+  const labels: Record<string, string> = {
+    imported: "Movimiento importado",
+    matched: "Conciliación confirmada",
+    unmatched: "Conciliación deshecha",
+    flagged: "Movimiento marcado para revisión",
+    reopened: "Movimiento reabierto",
+  };
+  return labels[eventType] ?? eventType;
+}
+
+function parseBankCsvLine(line: string, delimiter: string): string[] {
+  const cells: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (quoted) {
+      if (character === '"') {
+        if (line[index + 1] === '"') {
+          current += '"';
+          index += 1;
+        } else {
+          quoted = false;
+        }
+      } else {
+        current += character;
+      }
+    } else if (character === '"') {
+      quoted = true;
+    } else if (character === delimiter) {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseBankAmount(rawValue: string): number | null {
+  let raw = rawValue.trim().replace(/\s/g, "");
+  if (!raw) return null;
+  let negative = false;
+  if (/^\(.*\)$/.test(raw)) {
+    negative = true;
+    raw = raw.slice(1, -1);
+  }
+  if (/^[−-]/.test(raw)) {
+    negative = !negative;
+    raw = raw.slice(1);
+  } else if (raw.startsWith("+")) {
+    raw = raw.slice(1);
+  }
+  raw = raw.replace(/[^0-9.,]/g, "");
+  if (!raw) return null;
+  const lastDot = raw.lastIndexOf(".");
+  const lastComma = raw.lastIndexOf(",");
+  if (lastDot >= 0 && lastComma >= 0) {
+    raw = lastDot > lastComma ? raw.replace(/,/g, "") : raw.replace(/\./g, "").replace(",", ".");
+  } else if (lastComma >= 0) {
+    const decimals = raw.length - lastComma - 1;
+    raw = decimals > 0 && decimals <= 2 ? raw.replace(",", ".") : raw.replace(/,/g, "");
+  }
+  const amount = Number.parseFloat(raw);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const cents = Math.round(amount * 100);
+  if (cents < 1 || cents > 1_000_000_000_000) return null;
+  return negative ? -cents : cents;
+}
+
+function parseBankDate(rawValue: string): string | null {
+  const raw = rawValue.trim();
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(raw);
+  const latin = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(raw);
+  let year: number;
+  let month: number;
+  let day: number;
+  if (iso) {
+    year = Number(iso[1]);
+    month = Number(iso[2]);
+    day = Number(iso[3]);
+  } else if (latin) {
+    day = Number(latin[1]);
+    month = Number(latin[2]);
+    year = Number(latin[3]);
+  } else {
+    return null;
+  }
+  if (year < 2000 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const check = new Date(Date.UTC(year, month - 1, day));
+  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function parseBankCsv(text: string): { rows: BankImportRow[]; errors: string[] } {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return { rows: [], errors: ["Pega o carga un archivo CSV con al menos una fila."] };
+  const firstLine = lines[0] ?? "";
+  const delimiter = firstLine.includes("\t")
+    ? "\t"
+    : (firstLine.split(";").length > firstLine.split(",").length ? ";" : ",");
+  const rows: BankImportRow[] = [];
+  const errors: string[] = [];
+  const header = /^(fecha|date|fecha de operaci[oó]n|f\.?\s*operaci[oó]n)$/i;
+  lines.forEach((line, index) => {
+    const cells = parseBankCsvLine(line, delimiter);
+    const first = (cells[0] ?? "").trim();
+    if (index === 0 && header.test(first)) return;
+    if (cells.length < 2) {
+      errors.push(`Línea ${index + 1}: se esperaban al menos fecha e importe.`);
+      return;
+    }
+    const occurredOn = parseBankDate(first);
+    if (!occurredOn) {
+      errors.push(`Línea ${index + 1}: fecha inválida «${first}». Usa AAAA-MM-DD o DD/MM/AAAA.`);
+      return;
+    }
+    const amount = parseBankAmount(cells[1] ?? "");
+    if (amount === null) {
+      errors.push(`Línea ${index + 1}: importe inválido «${cells[1] ?? ""}».`);
+      return;
+    }
+    if (rows.length >= 500) {
+      errors.push("El lote supera 500 movimientos; divide el archivo.");
+      return;
+    }
+    rows.push({
+      occurred_on: occurredOn,
+      amount_cents: amount,
+      reference: (cells[2] ?? "").slice(0, 120),
+      description: (cells[3] ?? "").slice(0, 240),
+    });
+  });
+  if (rows.length === 0 && errors.length === 0) {
+    errors.push("No se encontraron movimientos válidos en el CSV.");
+  }
+  return { rows, errors };
+}
+
+function ReconciliationView({ permissions, onUnauthorized, onToast }: { permissions: string[]; onUnauthorized: () => void; onToast: (message: string) => void }) {
+  const canManage = permissions.includes("finance.manage");
+  const [accounts, setAccounts] = useState<BankAccount[]>([]);
+  const [movements, setMovements] = useState<BankMovementPage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [accountFilter, setAccountFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"" | BankMovementStatus>("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [page, setPage] = useState(1);
+  const [refresh, setRefresh] = useState(0);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [importAccountId, setImportAccountId] = useState<string | null>(null);
+  const [activeMovementId, setActiveMovementId] = useState<string | null>(null);
+  const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => setQuery(search.trim()), 300);
+    return () => window.clearTimeout(handle);
+  }, [search]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [accountFilter, query, statusFilter, fromDate, toDate]);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const params = new URLSearchParams({ page: String(page), page_size: String(RECONCILIATION_PAGE_SIZE) });
+        if (accountFilter) params.set("bank_account_id", accountFilter);
+        if (statusFilter) params.set("status", statusFilter);
+        if (fromDate) params.set("from_date", fromDate);
+        if (toDate) params.set("to_date", toDate);
+        if (query) params.set("search", query);
+        const [accountsResponse, movementsResponse] = await Promise.all([
+          fetch("/api/admin/finance/bank-accounts", { cache: "no-store" }),
+          fetch(`/api/admin/finance/bank-movements?${params.toString()}`, { cache: "no-store" }),
+        ]);
+        if (accountsResponse.status === 401 || movementsResponse.status === 401) {
+          onUnauthorized();
+          return;
+        }
+        if (!accountsResponse.ok || !movementsResponse.ok) {
+          throw new Error("No se pudo consultar la conciliación bancaria.");
+        }
+        const accountsPayload = await accountsResponse.json() as { items: BankAccount[]; total: number };
+        const movementsPayload = await movementsResponse.json() as BankMovementPage;
+        if (!active) return;
+        setAccounts(accountsPayload.items);
+        setMovements(movementsPayload);
+      } catch (caught) {
+        if (active) setError(caught instanceof Error ? caught.message : "Error al cargar la conciliación.");
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [accountFilter, fromDate, onUnauthorized, page, query, refresh, statusFilter, toDate]);
+
+  const summary = movements?.summary;
+  const activeAccounts = accounts.filter((account) => account.status === "active");
+  const selectedAccount = accounts.find((account) => account.id === accountFilter) ?? null;
+  const importAccount = accounts.find((account) => account.id === importAccountId) ?? null;
+  const rows = movements?.items ?? [];
+  const total = movements?.total ?? 0;
+  const pages = movements?.pages ?? 1;
+  const oldestPending = summary?.oldest_pending_on ? formatDateOnly(summary.oldest_pending_on) : null;
+
+  const openImport = () => {
+    const target = selectedAccount && selectedAccount.status === "active" ? selectedAccount : activeAccounts[0] ?? null;
+    if (!target) {
+      onToast("Crea una cuenta bancaria activa antes de importar.");
+      return;
+    }
+    setImportAccountId(target.id);
+  };
+
+  const toggleAccount = async (account: BankAccount) => {
+    setStatusBusyId(account.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/finance/bank-accounts/${encodeURIComponent(account.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: account.status === "active" ? "inactive" : "active" }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudo actualizar la cuenta bancaria."));
+        return;
+      }
+      setRefresh((value) => value + 1);
+      onToast(account.status === "active" ? `Cuenta ${account.name} desactivada.` : `Cuenta ${account.name} reactivada.`);
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setStatusBusyId(null);
+    }
+  };
+
+  const statusFilters: { value: "" | BankMovementStatus; label: string }[] = [
+    { value: "", label: "Todos" },
+    { value: "pending", label: "Pendientes" },
+    { value: "difference", label: "Con diferencia" },
+    { value: "reviewing", label: "En revisión" },
+    { value: "reconciled", label: "Conciliados" },
+  ];
+
+  return (
+    <>
+      <section className="access-summary-band pos-cash-band reconciliation-band">
+        <div className="access-summary-main">
+          <span className="summary-icon"><Landmark size={18} /></span>
+          <div>
+            <span>CONCILIACIÓN BANCARIA</span>
+            <strong>{summary ? `${summary.count} movimientos · ${summary.pending} por conciliar · ${summary.difference} con diferencia` : "Consultando movimientos…"}</strong>
+            <small className="report-timezone">Depósitos positivos y retiros negativos · vincular no duplica los ingresos del club</small>
+          </div>
+        </div>
+        <div className="summary-divider" />
+        <div className="summary-stat"><span>POR CONCILIAR</span><strong>{summary?.pending ?? "—"}</strong>{oldestPending && <small>El más antiguo · {oldestPending}</small>}</div>
+        <div className="summary-stat"><span>DIFERENCIAS</span><strong>{summary?.difference ?? "—"}</strong>{summary && summary.difference_cents > 0 && <small>{formatMoney(summary.difference_cents)} por explicar</small>}</div>
+        <div className="summary-stat"><span>INGRESOS</span><strong>{summary ? formatMoney(summary.inflow_cents) : "—"}</strong></div>
+        <div className="summary-stat"><span>EGRESOS</span><strong>{summary ? formatMoney(Math.abs(summary.outflow_cents)) : "—"}</strong></div>
+        {canManage && (
+          <button className="button button-primary" onClick={openImport} disabled={activeAccounts.length === 0} title={activeAccounts.length === 0 ? "Crea una cuenta bancaria activa para importar" : "Importar estado de cuenta"}>
+            <Upload size={16} />Importar estado
+          </button>
+        )}
+      </section>
+
+      {error && <div className="billing-alert" role="alert">{error}</div>}
+
+      <section className="panel full-panel reconciliation-accounts-panel">
+        <div className="panel-header access-list-heading">
+          <div><p className="section-kicker">CUENTAS BANCARIAS</p><h2>Cuentas del club</h2></div>
+          <div className="pos-row-actions">
+            {selectedAccount && <button type="button" className="button button-secondary button-small" onClick={() => setAccountFilter("")}>Ver todas las cuentas</button>}
+            {canManage && <button type="button" className="button button-secondary button-small" onClick={() => setCreateOpen(true)}><Plus size={15} />Nueva cuenta</button>}
+          </div>
+        </div>
+        {accounts.length === 0 ? (
+          <div className="reconciliation-empty">
+            <Landmark size={22} />
+            <div><strong>Sin cuentas bancarias</strong><span>{canManage ? "Crea una cuenta para importar el estado de cuenta y conciliar los pagos electrónicos." : "Un administrador debe crear la primera cuenta bancaria."}</span></div>
+            {canManage && <button type="button" className="button button-primary button-small" onClick={() => setCreateOpen(true)}><Plus size={15} />Crear cuenta</button>}
+          </div>
+        ) : (
+          <div className="reconciliation-account-grid">
+            {accounts.map((account) => {
+              const isSelected = accountFilter === account.id;
+              return (
+                <article key={account.id} className={`reconciliation-account ${isSelected ? "reconciliation-account-selected" : ""}`}>
+                  <div className="reconciliation-account-head">
+                    <span className="reconciliation-account-icon"><Landmark size={16} /></span>
+                    <div><strong>{account.name}</strong><span>{account.bank_name} · •••• {account.account_last4}</span></div>
+                    <span className={`status-badge ${account.status === "active" ? "status-good" : "status-neutral"}`}><i />{account.status === "active" ? "Activa" : "Inactiva"}</span>
+                  </div>
+                  <div className="reconciliation-account-values">
+                    <div><span>SALDO</span><strong>{formatMoney(account.balance_cents)}</strong></div>
+                    <div><span>PENDIENTES</span><strong>{account.pending_count}</strong></div>
+                    <div><span>DIFERENCIAS</span><strong>{account.difference_count}</strong></div>
+                  </div>
+                  <div className="reconciliation-account-foot">
+                    <span>{account.last_movement_on ? `Último movimiento ${formatDateOnly(account.last_movement_on)}` : "Sin movimientos"}</span>
+                    <div className="pos-row-actions">
+                      <button type="button" className="button button-secondary button-small" onClick={() => setAccountFilter(isSelected ? "" : account.id)}>{isSelected ? "Ver todas" : "Filtrar"}</button>
+                      {canManage && <button type="button" className="button button-secondary button-small" disabled={account.status !== "active"} onClick={() => setImportAccountId(account.id)}>Importar</button>}
+                      {canManage && <button type="button" className="button button-secondary button-small" disabled={statusBusyId === account.id} onClick={() => void toggleAccount(account)}>{statusBusyId === account.id ? "Guardando…" : account.status === "active" ? "Desactivar" : "Activar"}</button>}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="panel full-panel">
+        <div className="panel-header access-list-heading">
+          <div><p className="section-kicker">MOVIMIENTOS DEL BANCO</p><h2>Estado de cuenta</h2></div>
+          {summary && summary.reconciled > 0 && <span className="status-badge status-good"><i />{summary.reconciled} conciliados</span>}
+        </div>
+        <div className="table-toolbar reconciliation-toolbar">
+          <label className="table-search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar referencia, descripción o coincidencia" /></label>
+          <label className="table-select"><span>Cuenta</span><select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}><option value="">Todas</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
+          <label className="table-select"><span>Estado</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "" | BankMovementStatus)}>{statusFilters.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+          <label className="table-select"><span>Desde</span><input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label>
+          <label className="table-select"><span>Hasta</span><input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label>
+          <span className="table-hint">Cada línea del banco se vincula a una sola operación interna</span>
+        </div>
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead><tr><th>FECHA</th><th>CUENTA</th><th>REFERENCIA</th><th>IMPORTE</th><th>ESTADO</th><th>CONCILIACIÓN</th><th /></tr></thead>
+            <tbody>
+              {loading ? <tr><td colSpan={7} className="empty-row">Cargando movimientos…</td></tr>
+                : rows.length === 0 ? <tr><td colSpan={7} className="empty-row">{accounts.length === 0 ? "Crea una cuenta e importa tu primer estado de cuenta." : query || statusFilter || fromDate || toDate || accountFilter ? "No hay movimientos que coincidan con el filtro." : "Aún no hay movimientos importados."}</td></tr>
+                : rows.map((movement) => {
+                  const status = bankMovementStatus(movement.status);
+                  return (
+                    <tr key={movement.id}>
+                      <td className="time-cell">{formatDateOnly(movement.occurred_on)}</td>
+                      <td><strong>{movement.bank_account_name}</strong><small className="billing-inline-note">{movement.bank_name} · •••• {movement.account_last4}</small></td>
+                      <td><strong>{movement.reference || "Sin referencia"}</strong><small className="billing-inline-note">{movement.description || "Sin descripción"}</small></td>
+                      <td><span className={movement.amount_cents < 0 ? "reconciliation-amount-out" : "reconciliation-amount-in"}>{formatBankSignedAmount(movement.amount_cents)}</span></td>
+                      <td><span className={`status-badge ${bankMovementStatusBadges[status]}`}><i />{bankMovementStatusLabels[status]}</span>{status === "difference" && movement.difference_cents !== null && <small className="billing-inline-note">Diferencia {formatMoney(Math.abs(movement.difference_cents))}</small>}</td>
+                      <td>{movement.matched_label ? <><strong>{movement.matched_label}</strong><small className="billing-inline-note">{movement.matched_source ? bankSourceLabels[movement.matched_source] : "Operación vinculada"}</small></> : movement.suggestion_count > 0 ? <><span className="status-badge status-warn"><i />{movement.suggestion_count} {movement.suggestion_count === 1 ? "sugerencia" : "sugerencias"}</span>{movement.suggested_label && <small className="billing-inline-note">{movement.suggested_label}</small>}</> : <span className="billing-empty">Sin coincidencias</span>}</td>
+                      <td><button className="button button-secondary button-small" onClick={() => setActiveMovementId(movement.id)}>Revisar</button></td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        </div>
+        <div className="table-bottom">
+          <span>{total} {total === 1 ? "movimiento" : "movimientos"}</span>
+          {pages > 1 && (
+            <span className="member-pagination">
+              <span>Página {page} de {pages}</span>
+              <button type="button" aria-label="Página anterior" disabled={page <= 1} onClick={() => setPage(Math.max(1, page - 1))}>‹</button>
+              <button type="button" aria-label="Página siguiente" disabled={page >= pages} onClick={() => setPage(Math.min(pages, page + 1))}>›</button>
+            </span>
+          )}
+        </div>
+      </section>
+      <footer className="page-footer"><span>Centro Fit · Conciliación bancaria</span><span>{canManage ? "IMPORTACIÓN, VÍNCULO Y REVISIÓN" : "CONSULTA DE MOVIMIENTOS"}</span></footer>
+
+      {createOpen && (
+        <NewBankAccountModal
+          onClose={() => setCreateOpen(false)}
+          onCreated={(message) => { setCreateOpen(false); setRefresh((value) => value + 1); onToast(message); }}
+          onUnauthorized={onUnauthorized}
+        />
+      )}
+      {importAccount && (
+        <BankImportModal
+          key={importAccount.id}
+          account={importAccount}
+          onClose={() => setImportAccountId(null)}
+          onImported={(result) => {
+            setImportAccountId(null);
+            setAccountFilter(importAccount.id);
+            setStatusFilter("");
+            setPage(1);
+            setRefresh((value) => value + 1);
+            const importedLabel = result.imported === 1 ? "Importado 1" : `Importados ${result.imported}`;
+            const totalLabel = result.total_rows === 1 ? "movimiento" : "movimientos";
+            const skippedLabel = result.duplicates === 1 ? "1 duplicado omitido" : `${result.duplicates} duplicados omitidos`;
+            onToast(`${importedLabel} de ${result.total_rows} ${totalLabel}${result.duplicates > 0 ? `; ${skippedLabel}` : ""}.`);
+          }}
+          onUnauthorized={onUnauthorized}
+        />
+      )}
+      {activeMovementId && (
+        <BankMovementModal
+          key={activeMovementId}
+          movementId={activeMovementId}
+          canManage={canManage}
+          onClose={() => setActiveMovementId(null)}
+          onChanged={(message) => { setRefresh((value) => value + 1); onToast(message); }}
+          onUnauthorized={onUnauthorized}
+        />
+      )}
+    </>
+  );
+}
+
+function NewBankAccountModal({ onClose, onCreated, onUnauthorized }: { onClose: () => void; onCreated: (message: string) => void; onUnauthorized: () => void }) {
+  const [name, setName] = useState("");
+  const [bankName, setBankName] = useState("");
+  const [last4, setLast4] = useState("");
+  const [currency, setCurrency] = useState("MXN");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const displayName = name.trim();
+    const bank = bankName.trim();
+    if (displayName.length < 2) { setError("Escribe un nombre de cuenta de al menos 2 caracteres."); return; }
+    if (bank.length < 2) { setError("Escribe el nombre del banco."); return; }
+    if (!/^\d{4}$/.test(last4)) { setError("Los últimos 4 dígitos deben ser exactamente 4 números."); return; }
+    if (!/^[A-Za-z]{3}$/.test(currency.trim())) { setError("La moneda debe ser un código de 3 letras, por ejemplo MXN."); return; }
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/finance/bank-accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: displayName, bank_name: bank, account_last4: last4, currency: currency.trim().toUpperCase() }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudo crear la cuenta bancaria."));
+        return;
+      }
+      const created = await response.json() as BankAccount;
+      onCreated(`Cuenta ${created.name} creada.`);
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="new-bank-account-title">
+        <div className="modal-header"><span className="modal-icon"><Landmark size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">CONCILIACIÓN BANCARIA</p>
+        <h2 id="new-bank-account-title">Nueva cuenta bancaria</h2>
+        <p className="modal-subtitle">Registra la cuenta del club que recibirá los pagos electrónicos. Los movimientos se cargan desde el estado de cuenta del banco.</p>
+        <form onSubmit={submit}>
+          <div className="form-row">
+            <label className="form-field"><span>Nombre de la cuenta *</span><input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} placeholder="Cuenta operativa" /></label>
+            <label className="form-field"><span>Banco *</span><input value={bankName} onChange={(event) => setBankName(event.target.value)} maxLength={80} placeholder="BBVA" /></label>
+          </div>
+          <div className="form-row">
+            <label className="form-field"><span>Últimos 4 dígitos *</span><input value={last4} onChange={(event) => setLast4(event.target.value.replace(/\D/g, "").slice(0, 4))} inputMode="numeric" maxLength={4} placeholder="1234" /></label>
+            <label className="form-field"><span>Moneda</span><input value={currency} onChange={(event) => setCurrency(event.target.value.toUpperCase().slice(0, 3))} maxLength={3} placeholder="MXN" /></label>
+          </div>
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <div className="modal-note"><ShieldCheck size={16} /><span>Una cuenta inactiva conserva su historial pero no acepta nuevas importaciones. No se pueden eliminar cuentas con movimientos.</span></div>
+          <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}><Check size={16} />{busy ? "Guardando…" : "Crear cuenta"}</button></div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function BankImportModal({ account, onClose, onImported, onUnauthorized }: { account: BankAccount; onClose: () => void; onImported: (result: { imported: number; duplicates: number; total_rows: number }) => void; onUnauthorized: () => void }) {
+  const [csv, setCsv] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const parsed = useMemo(() => parseBankCsv(csv), [csv]);
+  const hasCsv = csv.trim().length > 0;
+  const incomingCents = parsed.rows.filter((row) => row.amount_cents > 0).reduce((sum, row) => sum + row.amount_cents, 0);
+  const outgoingCents = parsed.rows.filter((row) => row.amount_cents < 0).reduce((sum, row) => sum + row.amount_cents, 0);
+
+  const handleFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setCsv(text);
+      setError("");
+    } catch {
+      setError("No se pudo leer el archivo CSV.");
+    }
+  };
+
+  const loadSample = () => {
+    const today = todayDateInput();
+    setCsv(`fecha,importe,referencia,descripcion\n${today},11600.00,TRF-EJEMPLO,Pago de factura de ejemplo\n${today},-450.00,COMISION,Comisión bancaria de ejemplo`);
+    setError("");
+  };
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (parsed.errors.length > 0) { setError("Corrige las líneas con error antes de importar."); return; }
+    if (parsed.rows.length === 0) { setError("Agrega al menos un movimiento válido."); return; }
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/finance/bank-accounts/${encodeURIComponent(account.id)}/movements`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: parsed.rows }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudieron importar los movimientos."));
+        return;
+      }
+      const result = await response.json() as { imported: number; duplicates: number; total_rows: number };
+      onImported(result);
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="bank-import-title">
+        <div className="modal-header"><span className="modal-icon"><Upload size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">IMPORTAR ESTADO DE CUENTA</p>
+        <h2 id="bank-import-title">{account.name}</h2>
+        <p className="modal-subtitle">{account.bank_name} · •••• {account.account_last4} · Formato CSV: fecha, importe, referencia, descripción. Usa importes negativos para retiros.</p>
+        <form onSubmit={submit}>
+          <div className="reconciliation-import-sample">
+            <label className="button button-secondary button-small reconciliation-file-button"><Upload size={15} />Cargar CSV<input type="file" accept=".csv,text/csv" hidden onChange={(event) => void handleFile(event)} /></label>
+            <button type="button" className="button button-secondary button-small" onClick={loadSample}>Cargar ejemplo</button>
+          </div>
+          <label className="form-field">
+            <span>Contenido CSV</span>
+            <textarea value={csv} onChange={(event) => { setCsv(event.target.value); setError(""); }} rows={6} placeholder={"fecha,importe,referencia,descripcion\n2026-10-20,11600.00,TRF-4821,Pago de factura A-000001\n2026-10-21,-450.00,COMISION,Comisión anual"} />
+          </label>
+          {hasCsv && parsed.errors.length > 0 && (
+            <div className="billing-alert" role="alert">
+              {parsed.errors.slice(0, 5).map((message, index) => <div key={`${index}-${message}`}>{message}</div>)}
+              {parsed.errors.length > 5 && <div>Y {parsed.errors.length - 5} errores más.</div>}
+            </div>
+          )}
+          {hasCsv && parsed.rows.length > 0 && (
+            <>
+              <div className="reconciliation-import-preview">
+                <div><span>MOVIMIENTOS VÁLIDOS</span><strong>{parsed.rows.length}</strong></div>
+                <div><span>INGRESOS</span><strong>{formatMoney(incomingCents)}</strong></div>
+                <div><span>RETIROS</span><strong>{formatMoney(Math.abs(outgoingCents))}</strong></div>
+              </div>
+              <div className="table-scroll reconciliation-import-table">
+                <table className="data-table compact-table">
+                  <thead><tr><th>FECHA</th><th>IMPORTE</th><th>REFERENCIA</th><th>DESCRIPCIÓN</th></tr></thead>
+                  <tbody>
+                    {parsed.rows.slice(0, 6).map((row, index) => (
+                      <tr key={`${row.occurred_on}-${row.amount_cents}-${index}`}>
+                        <td>{formatDateOnly(row.occurred_on)}</td>
+                        <td><span className={row.amount_cents < 0 ? "reconciliation-amount-out" : "reconciliation-amount-in"}>{formatBankSignedAmount(row.amount_cents)}</span></td>
+                        <td>{row.reference || "—"}</td>
+                        <td>{row.description || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {parsed.rows.length > 6 && <p className="billing-empty">Se muestran 6 de {parsed.rows.length} movimientos; el lote completo se enviará al confirmar.</p>}
+            </>
+          )}
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <div className="modal-note"><ShieldCheck size={16} /><span>La importación es idempotente: una línea idéntica ya importada se omite. Si una fila es inválida, no se guarda ninguna del lote.</span></div>
+          <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy || parsed.rows.length === 0 || parsed.errors.length > 0}><Upload size={16} />{busy ? "Importando…" : "Importar movimientos"}</button></div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function BankMovementModal({ movementId, canManage, onClose, onChanged, onUnauthorized }: { movementId: string; canManage: boolean; onClose: () => void; onChanged: (message: string) => void; onUnauthorized: () => void }) {
+  const [detail, setDetail] = useState<BankMovementDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [appliedSearch, setAppliedSearch] = useState("");
+  const [note, setNote] = useState("");
+  const [unmatchOpen, setUnmatchOpen] = useState(false);
+  const [unmatchReason, setUnmatchReason] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const params = new URLSearchParams();
+        if (appliedSearch.trim()) params.set("candidate_search", appliedSearch.trim());
+        const queryString = params.toString();
+        const response = await fetch(`/api/admin/finance/bank-movements/${encodeURIComponent(movementId)}${queryString ? `?${queryString}` : ""}`, { cache: "no-store" });
+        if (response.status === 401) { onUnauthorized(); return; }
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(billingErrorDetail(payload, "No se pudo consultar el movimiento."));
+        }
+        const payload = await response.json() as BankMovementDetail;
+        if (active) setDetail(payload);
+      } catch (caught) {
+        if (active) setError(caught instanceof Error ? caught.message : "Error al consultar el movimiento.");
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [appliedSearch, movementId, onUnauthorized, refresh]);
+
+  const afterAction = (message: string) => {
+    setNote("");
+    setUnmatchOpen(false);
+    setUnmatchReason("");
+    setRefresh((value) => value + 1);
+    onChanged(message);
+  };
+
+  const match = async (candidate: BankMovementCandidate) => {
+    const reason = note.trim();
+    if (!candidate.amount_match && reason.length < 3) {
+      setError("El importe no coincide. Escribe el motivo de la diferencia (mínimo 3 caracteres).");
+      return;
+    }
+    setBusy(`match:${candidate.source_id}`);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/finance/bank-movements/${encodeURIComponent(movementId)}/match`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: candidate.source, source_id: candidate.source_id, note: reason || null }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudo conciliar el movimiento."));
+        return;
+      }
+      afterAction(candidate.amount_match
+        ? `Movimiento conciliado con ${candidate.label}.`
+        : `Movimiento conciliado con ${candidate.label}; diferencia de ${formatMoney(Math.abs(candidate.difference_cents))}.`);
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const unmatch = async () => {
+    const reason = unmatchReason.trim();
+    if (reason.length < 3) { setError("Escribe el motivo de la desvinculación."); return; }
+    setBusy("unmatch");
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/finance/bank-movements/${encodeURIComponent(movementId)}/unmatch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudo deshacer la conciliación."));
+        return;
+      }
+      afterAction("Coincidencia desvinculada; el movimiento volvió a pendiente.");
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const flag = async (status: "pending" | "difference" | "reviewing") => {
+    const reason = note.trim();
+    if (status !== "pending" && reason.length < 3) {
+      setError("Escribe una nota para marcar la revisión o la diferencia.");
+      return;
+    }
+    setBusy(`flag:${status}`);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/finance/bank-movements/${encodeURIComponent(movementId)}/flag`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, note: reason || null }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudo actualizar la revisión."));
+        return;
+      }
+      afterAction(status === "pending" ? "Movimiento devuelto a pendiente." : status === "difference" ? "Movimiento marcado con diferencia." : "Movimiento marcado en revisión.");
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const status = detail ? bankMovementStatus(detail.status) : "pending";
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal modal-wide billing-modal" role="dialog" aria-modal="true" aria-labelledby="bank-movement-title">
+        <div className="modal-header"><span className="modal-icon"><Landmark size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        {!detail ? (
+          <>
+            <p className="section-kicker">CONCILIACIÓN BANCARIA</p>
+            <h2 id="bank-movement-title">{loading ? "Cargando movimiento…" : "Movimiento no disponible"}</h2>
+            {error && <div className="login-error" role="alert">{error}</div>}
+            <div className="modal-actions"><button className="button button-secondary" onClick={onClose}>Cerrar</button></div>
+          </>
+        ) : (
+          <>
+            <p className="section-kicker">CONCILIACIÓN BANCARIA · {detail.currency}</p>
+            <h2 id="bank-movement-title" className={detail.amount_cents < 0 ? "reconciliation-detail-out" : "reconciliation-detail-in"}>{formatBankSignedAmount(detail.amount_cents)}</h2>
+            <p className="modal-subtitle">{detail.bank_account_name} · {detail.bank_name} •••• {detail.account_last4} · {formatDateOnly(detail.occurred_on)}</p>
+            <div className="billing-detail-status">
+              <span className={`status-badge ${bankMovementStatusBadges[status]}`}><i />{bankMovementStatusLabels[status]}</span>
+              {detail.matched_source && <span className="status-badge status-neutral"><i />{bankSourceLabels[detail.matched_source]}</span>}
+              {detail.suggestion_count > 0 && !detail.matched_id && <span className="status-badge status-warn"><i />{detail.suggestion_count} {detail.suggestion_count === 1 ? "sugerencia" : "sugerencias"}</span>}
+            </div>
+            {error && <div className="login-error" role="alert">{error}</div>}
+
+            <div className="detail-section">
+              <div className="modal-section-title"><span>DETALLE DEL MOVIMIENTO</span><span>{loading ? "Actualizando…" : detail.currency}</span></div>
+              <div className="billing-detail-grid">
+                <div><span>FECHA</span><strong>{formatDateOnly(detail.occurred_on)}</strong></div>
+                <div><span>REFERENCIA</span><strong>{detail.reference || "—"}</strong></div>
+                <div><span>DESCRIPCIÓN</span><strong>{detail.description || "—"}</strong></div>
+                <div><span>IMPORTE</span><strong>{formatBankSignedAmount(detail.amount_cents)}</strong></div>
+                <div><span>IMPORTADO</span><strong>{formatMoment(detail.imported_at)}</strong></div>
+                <div><span>CONCILIADO</span><strong>{formatMoment(detail.reconciled_at)}</strong></div>
+                <div><span>REVISADO</span><strong>{formatMoment(detail.reviewed_at)}</strong></div>
+                <div><span>NOTA</span><strong>{detail.note || "—"}</strong></div>
+              </div>
+            </div>
+
+            {detail.matched_id && (
+              <div className="reconciliation-match-card">
+                <span className="summary-icon"><Check size={16} /></span>
+                <div>
+                  <span>OPERACIÓN VINCULADA</span>
+                  <strong>{detail.matched_label}</strong>
+                  <small>{detail.matched_source ? bankSourceLabels[detail.matched_source] : "Operación interna"}{detail.difference_cents !== null && detail.difference_cents !== 0 ? ` · Diferencia ${formatMoney(Math.abs(detail.difference_cents))}` : " · Importe exacto"}</small>
+                </div>
+              </div>
+            )}
+
+            {!detail.matched_id && (
+              <div className="detail-section">
+                <div className="modal-section-title"><span>COINCIDENCIAS INTERNAS</span><span>{detail.candidates.length}</span></div>
+                {canManage && (
+                  <form className="reconciliation-manual-search" onSubmit={(event) => { event.preventDefault(); setAppliedSearch(search.trim()); }}>
+                    <label className="table-search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por folio, socio, plan o referencia" /></label>
+                    <button type="submit" className="button button-secondary button-small" disabled={loading || !search.trim()}>Buscar</button>
+                    {appliedSearch && <button type="button" className="button button-secondary button-small" onClick={() => { setSearch(""); setAppliedSearch(""); }}>Limpiar</button>}
+                  </form>
+                )}
+                {detail.candidates.length === 0 ? (
+                  <p className="billing-empty">{appliedSearch ? `No se encontraron operaciones para «${appliedSearch}».` : "No hay operaciones compatibles con la fecha y el importe. Usa la búsqueda manual para ampliar a ±60 días."}</p>
+                ) : (
+                  <>
+                    <p className="reconciliation-hint">Se muestran operaciones electrónicas dentro de ±{appliedSearch ? "60" : "7"} días. Si el importe no coincide, escribe la nota de revisión antes de conciliar.</p>
+                    <div className="reconciliation-candidates">
+                      {detail.candidates.map((candidate) => (
+                        <div key={`${candidate.source}-${candidate.source_id}`} className="reconciliation-candidate">
+                          <div className="reconciliation-candidate-main">
+                            <strong>{candidate.label}</strong>
+                            <small>{candidate.detail}{candidate.reference ? ` · Ref. ${candidate.reference}` : ""} · {formatDateOnly(candidate.occurred_on)} · {bankSourceLabels[candidate.source]}</small>
+                          </div>
+                          <div className="reconciliation-candidate-side">
+                            <strong>{formatMoney(candidate.amount_cents)}</strong>
+                            {candidate.amount_match
+                              ? <span className="status-badge status-good"><i />Importe exacto</span>
+                              : <span className="status-badge status-warn"><i />Dif. {formatMoney(Math.abs(candidate.difference_cents))}</span>}
+                            {canManage && (
+                              <button type="button" className="button button-primary button-small" disabled={busy !== null || loading} onClick={() => void match(candidate)}>
+                                {busy === `match:${candidate.source_id}` ? "Conciliando…" : "Conciliar"}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {canManage && !detail.matched_id && (
+              <div className="detail-section">
+                <div className="modal-section-title"><span>NOTA DE REVISIÓN</span><span>{note.length}/300</span></div>
+                <label className="form-field"><span>Nota para conciliar con diferencia o marcar revisión *</span><input value={note} onChange={(event) => setNote(event.target.value)} maxLength={300} placeholder="Ej. Comisión descontada por el banco" /></label>
+                <div className="reconciliation-flag-actions">
+                  {status !== "reviewing" && <button type="button" className="button button-secondary button-small" disabled={busy !== null || loading} onClick={() => void flag("reviewing")}><Clock3 size={14} />Marcar en revisión</button>}
+                  {status !== "difference" && <button type="button" className="button button-secondary button-small" disabled={busy !== null || loading} onClick={() => void flag("difference")}><Flag size={14} />Marcar diferencia</button>}
+                  {status !== "pending" && <button type="button" className="button button-secondary button-small" disabled={busy !== null || loading} onClick={() => void flag("pending")}><RotateCcw size={14} />Regresar a pendiente</button>}
+                </div>
+              </div>
+            )}
+
+            {canManage && detail.matched_id && (
+              <div className="detail-section">
+                <div className="modal-section-title"><span>DESHACER CONCILIACIÓN</span></div>
+                {!unmatchOpen ? (
+                  <button type="button" className="button button-danger" onClick={() => setUnmatchOpen(true)}><Unlink size={15} />Desvincular coincidencia</button>
+                ) : (
+                  <div className="reconciliation-unmatch-form">
+                    <label className="form-field"><span>Motivo *</span><input value={unmatchReason} onChange={(event) => setUnmatchReason(event.target.value)} maxLength={300} placeholder="Explica por qué se desvincula" /></label>
+                    <div className="modal-actions">
+                      <button type="button" className="button button-secondary" onClick={() => { setUnmatchOpen(false); setUnmatchReason(""); }}>Cancelar</button>
+                      <button type="button" className="button button-danger" disabled={busy !== null || loading} onClick={() => void unmatch()}>{busy === "unmatch" ? "Desvinculando…" : "Desvincular"}</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="detail-section">
+              <div className="modal-section-title"><span>BITÁCORA DEL MOVIMIENTO</span><span>{detail.events.length}</span></div>
+              <div className="billing-timeline">
+                {detail.events.map((event) => (
+                  <div className="billing-event" key={event.id}>
+                    <span className="billing-event-dot" />
+                    <div>
+                      <strong>{bankEventLabel(event.event_type)}</strong>
+                      <small>{formatMoment(event.occurred_at)}{event.actor_email ? ` · ${event.actor_email}` : ""}</small>
+                      {event.detail && <small>{event.detail}</small>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cerrar</button></div>
+          </>
+        )}
       </section>
     </div>
   );

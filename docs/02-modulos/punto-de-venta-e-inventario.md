@@ -352,7 +352,7 @@ Décimo incremento entregado (2026-10-21), agrega el **cobro manual y la renovac
 - **Panel web**: la ficha del socio agrega forma de pago, importe, nota y los botones **Cobrar y activar/Cobrar renovación**, con confirmación previa. La activación o el cambio de plan sin cobro queda como cortesía secundaria y auditada. El turno muestra `MEMBRESÍAS` por separado; los totales POS (`sales_count`, `total_sales_cents`) siguen contando solo ventas de productos.
 - Se agregó `backend/tests/test_membership_payments_api.py` (activación y renovación con efectivo/tarjeta, idempotencia, efecto en el turno y cierre, permisos, turno obligatorio, plan/método inválidos, membresía congelada y conflicto de clave); la suite del backend queda en **105 pruebas**.
 
-Pendiente (documentado en `docs/deuda-tecnica.md`): códigos de barras/variantes avanzadas, promociones e impuestos, terminal bancaria real, emisión de CFDI de las ventas, sincronización multi-dispositivo, resolución asistida de ventas rechazadas, reenvío confirmado de estados ya entregados, envío programado/automático por calendario y automatización de cobranza con reglas por antigüedad o promesas de pago.
+Pendiente (documentado en `docs/deuda-tecnica.md`): códigos de barras/variantes avanzadas, promociones e impuestos, terminal bancaria real, facturación automática al cerrar la venta (hoy la venta se factura manualmente desde Facturación y puede acreditarse con nota de crédito), CFDI de compras, sincronización multi-dispositivo, resolución asistida de ventas rechazadas, reenvío confirmado de estados ya entregados, envío programado/automático por calendario y automatización de cobranza con reglas por antigüedad o promesas de pago.
 
 ## 14. Estado
 

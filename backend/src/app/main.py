@@ -358,6 +358,7 @@ from app.modules.billing import (
     PacRejected,
     PacUnavailable,
     cancel_invoice,
+    create_credit_note,
     create_global_invoice,
     create_invoice,
     get_fiscal_profile,
@@ -371,6 +372,27 @@ from app.modules.billing import (
     save_fiscal_profile,
     send_invoice_email,
     stamp_invoice,
+)
+from app.modules.finance import (
+    BankAccountNotFound,
+    BankMovementNotFound,
+    BankMovementStateError,
+    CandidateUnavailable,
+    DuplicateBankAccount,
+    FinanceError,
+    InvalidBankData,
+    InvalidImportBatch,
+    InvalidMatch,
+    MatchCandidateNotFound,
+    create_bank_account,
+    flag_bank_movement,
+    get_bank_movement,
+    import_bank_movements,
+    list_bank_accounts,
+    list_bank_movements,
+    match_bank_movement,
+    unmatch_bank_movement,
+    update_bank_account_status,
 )
 from app.modules.reports import (
     InvalidReportPeriod,
@@ -6614,6 +6636,13 @@ class GlobalInvoiceCreateRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 
+class CreditNoteCreateRequest(BaseModel):
+    amount_cents: int = Field(gt=0)
+    reason: Literal["return", "discount", "correction", "other"]
+    note: str | None = Field(default=None, max_length=300)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
 def _cfdi_http_status(error: CfdiError) -> int:
     if isinstance(error, (InvoiceNotFound, OriginNotFound, BillingMemberNotFound)):
         return status.HTTP_404_NOT_FOUND
@@ -6658,6 +6687,9 @@ def get_billing_summary(
         "simulated": summary.simulated,
         "stamped_cents": summary.stamped_cents,
         "cancelled_cents": summary.cancelled_cents,
+        "credit_notes": summary.credit_notes,
+        "credit_note_cents": summary.credit_note_cents,
+        "net_stamped_cents": summary.net_stamped_cents,
     }
 
 
@@ -6710,6 +6742,10 @@ def get_invoices(
     session: SessionDependency,
     _: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.read"))],
     status_filter: Annotated[str | None, Query(alias="status")] = None,
+    origin_type: Annotated[
+        Literal["sale", "membership_payment", "global", "credit_note"] | None,
+        Query(),
+    ] = None,
     search: Annotated[str | None, Query(max_length=120)] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
@@ -6718,6 +6754,7 @@ def get_invoices(
         return list_invoices(
             session,
             status_filter=status_filter,
+            origin_type=origin_type,
             search=search,
             page=page,
             page_size=page_size,
@@ -6746,6 +6783,32 @@ def request_invoice(
             email=str(receptor.email) if receptor.email is not None else None,
             idempotency_key=payload.idempotency_key,
             payment_form=payload.payment_form,
+            actor_id=principal.user_id,
+        )
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+    return {"invoice": invoice, "idempotent_replay": not created}
+
+
+@app.post(
+    "/admin/billing/invoices/{invoice_id}/credit-notes",
+    status_code=status.HTTP_201_CREATED,
+    tags=["billing"],
+)
+def request_credit_note(
+    invoice_id: UUID,
+    payload: CreditNoteCreateRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.manage"))],
+) -> dict[str, object]:
+    try:
+        invoice, created = create_credit_note(
+            session,
+            invoice_id=invoice_id,
+            amount_cents=payload.amount_cents,
+            reason=payload.reason,
+            note=payload.note,
+            idempotency_key=payload.idempotency_key,
             actor_id=principal.user_id,
         )
     except CfdiError as error:
@@ -6917,3 +6980,235 @@ def put_member_fiscal_profile(
         )
     except CfdiError as error:
         _raise_cfdi_error(error)
+
+
+# --- Finance / bank reconciliation -----------------------------------------
+
+
+class BankAccountCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    bank_name: str = Field(min_length=2, max_length=80)
+    account_last4: str = Field(min_length=4, max_length=4)
+    currency: str = Field(default="MXN", min_length=3, max_length=3)
+
+
+class BankAccountStatusRequest(BaseModel):
+    status: Literal["active", "inactive"]
+
+
+class BankMovementImportRowRequest(BaseModel):
+    occurred_on: date
+    amount_cents: int
+    reference: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=240)
+
+
+class BankMovementImportRequest(BaseModel):
+    rows: list[BankMovementImportRowRequest] = Field(min_length=1, max_length=500)
+
+
+class BankMovementMatchRequest(BaseModel):
+    source: Literal[
+        "membership_payment",
+        "sale",
+        "member_account_payment",
+        "sale_return",
+    ]
+    source_id: UUID
+    note: str | None = Field(default=None, max_length=300)
+
+
+class BankMovementUnmatchRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=300)
+
+
+class BankMovementFlagRequest(BaseModel):
+    status: Literal["pending", "difference", "reviewing"]
+    note: str | None = Field(default=None, max_length=300)
+
+
+def _finance_http_status(error: FinanceError) -> int:
+    if isinstance(error, (BankAccountNotFound, BankMovementNotFound, MatchCandidateNotFound)):
+        return status.HTTP_404_NOT_FOUND
+    if isinstance(
+        error, (DuplicateBankAccount, BankMovementStateError, CandidateUnavailable)
+    ):
+        return status.HTTP_409_CONFLICT
+    if isinstance(error, (InvalidBankData, InvalidImportBatch, InvalidMatch)):
+        return status.HTTP_422_UNPROCESSABLE_ENTITY
+    return status.HTTP_400_BAD_REQUEST
+
+
+def _raise_finance_error(error: FinanceError) -> None:
+    raise HTTPException(status_code=_finance_http_status(error), detail=str(error)) from error
+
+
+@app.get("/admin/finance/bank-accounts", tags=["finance"])
+def get_bank_accounts(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("finance.read"))],
+):
+    try:
+        return list_bank_accounts(session)
+    except FinanceError as error:
+        _raise_finance_error(error)
+
+
+@app.post(
+    "/admin/finance/bank-accounts",
+    status_code=status.HTTP_201_CREATED,
+    tags=["finance"],
+)
+def create_bank_account_endpoint(
+    payload: BankAccountCreateRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("finance.manage"))],
+):
+    try:
+        return create_bank_account(
+            session,
+            name=payload.name,
+            bank_name=payload.bank_name,
+            account_last4=payload.account_last4,
+            currency=payload.currency,
+            actor_id=principal.user_id,
+        )
+    except FinanceError as error:
+        _raise_finance_error(error)
+
+
+@app.patch("/admin/finance/bank-accounts/{account_id}", tags=["finance"])
+def update_bank_account_endpoint(
+    account_id: UUID,
+    payload: BankAccountStatusRequest,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("finance.manage"))],
+):
+    try:
+        return update_bank_account_status(session, account_id, status=payload.status)
+    except FinanceError as error:
+        _raise_finance_error(error)
+
+
+@app.post("/admin/finance/bank-accounts/{account_id}/movements", tags=["finance"])
+def import_bank_movements_endpoint(
+    account_id: UUID,
+    payload: BankMovementImportRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("finance.manage"))],
+):
+    rows = [
+        {
+            "occurred_on": row.occurred_on,
+            "amount_cents": row.amount_cents,
+            "reference": row.reference,
+            "description": row.description,
+        }
+        for row in payload.rows
+    ]
+    try:
+        return import_bank_movements(
+            session, account_id, rows, actor_id=principal.user_id
+        )
+    except FinanceError as error:
+        _raise_finance_error(error)
+
+
+@app.get("/admin/finance/bank-movements", tags=["finance"])
+def get_bank_movements(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("finance.read"))],
+    bank_account_id: Annotated[UUID | None, Query()] = None,
+    status_filter: Annotated[
+        Literal["pending", "reconciled", "difference", "reviewing"] | None,
+        Query(alias="status"),
+    ] = None,
+    from_date: Annotated[date | None, Query()] = None,
+    to_date: Annotated[date | None, Query()] = None,
+    search: Annotated[str | None, Query(max_length=120)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 25,
+):
+    try:
+        return list_bank_movements(
+            session,
+            bank_account_id=bank_account_id,
+            status_filter=status_filter,
+            from_date=from_date,
+            to_date=to_date,
+            search=search,
+            page=page,
+            page_size=page_size,
+        )
+    except FinanceError as error:
+        _raise_finance_error(error)
+
+
+@app.get("/admin/finance/bank-movements/{movement_id}", tags=["finance"])
+def get_bank_movement_endpoint(
+    movement_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("finance.read"))],
+    candidate_search: Annotated[str | None, Query(max_length=80)] = None,
+):
+    try:
+        return get_bank_movement(session, movement_id, candidate_search=candidate_search)
+    except FinanceError as error:
+        _raise_finance_error(error)
+
+
+@app.post("/admin/finance/bank-movements/{movement_id}/match", tags=["finance"])
+def match_bank_movement_endpoint(
+    movement_id: UUID,
+    payload: BankMovementMatchRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("finance.manage"))],
+):
+    try:
+        return match_bank_movement(
+            session,
+            movement_id,
+            source=payload.source,
+            source_id=payload.source_id,
+            note=payload.note,
+            actor_id=principal.user_id,
+        )
+    except FinanceError as error:
+        _raise_finance_error(error)
+
+
+@app.post("/admin/finance/bank-movements/{movement_id}/unmatch", tags=["finance"])
+def unmatch_bank_movement_endpoint(
+    movement_id: UUID,
+    payload: BankMovementUnmatchRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("finance.manage"))],
+):
+    try:
+        return unmatch_bank_movement(
+            session,
+            movement_id,
+            reason=payload.reason,
+            actor_id=principal.user_id,
+        )
+    except FinanceError as error:
+        _raise_finance_error(error)
+
+
+@app.post("/admin/finance/bank-movements/{movement_id}/flag", tags=["finance"])
+def flag_bank_movement_endpoint(
+    movement_id: UUID,
+    payload: BankMovementFlagRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("finance.manage"))],
+):
+    try:
+        return flag_bank_movement(
+            session,
+            movement_id,
+            status=payload.status,
+            note=payload.note,
+            actor_id=principal.user_id,
+        )
+    except FinanceError as error:
+        _raise_finance_error(error)

@@ -26,6 +26,6 @@
 
 ## Estado actual
 
-- Implementado en backend y panel: identidad/RBAC, socios y membresías con cobro manual, accesos, personal y turnos, punto de venta e inventario (incluidas devoluciones, compras, cuentas por cobrar, offline y recordatorios), clases, rutinas, mantenimiento, reportes y CFDI 4.0 individual con timbrado simulado, representación impresa (PDF), envío por correo y factura global mensual de público en general.
-- Fuera de producción: pasarela de pago real, PAC real, terminal bancaria, hardware de acceso, MFA y las funciones fiscales pendientes (notas de crédito, complemento PPD, conciliación y cola de correo con confirmación de entrega).
+- Implementado en backend y panel: identidad/RBAC, socios y membresías con cobro manual, accesos, personal y turnos, punto de venta e inventario (incluidas devoluciones, compras, cuentas por cobrar, offline y recordatorios), clases, rutinas, mantenimiento, reportes y CFDI 4.0 individual con timbrado simulado, representación impresa (PDF), envío por correo, factura global mensual de público en general, notas de crédito (CFDI de egreso) y conciliación bancaria asistida con importación CSV.
+- Fuera de producción: pasarela de pago real, PAC real, terminal bancaria, conexión bancaria real, hardware de acceso, MFA y las funciones fiscales pendientes (complemento PPD, conciliación agrupada o parcial, estado de conciliación en reportes y cola de correo con confirmación de entrega).
 - Siguiente foco del MVP: validar los flujos con operación real, cerrar la integración del PAC y de la pasarela, y completar la app del socio.

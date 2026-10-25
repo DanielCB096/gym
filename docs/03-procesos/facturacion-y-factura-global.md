@@ -6,7 +6,7 @@ Este proceso atiende la solicitud de CFDI de una venta o pago y la preparación 
 
 ## Implementación actual
 
-Desde el 2026-10-24 el flujo **individual** de los pasos 1–6 y la **factura global** existen en backend y panel. El XML y el PDF se descargan de forma autenticada (`GET /admin/billing/invoices/{id}/xml` y `/pdf`); el PDF se genera al momento y solo existe para facturas timbradas o canceladas. El envío al cliente es explícito: `POST /admin/billing/invoices/{id}/send` manda el PDF y el XML al correo del receptor o a uno indicado por el operador y deja constancia en la bitácora; no es automático ni se ofrece para la global, cuyo receptor no tiene buzón. El timbrado es **simulado** en vista previa (sin UUID ni validez fiscal) porque el adaptador de un PAC real todavía no existe; en producción el timbrado responde `503` hasta integrarlo. El motivo de cancelación se registra con las claves del SAT (01–04) y, para el 01, el UUID sustituto, pero la aceptación final del receptor se valida con el PAC real cuando exista. Las notas de crédito descritas abajo siguen en diseño.
+Desde el 2026-10-24 el flujo **individual** de los pasos 1–6 y la **factura global** existen en backend y panel; desde el 2026-10-25 también existen las **notas de crédito (CFDI de egreso)** sobre facturas de ingreso timbradas y la **conciliación bancaria** como bandeja propia, documentada en [conciliacion-bancaria.md](conciliacion-bancaria.md). El XML y el PDF se descargan de forma autenticada (`GET /admin/billing/invoices/{id}/xml` y `/pdf`); el PDF se genera al momento y solo existe para facturas timbradas o canceladas. El envío al cliente es explícito: `POST /admin/billing/invoices/{id}/send` manda el PDF y el XML al correo del receptor o a uno indicado por el operador y deja constancia en la bitácora; no es automático ni se ofrece para la global, cuyo receptor no tiene buzón. El timbrado es **simulado** en vista previa (sin UUID ni validez fiscal) porque el adaptador de un PAC real todavía no existe; en producción el timbrado responde `503` hasta integrarlo. El motivo de cancelación se registra con las claves del SAT (01–04) y, para el 01, el UUID sustituto, pero la aceptación final del receptor se valida con el PAC real cuando exista.
 
 ## Facturación individual
 
@@ -26,12 +26,30 @@ Desde el 2026-10-24 el flujo **individual** de los pasos 1–6 y la **factura gl
 5. El CFDI agregado guarda el periodo, un concepto con la cantidad de operaciones, el desglose de IVA, `InformacionGlobal Periodicidad="03" Meses="MM" Año="YYYY"` y una fila por venta en `global_invoice_sales`. El XML y el PDF quedan disponibles para descarga autenticada.
 6. Si una operación incluida necesita factura individual, primero se cancela la global con motivo del SAT; el periodo y sus ventas quedan libres, se emite la global sustituta y el lote anterior se conserva en el historial. Una factura individual de una venta incluida en una global viva responde `409`.
 
-## Cancelación o ajuste
+## Cancelación
 
-1. Un usuario con permiso inicia la solicitud y registra el motivo y el comprobante relacionado.
-2. El sistema envía la solicitud al PAC y registra cada respuesta o requisito de aceptación.
-3. Se actualiza el estado solo con el resultado confirmado; el CFDI original permanece en el historial.
-4. Si corresponde nota de crédito u otro comprobante relacionado, se conserva el vínculo con la operación original.
+1. Un usuario con `billing.manage` inicia la solicitud sobre una factura **timbrada** y registra el motivo del SAT (`01`–`04`), el UUID sustituto cuando el motivo es `01` y una nota opcional.
+2. El sistema envía la solicitud al PAC y registra cada respuesta o requisito de aceptación. En vista previa la cancelación se registra sobre la simulación.
+3. Se actualiza el estado solo con el resultado confirmado; el CFDI original permanece en el historial con folio, motivo, actor y fecha.
+4. Una factura de ingreso con **notas de crédito timbradas vigentes** no se cancela: primero deben cancelarse las notas. La factura global se cancela para liberar el mes y permitir la sustitución.
+
+## Nota de crédito (CFDI de egreso)
+
+1. El operador abre una factura de ingreso **timbrada** (venta o cobro de membresía) y elige **Notas de crédito**. La factura global y otra nota de crédito no admiten notas.
+2. Captura el importe a acreditar (parcial o total, hasta el saldo disponible), el motivo —devolución, descuento, corrección de importe u otro— y una nota opcional de hasta 300 caracteres.
+3. El sistema valida el saldo contra las notas **timbradas y no canceladas** (una nota pendiente o fallida no lo consume), copia el receptor y la tasa de IVA de la factura original, congela el desglose y crea una nota en `requested` con su folio y clave de idempotencia.
+4. Un usuario con `billing.manage` timbra la nota; al hacerlo se bloquea la factura original y se revalida que siga timbrada y que el saldo alcance. Si la validación falla, la nota queda `failed` con el evento y el motivo, sin tocar el saldo.
+5. La nota timbrada conserva la relación `TipoRelacion="01"` con el UUID de la factura original (o el vínculo interno si la original es simulada), se rotula como CFDI de egreso en el PDF y el correo, y se consulta, descarga y envía como cualquier comprobante.
+6. Si la nota se cancela con motivo del SAT, su importe vuelve al saldo acreditable de la factura; la nota y sus eventos permanecen en el historial. La factura original puede cancelarse cuando ya no tenga notas vigentes.
+
+## Conciliación bancaria (proceso separado)
+
+La conciliación bancaria tiene su propio flujo en [conciliacion-bancaria.md](conciliacion-bancaria.md). En resumen:
+
+1. Se da de alta la cuenta (nombre, banco, últimos cuatro dígitos y moneda) y se importa el estado de cuenta en **CSV**; la importación es idempotente y admite hasta 500 líneas.
+2. La bandeja propone coincidencias con cobros, ventas, abonos y devoluciones **electrónicas** a ±7 días y 2% de tolerancia, con búsqueda manual a ±60 días. El efectivo nunca es candidato.
+3. Un usuario con `finance.manage` confirma la operación (conciliado si el importe coincide; con diferencia y nota si no), desvincula con motivo o marca la línea para revisión. Cada decisión queda en la bitácora de la línea.
+4. Una línea del banco solo puede apuntar a una operación interna y nunca crea ni ajusta dinero; las diferencias se documentan para revisión contable.
 
 ## Reglas clave
 
@@ -42,6 +60,8 @@ Desde el 2026-10-24 el flujo **individual** de los pasos 1–6 y la **factura gl
 - La factura global no debe duplicar operaciones facturadas individualmente.
 - Solo puede existir una factura global viva por mes; el índice parcial libera el periodo al cancelarla.
 - Una venta incluida en una global viva no se factura individualmente; la corrección exige cancelar la global y emitir la sustitución.
+- La suma de notas de crédito **timbradas y no canceladas** nunca excede el total de la factura; el saldo se recalcula al timbrar y al cancelar una nota.
+- Una factura con notas de crédito timbradas vigentes no se cancela hasta cancelar las notas.
 - Los motivos, usuarios, fechas y respuestas del PAC quedan en la bitácora.
 - Las reglas fiscales específicas se validan con el contador y el PAC; este proceso no reemplaza asesoría contable.
 
@@ -56,6 +76,10 @@ Desde el 2026-10-24 el flujo **individual** de los pasos 1–6 y la **factura gl
 - **Cancelación pendiente o rechazada:** mantener el estado informado por PAC y asignar seguimiento.
 - **Fallo al enviar el CFDI por correo:** el envío es un paso separado del timbrado. Si falta configuración SMTP responde `503` y si el transporte falla `502`; la factura sigue timbrada y puede descargarse o reenviarse, y el intento fallido queda en la bitácora. No se marca como entregado ni se reintenta solo.
 - **Correo del receptor ausente o inválido:** la factura ya está timbrada; se pide un destinatario válido o se entrega por descarga. El error no revierte el comprobante.
+- **Nota de crédito que excede el saldo:** el alta responde `422` y no crea la nota. Si el saldo cambió entre el alta y el timbrado (otra nota se timbró antes), el timbrado deja la nota `failed` con `credit_balance_exceeded` y el importe disponible; se corrige emitiendo otra nota por el saldo vigente.
+- **Nota sobre una factura global o sobre otra nota:** responde `409`; la global se corrige cancelándola y sustituyéndola, y una nota no se ajusta con otra nota.
+- **Cancelación de la factura con notas vigentes:** responde `409`; primero se cancelan las notas (con motivo del SAT) y después la factura.
+- **Nota cuya factura original ya no está timbrada:** el timbrado se rechaza y la nota queda `failed`; la nota no produce un egreso sin comprobante de ingreso vigente.
 
 ## Responsables
 
@@ -70,3 +94,4 @@ Desde el 2026-10-24 el flujo **individual** de los pasos 1–6 y la **factura gl
 - tiempo medio de timbrado desde que la solicitud está completa
 - solicitudes con error o resultado incierto pendientes de resolución
 - operaciones excluidas o pendientes en el lote global
+- notas de crédito emitidas, canceladas y saldo acreditable pendiente por factura

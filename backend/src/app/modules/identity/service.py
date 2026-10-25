@@ -34,7 +34,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "inventory.read", "inventory.manage",
         "sales.read", "sales.manage", "sales.credit",
         "billing.read", "billing.request", "billing.manage",
-        "maintenance.read", "maintenance.report", "maintenance.manage", "payroll.read", "payroll.manage", "finance.read", "settings.manage",
+        "maintenance.read", "maintenance.report", "maintenance.manage", "payroll.read", "payroll.manage", "finance.read", "finance.manage", "settings.manage",
     ),
     "manager": (
         "dashboard.read", "members.read", "members.manage", "access.read", "access.manual_override",
@@ -57,7 +57,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "dashboard.read", "maintenance.read", "maintenance.report", "maintenance.manage", "inventory.read", "attendance.self",
     ),
     "accountant": (
-        "dashboard.read", "finance.read", "sales.read", "payroll.read", "attendance.self",
+        "dashboard.read", "finance.read", "finance.manage", "sales.read", "payroll.read", "attendance.self",
         "billing.read", "billing.request", "billing.manage",
     ),
 }
@@ -93,6 +93,7 @@ DEFAULT_PERMISSIONS: dict[str, str] = {
     "payroll.read": "Consultar nómina",
     "payroll.manage": "Administrar nómina",
     "finance.read": "Consultar reportes financieros",
+    "finance.manage": "Conciliar pagos y administrar cuentas bancarias",
     "settings.manage": "Administrar configuración del gimnasio",
 }
 

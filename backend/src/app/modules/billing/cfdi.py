@@ -36,6 +36,9 @@ PUBLIC_GENERAL_NAME = "PUBLICO EN GENERAL"
 PUBLIC_GENERAL_TAX_REGIME = "616"
 PUBLIC_GENERAL_CFDI_USE = "S01"
 GLOBAL_PERIODICITY_MONTHLY = "03"
+# SAT relationship used by a credit note (CFDI de egreso) to point at the
+# comprobante it adjusts: 01 = "Nota de crédito de los documentos relacionados".
+CREDIT_NOTE_RELATION_CODE = "01"
 
 # SAT catalogs. Only the codes the club actually uses are listed; an unknown
 # code is rejected instead of being sent to the PAC and failing there.
@@ -215,11 +218,13 @@ def build_cfdi_xml(
     items: Sequence[InvoiceItem],
     issuer: IssuerConfig,
     simulated: bool = False,
+    related_uuid: str | None = None,
 ) -> str:
     """Build the CFDI 4.0 comprobante (pre-timbre) for a stamped/simulated invoice."""
 
     ET.register_namespace("cfdi", CFDI_NS)
     ET.register_namespace("xsi", XSI_NS)
+    is_credit_note = invoice.origin_type == "credit_note"
     root = ET.Element(
         f"{{{CFDI_NS}}}Comprobante",
         {
@@ -232,7 +237,7 @@ def build_cfdi_xml(
             "SubTotal": _money(invoice.subtotal_cents),
             "Moneda": invoice.currency or DEFAULT_CURRENCY,
             "Total": _money(invoice.total_cents),
-            "TipoDeComprobante": "I",
+            "TipoDeComprobante": "E" if is_credit_note else "I",
             "Exportacion": "01",
             "MetodoPago": invoice.payment_method,
             "LugarExpedicion": issuer.postal_code,
@@ -254,6 +259,29 @@ def build_cfdi_xml(
                 "Año": str(invoice.global_year),
             },
         )
+
+    if is_credit_note:
+        if related_uuid:
+            related = ET.SubElement(
+                root,
+                f"{{{CFDI_NS}}}CfdiRelacionados",
+                {"TipoRelacion": CREDIT_NOTE_RELATION_CODE},
+            )
+            ET.SubElement(
+                related,
+                f"{{{CFDI_NS}}}CfdiRelacionado",
+                {"UUID": related_uuid},
+            )
+        else:
+            # A simulated original has no SAT UUID, so the relation cannot be
+            # written as a real CfdiRelacionado. The internal link is stored in
+            # the invoice and the document stays flagged as a simulation.
+            root.append(
+                ET.Comment(
+                    " SIMULACION: la factura relacionada no tiene UUID del SAT; "
+                    "el vinculo se conserva en el sistema. "
+                )
+            )
 
     ET.SubElement(
         root,
@@ -348,6 +376,7 @@ def invoice_xml_filename(invoice: Invoice) -> str:
 __all__ = [
     "CFDI_NS",
     "CFDI_USES",
+    "CREDIT_NOTE_RELATION_CODE",
     "DEFAULT_CERTIFICATE_NUMBER",
     "DEFAULT_ISSUER_NAME",
     "DEFAULT_ISSUER_POSTAL_CODE",
