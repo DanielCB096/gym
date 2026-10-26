@@ -257,7 +257,7 @@ class InvoiceView:
     payment_complements: tuple[PaymentComplementRef, ...] = field(default=())
     items: tuple[InvoiceItemView, ...] = field(default=())
     events: tuple[InvoiceEventView, ...] = field(default=())
-    global_sales: tuple[GlobalInvoiceSaleView, ...] = field(default=())
+    global_sales: tuple["GlobalInvoiceSaleView", ...] = field(default=())
 
 
 @dataclass(frozen=True)
