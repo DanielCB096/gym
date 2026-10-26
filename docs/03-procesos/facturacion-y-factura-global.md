@@ -6,7 +6,7 @@ Este proceso atiende la solicitud de CFDI de una venta o pago, la preparación d
 
 ## Implementación actual
 
-Desde el 2026-10-24 el flujo **individual** de los pasos 1–6 y la **factura global** existen en backend y panel; desde el 2026-10-25 también existen las **notas de crédito (CFDI de egreso)** sobre facturas de ingreso timbradas, los **complementos de pago PPD** y la **conciliación bancaria** como bandeja propia, documentada en [conciliacion-bancaria.md](conciliacion-bancaria.md). El XML y el PDF se descargan de forma autenticada (`GET /admin/billing/invoices/{id}/xml` y `/pdf`); los del complemento usan `GET /admin/billing/payment-complements/{id}/xml` y `/pdf`. El PDF se genera al momento y solo existe para comprobantes timbrados o cancelados. El envío al cliente es explícito: `POST /admin/billing/invoices/{id}/send` manda el PDF y el XML al correo del receptor o a uno indicado por el operador y deja constancia en la bitácora; no es automático ni se ofrece para la global, cuyo receptor no tiene buzón. El timbrado es **simulado** en vista previa (sin UUID ni validez fiscal) porque el adaptador de un PAC real todavía no existe; en producción el timbrado responde `503` hasta integrarlo. El motivo de cancelación se registra con las claves del SAT (01–04) y, para el 01, el UUID sustituto, pero la aceptación final del receptor se valida con el PAC real cuando exista.
+Desde el 2026-10-24 el flujo **individual** de los pasos 1–6 y la **factura global** existen en backend y panel; desde el 2026-10-25 también existen las **notas de crédito (CFDI de egreso)** sobre facturas de ingreso timbradas, los **complementos de pago PPD**, la **cartera PPD por antigüedad** y la **conciliación bancaria** como bandeja propia, documentada en [conciliacion-bancaria.md](conciliacion-bancaria.md). El XML y el PDF se descargan de forma autenticada (`GET /admin/billing/invoices/{id}/xml` y `/pdf`); los del complemento usan `GET /admin/billing/payment-complements/{id}/xml` y `/pdf`. El PDF se genera al momento y solo existe para comprobantes timbrados o cancelados. El envío al cliente es explícito: `POST /admin/billing/invoices/{id}/send` manda el PDF y el XML al correo del receptor o a uno indicado por el operador y deja constancia en la bitácora; no es automático ni se ofrece para la global, cuyo receptor no tiene buzón. El timbrado es **simulado** en vista previa (sin UUID ni validez fiscal) porque el adaptador de un PAC real todavía no existe; en producción el timbrado responde `503` hasta integrarlo. El motivo de cancelación se registra con las claves del SAT (01–04) y, para el 01, el UUID sustituto, pero la aceptación final del receptor se valida con el PAC real cuando exista.
 
 ## Facturación individual
 
@@ -52,6 +52,13 @@ Desde el 2026-10-24 el flujo **individual** de los pasos 1–6 y la **factura gl
 6. El XML y el PDF se descargan solo si el complemento está timbrado o cancelado. La representación impresa muestra la factura relacionada, la parcialidad, los saldos y la marca de simulación o cancelación.
 7. Cancelar un complemento exige motivo del SAT (`01`–`04`), UUID sustituto para el `01` y una nota opcional; solo se permite la **última parcialidad vigente**. Al cancelarlo, su importe vuelve al saldo de la factura. Una factura con complementos timbrados vigentes no se cancela hasta cancelarlos, y una factura PPD no admite notas de crédito en esta versión.
 
+## Cartera PPD (consulta)
+
+1. Un usuario con `billing.read` abre la pestaña **Cartera PPD** de Facturación. La ruta `GET /admin/billing/receivables` devuelve solo facturas PPD **timbradas con saldo** (total menos complementos timbrados); una factura liquidada sale de la cartera.
+2. Cada saldo se clasifica por antigüedad desde la fecha de timbrado —0–30, 31–60, 61–90 y +90 días— porque el CFDI no tiene fecha de vencimiento. Los cuatro tramos suman el saldo pendiente y el resumen indica la fecha de corte.
+3. El resumen separa los complementos **timbrados** de los **solicitados** y **fallidos**; solo los timbrados reducen el saldo. La búsqueda y el filtro por tramo acotan la tabla, no el resumen, que siempre refleja la cartera completa.
+4. La cartera es informativa: no envía recordatorios, no cobra, no genera intereses ni asientos y no sustituye la conciliación bancaria.
+
 ## Conciliación bancaria (proceso separado)
 
 La conciliación bancaria tiene su propio flujo en [conciliacion-bancaria.md](conciliacion-bancaria.md). En resumen:
@@ -76,6 +83,7 @@ La conciliación bancaria tiene su propio flujo en [conciliacion-bancaria.md](co
 - Una solicitud de complemento pendiente o fallida no consume saldo; el timbrado revalida el importe con la factura bloqueada y recalcula la parcialidad y los saldos.
 - Solo se cancela la última parcialidad timbrada vigente; cancelarla libera su importe. Una factura con complementos vigentes no se cancela hasta cancelarlos.
 - El complemento documenta fiscalmente un pago declarado por el operador: no crea ni modifica el cobro original, la caja o la conciliación. En esta versión una factura PPD no acepta notas de crédito.
+- La cartera PPD clasifica el saldo desde la fecha de timbrado y suma los cuatro tramos al pendiente; los complementos solicitados o fallidos no reducen el saldo.
 - Los motivos, usuarios, fechas y respuestas del PAC quedan en la bitácora.
 - Las reglas fiscales específicas se validan con el contador y el PAC; este proceso no reemplaza asesoría contable.
 

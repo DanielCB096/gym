@@ -373,6 +373,7 @@ from app.modules.billing import (
     list_global_invoice_eligibility,
     list_invoices,
     list_origin_options,
+    list_ppd_receivables,
     payment_complement_pdf,
     payment_complement_xml,
     save_fiscal_profile,
@@ -6720,6 +6721,30 @@ def get_billing_summary(
         "credit_note_cents": summary.credit_note_cents,
         "net_stamped_cents": summary.net_stamped_cents,
     }
+
+
+@app.get("/admin/billing/receivables", tags=["billing"])
+def get_ppd_receivables(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.read"))],
+    search: Annotated[str | None, Query(max_length=120)] = None,
+    aging_bucket: Annotated[
+        Literal["current", "days_31_60", "days_61_90", "over_90"] | None,
+        Query(),
+    ] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+):
+    try:
+        return list_ppd_receivables(
+            session,
+            search=search,
+            aging_bucket=aging_bucket,
+            page=page,
+            page_size=page_size,
+        )
+    except CfdiError as error:
+        _raise_cfdi_error(error)
 
 
 @app.get("/admin/billing/global-invoices/eligible", tags=["billing"])

@@ -4,16 +4,20 @@ Run it from the ``backend`` directory after ``seed_billing.py``:
 
     .\\.venv\\Scripts\\python.exe seed_ppd.py
 
-The script is idempotent: it does nothing when a PPD invoice already exists. It
-uses the billing service, so the folios, sequential partialities, balance
+The script is idempotent: the base history is created only when no PPD invoice
+exists, and the three aging invoices are added only when they are still missing.
+It uses the billing service, so the folios, sequential partialities, balance
 recalculation and simulated PAC behave exactly as in production. The seeded
 history leaves one stamped partiality, one cancelled complement (with its
-trail) and one pending complement so the panel can exercise every action.
+trail) and one pending complement so the panel can exercise every action. It
+also backdates three additional PPD invoices (40, 70 and 100 days) so the
+cartera tab shows all aging buckets; only those demo rows are backdated after
+stamping, and their fiscal XML keeps its original timestamps.
 """
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, r".\src")
 
@@ -62,6 +66,69 @@ def _receptor_for(origin) -> dict:
     return dict(PUBLIC_GENERAL)
 
 
+def _seed_aging(session: Session, actor_id) -> None:
+    for index, age_days in enumerate((40, 70, 100), start=1):
+        extra_sales = billing_service.list_origin_options(
+            session, origin_type="sale", page=1, page_size=100
+        )
+        extra_origin = next(
+            (item for item in extra_sales.items if item.member_id), None
+        )
+        if extra_origin is None:
+            print("Sin más ventas facturables para las facturas de antigüedad.")
+            break
+        extra_invoice, _ = billing_service.create_invoice(
+            session,
+            origin_type="sale",
+            origin_id=extra_origin.origin_id,
+            idempotency_key=(
+                f"seed-ppd-aging-invoice-{index}-{extra_origin.origin_id}"
+            ),
+            payment_method="PPD",
+            payment_form="99",
+            actor_id=actor_id,
+            **_receptor_for(extra_origin),
+        )
+        billing_service.stamp_invoice(session, extra_invoice.id, actor_id=actor_id)
+        backdated = datetime.now(timezone.utc) - timedelta(days=age_days)
+        row = session.get(Invoice, extra_invoice.id)
+        if row is not None:
+            row.issued_at = backdated
+            row.stamped_at = backdated
+            session.add(row)
+            session.commit()
+        extra_payment, _ = billing_service.create_payment_complement(
+            session,
+            invoice_id=extra_invoice.id,
+            amount_cents=max(1, extra_invoice.total_cents * 25 // 100),
+            payment_form="03",
+            paid_on=club_date(datetime.now(timezone.utc)),
+            idempotency_key=(
+                f"seed-ppd-aging-payment-{index}-{extra_invoice.id}"
+            ),
+            actor_id=actor_id,
+        )
+        billing_service.stamp_payment_complement(
+            session, extra_payment.id, actor_id=actor_id
+        )
+        if age_days == 100:
+            billing_service.create_payment_complement(
+                session,
+                invoice_id=extra_invoice.id,
+                amount_cents=max(1, extra_invoice.total_cents * 15 // 100),
+                payment_form="03",
+                paid_on=club_date(datetime.now(timezone.utc)),
+                idempotency_key=(
+                    f"seed-ppd-aging-pending-{index}-{extra_invoice.id}"
+                ),
+                actor_id=actor_id,
+            )
+        print(
+            f"Factura PPD {extra_invoice.folio_label} con {age_days} días de "
+            "antigüedad: parcialidad timbrada y saldo abierto."
+        )
+
+
 def main() -> None:
     os.environ.setdefault("PAC_PROVIDER", "simulated")
 
@@ -75,7 +142,18 @@ def main() -> None:
             select(Invoice).where(Invoice.payment_method == "PPD")
         ).first()
         if existing is not None:
-            print("Las facturas PPD ya están sembradas; se omite.")
+            aging_seeded = session.exec(
+                select(Invoice).where(
+                    Invoice.idempotency_key.like("seed-ppd-aging-invoice-%")
+                )
+            ).first()
+            if aging_seeded is not None:
+                print("Las facturas PPD ya están sembradas; se omite.")
+                return
+            admin = session.exec(select(AppUser).order_by(AppUser.email)).first()
+            actor_id = admin.id if admin is not None else None
+            _seed_aging(session, actor_id)
+            print("Done!")
             return
 
         sales = billing_service.list_origin_options(
@@ -167,6 +245,8 @@ def main() -> None:
         print(
             f"Complemento {pending.folio_label}: solicitud pendiente de timbrado."
         )
+
+        _seed_aging(session, actor_id)
 
         view = billing_service.get_invoice(session, invoice.id)
         print(

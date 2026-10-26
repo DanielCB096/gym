@@ -574,6 +574,63 @@ type BillingSummary = {
   net_stamped_cents: number;
 };
 
+type BillingPpdAgingBucket = "current" | "days_31_60" | "days_61_90" | "over_90";
+
+type BillingPpdAging = {
+  current_cents: number;
+  days_31_60_cents: number;
+  days_61_90_cents: number;
+  over_90_cents: number;
+};
+
+type BillingPpdReceivable = {
+  invoice_id: string;
+  folio_label: string;
+  receptor_name: string;
+  receptor_rfc: string;
+  origin_type: BillingOriginType;
+  origin_reference: string;
+  member_id: string | null;
+  member_name: string | null;
+  currency: string;
+  total_cents: number;
+  paid_cents: number;
+  balance_cents: number;
+  stamped_at: string | null;
+  age_days: number;
+  aging_bucket: BillingPpdAgingBucket;
+  uuid: string | null;
+  is_simulated: boolean;
+  stamped_complements: number;
+  requested_complements: number;
+  failed_complements: number;
+  last_payment_on: string | null;
+};
+
+type BillingPpdReceivableSummary = {
+  as_of: string;
+  invoices: number;
+  total_cents: number;
+  paid_cents: number;
+  outstanding_cents: number;
+  aging: BillingPpdAging;
+  oldest_stamped_at: string | null;
+  stamped_complements: number;
+  stamped_complement_cents: number;
+  requested_complements: number;
+  requested_complement_cents: number;
+  failed_complements: number;
+  failed_complement_cents: number;
+};
+
+type BillingPpdReceivablePage = {
+  items: BillingPpdReceivable[];
+  total: number;
+  page: number;
+  page_size: number;
+  summary: BillingPpdReceivableSummary;
+};
+
 type BillingOrigin = {
   origin_type: "sale" | "membership_payment";
   origin_id: string;
@@ -764,6 +821,7 @@ const bankSourceLabels: Record<BankMovementSource, string> = {
 };
 
 const BILLING_PAGE_SIZE = 10;
+const BILLING_PPD_PAGE_SIZE = 10;
 
 const billingStatusLabels: Record<BillingInvoiceStatus, string> = {
   requested: "Solicitada",
@@ -843,6 +901,28 @@ const billingPaymentBalanceBadges: Record<BillingPaymentBalanceStatus, string> =
   partial: "status-warn",
   paid: "status-good",
 };
+
+const billingPpdAgingLabels: Record<BillingPpdAgingBucket, string> = {
+  current: "0–30 días",
+  days_31_60: "31–60 días",
+  days_61_90: "61–90 días",
+  over_90: "+90 días",
+};
+
+const billingPpdAgingBadges: Record<BillingPpdAgingBucket, string> = {
+  current: "status-good",
+  days_31_60: "status-warn",
+  days_61_90: "status-warn",
+  over_90: "status-bad",
+};
+
+const BILLING_PPD_AGING_FILTERS: ["" | BillingPpdAgingBucket, string][] = [
+  ["", "Todos los tramos"],
+  ["current", "0–30 días"],
+  ["days_31_60", "31–60 días"],
+  ["days_61_90", "61–90 días"],
+  ["over_90", "+90 días"],
+];
 
 const BILLING_TAX_REGIMES: [string, string][] = [
   ["601", "601 · General de Ley Personas Morales"],
@@ -8159,7 +8239,7 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
   const [newInvoiceOpen, setNewInvoiceOpen] = useState(false);
   const [activeInvoiceId, setActiveInvoiceId] = useState<string | null>(null);
   const [stampingId, setStampingId] = useState<string | null>(null);
-  const [tab, setTab] = useState<"invoices" | "global">("invoices");
+  const [tab, setTab] = useState<"invoices" | "global" | "receivables">("invoices");
 
   useEffect(() => {
     const handle = window.setTimeout(() => setQuery(search.trim()), 300);
@@ -8254,7 +8334,8 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
       <div className="staff-tabs pos-tabs billing-view-tabs">
         <button type="button" className={tab === "invoices" ? "staff-tab-active" : ""} onClick={() => setTab("invoices")}>Comprobantes</button>
         <button type="button" className={tab === "global" ? "staff-tab-active" : ""} onClick={() => setTab("global")}>Factura global</button>
-        <span className="staff-tabs-note"><ShieldCheck size={14} />{tab === "invoices" ? "Solicitud, timbrado, entrega y cancelación" : "Un CFDI mensual para ventas al público en general"}</span>
+        <button type="button" className={tab === "receivables" ? "staff-tab-active" : ""} onClick={() => setTab("receivables")}>Cartera PPD</button>
+        <span className="staff-tabs-note"><ShieldCheck size={14} />{tab === "invoices" ? "Solicitud, timbrado, entrega y cancelación" : tab === "global" ? "Un CFDI mensual para ventas al público en general" : "Saldo por antigüedad y complementos timbrados frente a solicitados"}</span>
       </div>
 
       {tab === "invoices" ? (
@@ -8314,7 +8395,7 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
         </div>
       </section>
         </>
-      ) : (
+      ) : tab === "global" ? (
         <GlobalInvoicePanel
           canManage={canManage}
           refreshToken={refresh}
@@ -8323,8 +8404,14 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
           onUnauthorized={onUnauthorized}
           onToast={onToast}
         />
+      ) : (
+        <PpdReceivablesPanel
+          refreshToken={refresh}
+          onOpenInvoice={setActiveInvoiceId}
+          onUnauthorized={onUnauthorized}
+        />
       )}
-      <footer className="page-footer"><span>Centro Fit · Facturación CFDI 4.0</span><span>{tab === "global" ? "FACTURA GLOBAL MENSUAL · PÚBLICO EN GENERAL" : canManage ? "SOLICITUD, TIMBRADO Y CANCELACIÓN" : "CONSULTA DE COMPROBANTES"}</span></footer>
+      <footer className="page-footer"><span>Centro Fit · Facturación CFDI 4.0</span><span>{tab === "global" ? "FACTURA GLOBAL MENSUAL · PÚBLICO EN GENERAL" : tab === "receivables" ? "CARTERA PPD · SALDO POR ANTIGÜEDAD" : canManage ? "SOLICITUD, TIMBRADO Y CANCELACIÓN" : "CONSULTA DE COMPROBANTES"}</span></footer>
 
       {newInvoiceOpen && (
         <NewInvoiceModal
@@ -8352,6 +8439,126 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
         />
       )}
     </>
+  );
+}
+
+function PpdReceivablesPanel({ refreshToken, onOpenInvoice, onUnauthorized }: { refreshToken: number; onOpenInvoice: (invoiceId: string) => void; onUnauthorized: () => void }) {
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [bucket, setBucket] = useState<"" | BillingPpdAgingBucket>("");
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState<BillingPpdReceivablePage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => setQuery(search.trim()), 300);
+    return () => window.clearTimeout(handle);
+  }, [search]);
+
+  useEffect(() => { setPage(1); }, [bucket, query]);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const params = new URLSearchParams({ page: String(page), page_size: String(BILLING_PPD_PAGE_SIZE) });
+        if (query) params.set("search", query);
+        if (bucket) params.set("aging_bucket", bucket);
+        const response = await fetch(`/api/admin/billing/receivables?${params.toString()}`, { cache: "no-store" });
+        if (response.status === 401) { onUnauthorized(); return; }
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(billingErrorDetail(payload, "No se pudo consultar la cartera PPD."));
+        }
+        const payload = await response.json() as BillingPpdReceivablePage;
+        if (active) setData(payload);
+      } catch (caught) {
+        if (active) setError(caught instanceof Error ? caught.message : "Error al consultar la cartera PPD.");
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [bucket, onUnauthorized, page, query, refreshToken]);
+
+  const rows = data?.items ?? [];
+  const summary = data?.summary ?? null;
+  const aging = summary?.aging;
+  const total = data?.total ?? 0;
+  const pages = Math.max(1, Math.ceil(total / BILLING_PPD_PAGE_SIZE));
+  const pendingComplements = summary ? summary.requested_complements + summary.failed_complements : 0;
+  const pendingCents = summary ? summary.requested_complement_cents + summary.failed_complement_cents : 0;
+
+  return (
+    <section className="panel full-panel billing-ppd-panel">
+      <div className="panel-header access-list-heading">
+        <div><p className="section-kicker">COBRANZA PPD · SALDO POR ANTIGÜEDAD</p><h2>Cartera de complementos de pago</h2></div>
+        {summary && <span className="status-badge status-neutral"><i />Al {formatDateOnly(summary.as_of)}</span>}
+      </div>
+      <p className="panel-hint">Solo se listan facturas PPD timbradas con saldo pendiente. La antigüedad corre desde el timbrado y el saldo baja únicamente con complementos timbrados; los solicitados o con error se muestran aparte.</p>
+
+      {error && <div className="billing-alert" role="alert">{error}</div>}
+
+      <div className="billing-totals billing-ppd-summary">
+        <div><span>FACTURAS CON SALDO</span><strong>{summary ? summary.invoices : "—"}</strong><small>PPD timbradas y vigentes</small></div>
+        <div><span>SALDO PENDIENTE</span><strong>{summary ? formatMoney(summary.outstanding_cents) : "—"}</strong><small>IVA incluido · cobrado + saldo = facturado</small></div>
+        <div><span>COBRADO</span><strong>{summary ? formatMoney(summary.paid_cents) : "—"}</strong><small>{summary ? `${summary.stamped_complements} ${summary.stamped_complements === 1 ? "complemento timbrado" : "complementos timbrados"}` : "En facturas con saldo"}</small></div>
+        <div><span>POR TIMBRAR</span><strong>{summary ? pendingComplements : "—"}</strong><small>{summary ? `${formatMoney(pendingCents)} · ${summary.requested_complements} solicitados · ${summary.failed_complements} con error` : "Complementos pendientes"}</small></div>
+        <div><span>FACTURADO VIGENTE</span><strong>{summary ? formatMoney(summary.total_cents) : "—"}</strong><small>Facturas abiertas de la cartera</small></div>
+        <div><span>ANTIGÜEDAD MÁXIMA</span><strong>{summary?.oldest_stamped_at ? formatDateOnly(summary.oldest_stamped_at) : "—"}</strong><small>{summary?.oldest_stamped_at ? "Timbrado más antiguo con saldo" : "Sin facturas con saldo"}</small></div>
+      </div>
+
+      <div className="pos-aging-grid" role="group" aria-label="Antigüedad de la cartera PPD">
+        <div className="summary-stat"><span>0–30 DÍAS</span><strong>{formatMoney(aging?.current_cents ?? 0)}</strong><small>corriente</small></div>
+        <div className="summary-stat"><span>31–60 DÍAS</span><strong>{formatMoney(aging?.days_31_60_cents ?? 0)}</strong><small>por vencer</small></div>
+        <div className="summary-stat"><span>61–90 DÍAS</span><strong>{formatMoney(aging?.days_61_90_cents ?? 0)}</strong><small>atrasado</small></div>
+        <div className="summary-stat"><span>+90 DÍAS</span><strong className="stat-orange">{formatMoney(aging?.over_90_cents ?? 0)}</strong><small>antigüedad crítica</small></div>
+        <div className="summary-stat"><span>TOTAL CARTERA</span><strong>{formatMoney(summary?.outstanding_cents ?? 0)}</strong><small>suma de los tramos</small></div>
+      </div>
+
+      <div className="table-toolbar">
+        <label className="table-search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por receptor, RFC, folio u operación" /></label>
+        <label className="table-select"><span>Tramo</span><select value={bucket} onChange={(event) => setBucket(event.target.value as "" | BillingPpdAgingBucket)}>{BILLING_PPD_AGING_FILTERS.map(([value, label]) => <option key={value || "all"} value={value}>{label}</option>)}</select></label>
+        <span className="table-hint">Los complementos solicitados o con error no reducen el saldo hasta timbrarse</span>
+      </div>
+      <div className="table-scroll">
+        <table className="data-table compact-table">
+          <thead><tr><th>FOLIO</th><th>RECEPTOR</th><th>OPERACIÓN</th><th>TIMBRADO</th><th>ANTIGÜEDAD</th><th>TOTAL</th><th>COBRADO</th><th>SALDO</th><th>COMPLEMENTOS</th><th /></tr></thead>
+          <tbody>
+            {loading ? <tr><td colSpan={10} className="empty-row">Cargando cartera PPD…</td></tr>
+              : rows.length === 0 ? <tr><td colSpan={10} className="empty-row">{query || bucket ? "No hay facturas PPD que coincidan con el filtro." : "No hay facturas PPD timbradas con saldo pendiente."}</td></tr>
+              : rows.map((row) => (
+                <tr key={row.invoice_id}>
+                  <td><strong>{row.folio_label}</strong>{row.is_simulated && <small className="billing-inline-note">Simulada</small>}</td>
+                  <td><div className="person-cell"><span className="pos-row-icon"><Receipt size={15} /></span><span><strong>{row.receptor_name}</strong><small>{row.receptor_rfc}</small></span></div></td>
+                  <td><strong>{billingOriginLabels[row.origin_type]}</strong><small className="billing-inline-note">{row.origin_reference}</small></td>
+                  <td className="time-cell">{formatMoment(row.stamped_at)}</td>
+                  <td><span className={`status-badge ${billingPpdAgingBadges[row.aging_bucket]}`}><i />{row.age_days} días · {billingPpdAgingLabels[row.aging_bucket]}</span></td>
+                  <td>{formatMoney(row.total_cents)}</td>
+                  <td>{formatMoney(row.paid_cents)}{row.last_payment_on && <small className="billing-inline-note">Último {formatDateOnly(row.last_payment_on)}</small>}</td>
+                  <td><strong>{formatMoney(row.balance_cents)}</strong></td>
+                  <td><strong>{row.stamped_complements}</strong> timbrados<small className="billing-inline-note">{row.requested_complements + row.failed_complements > 0 ? `${row.requested_complements} solicitados · ${row.failed_complements} con error` : "Sin pendientes"}</small></td>
+                  <td><div className="pos-row-actions"><button className="button button-secondary button-small" onClick={() => onOpenInvoice(row.invoice_id)}>Ver</button></div></td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="table-bottom">
+        <span>{total} {total === 1 ? "factura con saldo" : "facturas con saldo"}</span>
+        {pages > 1 && (
+          <span className="member-pagination">
+            <span>Página {page} de {pages}</span>
+            <button type="button" aria-label="Página anterior" disabled={page <= 1} onClick={() => setPage(Math.max(1, page - 1))}>‹</button>
+            <button type="button" aria-label="Página siguiente" disabled={page >= pages} onClick={() => setPage(Math.min(pages, page + 1))}>›</button>
+          </span>
+        )}
+      </div>
+    </section>
   );
 }
 

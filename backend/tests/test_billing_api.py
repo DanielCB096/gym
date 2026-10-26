@@ -2323,3 +2323,157 @@ def test_ppd_payment_permissions_and_validation(
             assert "PPD" in not_ppd.json()["detail"]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_ppd_receivables_age_open_balances_and_pending_complements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    engine, member_id, _, _, first_sale_id = _prepare()
+    try:
+        with Session(engine) as session:
+            product = session.exec(select(Product)).first()
+            assert product is not None
+            sale_ids = [first_sale_id] + [
+                _seed_sale(session, member_id=member_id, product_id=product.id)
+                for _ in range(4)
+            ]
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            trainer = _login(client, "trainer@example.com", "trainer-strong-password")
+            invoices = [
+                _stamped_ppd_invoice(
+                    client, accountant, sale_id, key=f"ppd-aging-{index}"
+                )
+                for index, sale_id in enumerate(sale_ids[:4])
+            ]
+            _stamped_sale_invoice(
+                client, accountant, sale_ids[4], key="ppd-aging-pue"
+            )
+
+            now = datetime.now(timezone.utc)
+            ages = [100, 75, 45, 10]
+            with Session(engine) as session:
+                for invoice, age in zip(invoices, ages):
+                    row = session.get(Invoice, UUID(str(invoice["id"])))
+                    assert row is not None
+                    row.issued_at = now - timedelta(days=age)
+                    row.stamped_at = now - timedelta(days=age)
+                    session.add(row)
+                session.commit()
+
+            oldest_id = str(invoices[0]["id"])
+            stamped_payment = client.post(
+                f"/admin/billing/invoices/{oldest_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=2000, key="ppd-aging-stamped"),
+            ).json()["payment"]
+            assert stamped_payment["status"] == "requested"
+            assert client.post(
+                f"/admin/billing/payment-complements/{stamped_payment['id']}/stamp",
+                headers=accountant,
+            ).status_code == 200
+            requested_payment = client.post(
+                f"/admin/billing/invoices/{oldest_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=3000, key="ppd-aging-requested"),
+            ).json()["payment"]
+            assert requested_payment["status"] == "requested"
+
+            response = client.get("/admin/billing/receivables", headers=accountant)
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["total"] == 4
+            assert body["page"] == 1
+            assert body["page_size"] == 20
+            summary = body["summary"]
+            assert summary["invoices"] == 4
+            assert summary["total_cents"] == 46400
+            assert summary["paid_cents"] == 2000
+            assert summary["outstanding_cents"] == 44400
+            assert summary["aging"] == {
+                "current_cents": 11600,
+                "days_31_60_cents": 11600,
+                "days_61_90_cents": 11600,
+                "over_90_cents": 9600,
+            }
+            assert summary["stamped_complements"] == 1
+            assert summary["stamped_complement_cents"] == 2000
+            assert summary["requested_complements"] == 1
+            assert summary["requested_complement_cents"] == 3000
+            assert summary["failed_complements"] == 0
+            assert summary["failed_complement_cents"] == 0
+            assert summary["oldest_stamped_at"] is not None
+            assert summary["as_of"]
+
+            oldest = body["items"][0]
+            assert oldest["invoice_id"] == oldest_id
+            assert oldest["age_days"] == 100
+            assert oldest["aging_bucket"] == "over_90"
+            assert oldest["total_cents"] == 11600
+            assert oldest["paid_cents"] == 2000
+            assert oldest["balance_cents"] == 9600
+            assert oldest["stamped_complements"] == 1
+            assert oldest["requested_complements"] == 1
+            assert oldest["failed_complements"] == 0
+            assert oldest["last_payment_on"] == club_date(now).isoformat()
+            assert oldest["is_simulated"] is True
+
+            over_90 = client.get(
+                "/admin/billing/receivables",
+                headers=accountant,
+                params={"aging_bucket": "over_90"},
+            ).json()
+            assert over_90["total"] == 1
+            assert over_90["items"][0]["invoice_id"] == oldest_id
+            assert over_90["summary"]["invoices"] == 4
+
+            searched = client.get(
+                "/admin/billing/receivables",
+                headers=accountant,
+                params={"search": invoices[1]["origin_reference"]},
+            ).json()
+            assert searched["total"] == 1
+            assert searched["items"][0]["invoice_id"] == invoices[1]["id"]
+
+            paged = client.get(
+                "/admin/billing/receivables",
+                headers=accountant,
+                params={"page": 2, "page_size": 2},
+            ).json()
+            assert paged["total"] == 4
+            assert paged["page"] == 2
+            assert len(paged["items"]) == 2
+
+            current_id = str(invoices[3]["id"])
+            settled = client.post(
+                f"/admin/billing/invoices/{current_id}/payment-complements",
+                headers=accountant,
+                json=_payment_payload(amount_cents=11600, key="ppd-aging-settled"),
+            ).json()["payment"]
+            assert client.post(
+                f"/admin/billing/payment-complements/{settled['id']}/stamp",
+                headers=accountant,
+            ).status_code == 200
+
+            after = client.get("/admin/billing/receivables", headers=accountant).json()
+            assert after["total"] == 3
+            assert after["summary"]["invoices"] == 3
+            assert after["summary"]["total_cents"] == 34800
+            assert after["summary"]["paid_cents"] == 2000
+            assert after["summary"]["outstanding_cents"] == 32800
+            assert after["summary"]["aging"]["current_cents"] == 0
+            assert after["summary"]["stamped_complements"] == 1
+            assert after["summary"]["stamped_complement_cents"] == 2000
+            assert after["summary"]["requested_complements"] == 1
+
+            assert client.get(
+                "/admin/billing/receivables", headers=trainer
+            ).status_code == 403
+            assert client.get(
+                "/admin/billing/receivables",
+                headers=accountant,
+                params={"aging_bucket": "ancient"},
+            ).status_code == 422
+    finally:
+        app.dependency_overrides.clear()

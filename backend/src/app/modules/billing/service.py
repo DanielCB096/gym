@@ -118,6 +118,10 @@ CREDIT_NOTE_REASONS = {
     "correction": "Corrección de importe",
     "other": "Otro motivo",
 }
+# PPD receivables are aged from the stamp date: that is when the invoice becomes
+# collectible. The outstanding balance lands in exactly one bucket, so the four
+# amounts always add up to the cartera total.
+PPD_AGING_BUCKETS = ("current", "days_31_60", "days_61_90", "over_90")
 
 
 @dataclass(frozen=True)
@@ -281,6 +285,65 @@ class InvoiceSummary:
     credit_notes: int
     credit_note_cents: int
     net_stamped_cents: int
+
+
+@dataclass(frozen=True)
+class PpdAging:
+    current_cents: int = 0
+    days_31_60_cents: int = 0
+    days_61_90_cents: int = 0
+    over_90_cents: int = 0
+
+
+@dataclass(frozen=True)
+class PpdReceivableRow:
+    invoice_id: UUID
+    folio_label: str
+    receptor_name: str
+    receptor_rfc: str
+    origin_type: str
+    origin_reference: str
+    member_id: UUID | None
+    member_name: str | None
+    currency: str
+    total_cents: int
+    paid_cents: int
+    balance_cents: int
+    stamped_at: datetime | None
+    age_days: int
+    aging_bucket: str
+    uuid: str | None
+    is_simulated: bool
+    stamped_complements: int
+    requested_complements: int
+    failed_complements: int
+    last_payment_on: date | None
+
+
+@dataclass(frozen=True)
+class PpdReceivableSummary:
+    as_of: date
+    invoices: int
+    total_cents: int
+    paid_cents: int
+    outstanding_cents: int
+    aging: PpdAging
+    oldest_stamped_at: datetime | None
+    stamped_complements: int
+    stamped_complement_cents: int
+    requested_complements: int
+    requested_complement_cents: int
+    failed_complements: int
+    failed_complement_cents: int
+
+
+@dataclass(frozen=True)
+class PpdReceivablePage:
+    items: tuple[PpdReceivableRow, ...]
+    total: int
+    page: int
+    page_size: int
+    summary: PpdReceivableSummary
 
 
 @dataclass(frozen=True)
@@ -2719,6 +2782,181 @@ def invoice_summary(session: Session) -> InvoiceSummary:
         credit_notes=int(credit_notes),
         credit_note_cents=credit_note_total,
         net_stamped_cents=stamped_total - credit_note_total,
+    )
+
+
+def _ppd_aging_bucket(age_days: int) -> str:
+    if age_days <= 30:
+        return "current"
+    if age_days <= 60:
+        return "days_31_60"
+    if age_days <= 90:
+        return "days_61_90"
+    return "over_90"
+
+
+def list_ppd_receivables(
+    session: Session,
+    *,
+    search: str | None = None,
+    aging_bucket: str | None = None,
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    today: date | None = None,
+) -> PpdReceivablePage:
+    """Open PPD balance aged from the stamp date, with complement control.
+
+    Only a stamped PPD invoice with a positive balance belongs to the cartera.
+    A stamped complement reduces that balance; a requested or failed one does
+    not, so it is reported separately as pending stamping. The summary covers
+    the whole cartera while search, bucket and pagination only filter the list.
+    """
+
+    page = max(1, page)
+    page_size = min(max(1, page_size), MAX_PAGE_SIZE)
+    if aging_bucket and aging_bucket not in PPD_AGING_BUCKETS:
+        raise InvoiceStateError("El tramo de antigüedad no es válido.")
+    as_of = today or club_date(datetime.now(timezone.utc))
+
+    invoice_rows = session.exec(
+        select(Invoice, Member)
+        .outerjoin(Member, Invoice.member_id == Member.id)
+        .where(
+            Invoice.status == "stamped",
+            Invoice.payment_method == "PPD",
+        )
+        .order_by(Invoice.stamped_at, Invoice.folio)
+    ).all()
+    invoice_ids = [invoice.id for invoice, _ in invoice_rows]
+    payments_by_invoice: dict[UUID, list[InvoicePayment]] = {}
+    if invoice_ids:
+        for payment in session.exec(
+            select(InvoicePayment)
+            .where(InvoicePayment.invoice_id.in_(invoice_ids))
+            .order_by(InvoicePayment.created_at, InvoicePayment.folio)
+        ).all():
+            payments_by_invoice.setdefault(payment.invoice_id, []).append(payment)
+
+    rows: list[PpdReceivableRow] = []
+    bucket_totals = [0, 0, 0, 0]
+    open_invoices = 0
+    total_cents = 0
+    paid_cents = 0
+    outstanding_cents = 0
+    oldest_stamped_at: datetime | None = None
+    oldest_age_days = -1
+    stamped_complements = 0
+    stamped_complement_cents = 0
+    requested_complements = 0
+    requested_complement_cents = 0
+    failed_complements = 0
+    failed_complement_cents = 0
+
+    for invoice, member in invoice_rows:
+        payments = payments_by_invoice.get(invoice.id, [])
+        invoice_paid_cents = sum(
+            payment.amount_cents
+            for payment in payments
+            if payment.status == "stamped"
+        )
+        balance_cents = max(0, invoice.total_cents - invoice_paid_cents)
+        if balance_cents <= 0:
+            continue
+        stamped_at = invoice.stamped_at or invoice.created_at
+        age_days = max((as_of - club_date(stamped_at)).days, 0)
+        bucket = _ppd_aging_bucket(age_days)
+        row_stamped = 0
+        row_requested = 0
+        row_requested_cents = 0
+        row_failed = 0
+        row_failed_cents = 0
+        last_payment_on: date | None = None
+        for payment in payments:
+            if payment.status == "stamped":
+                row_stamped += 1
+                if last_payment_on is None or payment.paid_on > last_payment_on:
+                    last_payment_on = payment.paid_on
+            elif payment.status == "requested":
+                row_requested += 1
+                row_requested_cents += payment.amount_cents
+            elif payment.status == "failed":
+                row_failed += 1
+                row_failed_cents += payment.amount_cents
+        rows.append(
+            PpdReceivableRow(
+                invoice_id=invoice.id,
+                folio_label=f"{invoice.series}-{invoice.folio:06d}",
+                receptor_name=invoice.receptor_name,
+                receptor_rfc=invoice.receptor_rfc,
+                origin_type=invoice.origin_type,
+                origin_reference=invoice.origin_reference,
+                member_id=invoice.member_id,
+                member_name=_member_name(member),
+                currency=invoice.currency,
+                total_cents=invoice.total_cents,
+                paid_cents=invoice_paid_cents,
+                balance_cents=balance_cents,
+                stamped_at=stamped_at,
+                age_days=age_days,
+                aging_bucket=bucket,
+                uuid=invoice.uuid,
+                is_simulated=invoice.is_simulated,
+                stamped_complements=row_stamped,
+                requested_complements=row_requested,
+                failed_complements=row_failed,
+                last_payment_on=last_payment_on,
+            )
+        )
+        open_invoices += 1
+        total_cents += invoice.total_cents
+        paid_cents += invoice_paid_cents
+        outstanding_cents += balance_cents
+        bucket_totals[PPD_AGING_BUCKETS.index(bucket)] += balance_cents
+        if age_days > oldest_age_days:
+            oldest_age_days = age_days
+            oldest_stamped_at = stamped_at
+        stamped_complements += row_stamped
+        stamped_complement_cents += invoice_paid_cents
+        requested_complements += row_requested
+        requested_complement_cents += row_requested_cents
+        failed_complements += row_failed
+        failed_complement_cents += row_failed_cents
+
+    term = (search or "").strip().lower()
+    if term:
+        rows = [
+            row
+            for row in rows
+            if term in row.receptor_name.lower()
+            or term in row.receptor_rfc.lower()
+            or term in row.origin_reference.lower()
+            or term in row.folio_label.lower()
+        ]
+    if aging_bucket:
+        rows = [row for row in rows if row.aging_bucket == aging_bucket]
+
+    start = (page - 1) * page_size
+    summary = PpdReceivableSummary(
+        as_of=as_of,
+        invoices=open_invoices,
+        total_cents=total_cents,
+        paid_cents=paid_cents,
+        outstanding_cents=outstanding_cents,
+        aging=PpdAging(*bucket_totals),
+        oldest_stamped_at=oldest_stamped_at,
+        stamped_complements=stamped_complements,
+        stamped_complement_cents=stamped_complement_cents,
+        requested_complements=requested_complements,
+        requested_complement_cents=requested_complement_cents,
+        failed_complements=failed_complements,
+        failed_complement_cents=failed_complement_cents,
+    )
+    return PpdReceivablePage(
+        items=tuple(rows[start : start + page_size]),
+        total=len(rows),
+        page=page,
+        page_size=page_size,
+        summary=summary,
     )
 
 
