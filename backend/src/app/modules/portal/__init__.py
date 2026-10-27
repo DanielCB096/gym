@@ -1,3 +1,12 @@
+from app.modules.portal.classes import (
+    MemberClassItem,
+    MemberClassNotAllowed,
+    MemberClassPage,
+    MemberReservationSummary,
+    cancel_member_reservation,
+    list_member_classes,
+    reserve_member_class,
+)
 from app.modules.portal.models import MemberAuthEvent, MemberLoginCode, MemberSession
 from app.modules.portal.service import (
     AuthenticatedMember,
@@ -23,17 +32,24 @@ __all__ = [
     "InvalidMemberSession",
     "MemberAuthEvent",
     "MemberAuthUnavailable",
+    "MemberClassItem",
+    "MemberClassNotAllowed",
+    "MemberClassPage",
     "MemberDeliveryFailed",
     "MemberLoginCode",
     "MemberLoginResult",
     "MemberMembershipSummary",
     "MemberPortalError",
     "MemberProfile",
+    "MemberReservationSummary",
     "MemberSession",
     "RequestCodeResult",
     "authenticate_member_session",
+    "cancel_member_reservation",
+    "list_member_classes",
     "member_profile",
     "request_login_code",
+    "reserve_member_class",
     "revoke_member_session",
     "verify_login_code",
 ]

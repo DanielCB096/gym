@@ -4,6 +4,7 @@ import { StatusBar } from "expo-status-bar";
 
 import { ApiError, getMemberProfile, logoutMember } from "./src/api";
 import { describeError } from "./src/errors";
+import { ClassesScreen } from "./src/screens/ClassesScreen";
 import { CodeScreen } from "./src/screens/CodeScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
 import { LoginScreen } from "./src/screens/LoginScreen";
@@ -11,7 +12,7 @@ import { clearToken, loadToken, saveToken } from "./src/storage";
 import { colors } from "./src/theme";
 import type { MemberLoginResult, MemberProfile } from "./src/types";
 
-type Stage = "restoring" | "email" | "code" | "home";
+type Stage = "restoring" | "email" | "code" | "home" | "classes";
 
 export default function App() {
   const [stage, setStage] = useState<Stage>("restoring");
@@ -143,6 +144,20 @@ export default function App() {
     setPreviewCode(null);
   }
 
+  function handleOpenClasses() {
+    setStage("classes");
+  }
+
+  async function handleSessionExpired() {
+    await clearToken();
+    setToken(null);
+    setProfile(null);
+    setFallbackName(null);
+    setHomeError(null);
+    setLoginNotice("Tu sesión expiró. Vuelve a entrar.");
+    setStage("email");
+  }
+
   return (
     <View style={styles.root}>
       <SafeAreaView style={styles.safeArea}>
@@ -177,6 +192,14 @@ export default function App() {
             error={homeError}
             onRefresh={handleRefresh}
             onLogout={handleLogout}
+            onOpenClasses={handleOpenClasses}
+          />
+        ) : null}
+        {stage === "classes" && token ? (
+          <ClassesScreen
+            token={token}
+            onBack={() => setStage("home")}
+            onSessionExpired={() => void handleSessionExpired()}
           />
         ) : null}
       </SafeAreaView>

@@ -344,6 +344,14 @@ from app.modules.memberships.service import (
     start_first_charge,
     update_member,
 )
+from app.modules.portal.classes import (
+    MemberClassItem,
+    MemberClassNotAllowed,
+    MemberReservationSummary,
+    cancel_member_reservation,
+    list_member_classes,
+    reserve_member_class,
+)
 from app.modules.portal.service import (
     AuthenticatedMember,
     InvalidMemberCode,
@@ -647,6 +655,45 @@ class MemberPortalProfileResponse(BaseModel):
     membership: MemberSessionMembershipResponse | None
     balance_cents: int
     access_enabled: bool
+
+
+class MemberClassReservationResponse(BaseModel):
+    id: UUID
+    session_id: UUID
+    status: str
+    waitlist_position: int | None
+    late_cancellation: bool
+    created_at: datetime
+
+
+class MemberClassResponse(BaseModel):
+    id: UUID
+    title: str
+    class_type_name: str
+    room_name: str | None
+    instructor_name: str | None
+    starts_at: datetime
+    ends_at: datetime
+    capacity: int
+    access_type: str
+    extra_price_cents: int
+    waitlist_enabled: bool
+    cancel_window_hours: int
+    notes: str | None
+    reserved_count: int
+    waitlist_count: int
+    spots_left: int
+    can_reserve: bool
+    blocked_reason: str | None
+    reservation: MemberClassReservationResponse | None
+
+
+class MemberClassDirectoryResponse(BaseModel):
+    items: list[MemberClassResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
 
 
 class CreateEmployeeRequest(BaseModel):
@@ -2523,6 +2570,78 @@ def member_logout(
     revoke_member_session(session, member)
 
 
+@app.get(
+    "/member/classes",
+    response_model=MemberClassDirectoryResponse,
+    tags=["member self-service"],
+)
+def member_classes(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+    days: Annotated[int, Query(ge=1, le=60)] = 14,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 25,
+) -> MemberClassDirectoryResponse:
+    try:
+        directory = list_member_classes(
+            session,
+            member.member_id,
+            days=days,
+            page=page,
+            page_size=page_size,
+        )
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except ClassesError as error:
+        raise _classes_http_error(error) from error
+    return MemberClassDirectoryResponse(
+        items=[_member_class_response(item) for item in directory.items],
+        total=directory.total,
+        page=directory.page,
+        page_size=directory.page_size,
+        pages=directory.pages,
+    )
+
+
+@app.post(
+    "/member/classes/sessions/{session_id}/reservations",
+    response_model=MemberClassReservationResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["member self-service"],
+)
+def reserve_member_class_endpoint(
+    session_id: UUID,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberClassReservationResponse:
+    try:
+        reservation = reserve_member_class(session, member.member_id, session_id)
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except ClassesError as error:
+        raise _classes_http_error(error) from error
+    return _member_reservation_response(reservation)
+
+
+@app.post(
+    "/member/classes/reservations/{reservation_id}/cancel",
+    response_model=MemberClassReservationResponse,
+    tags=["member self-service"],
+)
+def cancel_member_reservation_endpoint(
+    reservation_id: UUID,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberClassReservationResponse:
+    try:
+        reservation = cancel_member_reservation(session, member.member_id, reservation_id)
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except ClassesError as error:
+        raise _classes_http_error(error) from error
+    return _member_reservation_response(reservation)
+
+
 @app.get("/admin/roles", tags=["staff administration"])
 def get_roles_and_permissions(
     session: SessionDependency,
@@ -4357,6 +4476,7 @@ _CLASSES_ERROR_STATUS: tuple[tuple[type[ClassesError], int], ...] = (
     (SessionFull, status.HTTP_409_CONFLICT),
     (InvalidSessionState, status.HTTP_409_CONFLICT),
     (InvalidReservationState, status.HTTP_409_CONFLICT),
+    (MemberClassNotAllowed, status.HTTP_409_CONFLICT),
 )
 
 
@@ -6510,6 +6630,47 @@ def _member_profile_response(profile: MemberProfile) -> MemberPortalProfileRespo
         membership=membership,
         balance_cents=profile.balance_cents,
         access_enabled=profile.access_enabled,
+    )
+
+
+def _member_reservation_response(
+    reservation: MemberReservationSummary,
+) -> MemberClassReservationResponse:
+    return MemberClassReservationResponse(
+        id=reservation.id,
+        session_id=reservation.session_id,
+        status=reservation.status,
+        waitlist_position=reservation.waitlist_position,
+        late_cancellation=reservation.late_cancellation,
+        created_at=reservation.created_at,
+    )
+
+
+def _member_class_response(item: MemberClassItem) -> MemberClassResponse:
+    return MemberClassResponse(
+        id=item.id,
+        title=item.title,
+        class_type_name=item.class_type_name,
+        room_name=item.room_name,
+        instructor_name=item.instructor_name,
+        starts_at=item.starts_at,
+        ends_at=item.ends_at,
+        capacity=item.capacity,
+        access_type=item.access_type,
+        extra_price_cents=item.extra_price_cents,
+        waitlist_enabled=item.waitlist_enabled,
+        cancel_window_hours=item.cancel_window_hours,
+        notes=item.notes,
+        reserved_count=item.reserved_count,
+        waitlist_count=item.waitlist_count,
+        spots_left=item.spots_left,
+        can_reserve=item.can_reserve,
+        blocked_reason=item.blocked_reason,
+        reservation=(
+            _member_reservation_response(item.reservation)
+            if item.reservation is not None
+            else None
+        ),
     )
 
 

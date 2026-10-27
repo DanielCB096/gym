@@ -40,3 +40,42 @@ export type CodeRequestResult = {
   expires_in: number;
   preview_code: string | null;
 };
+
+export type MemberClassReservation = {
+  id: string;
+  session_id: string;
+  status: string;
+  waitlist_position: number | null;
+  late_cancellation: boolean;
+  created_at: string;
+};
+
+export type MemberClass = {
+  id: string;
+  title: string;
+  class_type_name: string;
+  room_name: string | null;
+  instructor_name: string | null;
+  starts_at: string;
+  ends_at: string;
+  capacity: number;
+  access_type: string;
+  extra_price_cents: number;
+  waitlist_enabled: boolean;
+  cancel_window_hours: number;
+  notes: string | null;
+  reserved_count: number;
+  waitlist_count: number;
+  spots_left: number;
+  can_reserve: boolean;
+  blocked_reason: string | null;
+  reservation: MemberClassReservation | null;
+};
+
+export type MemberClassPage = {
+  items: MemberClass[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+};

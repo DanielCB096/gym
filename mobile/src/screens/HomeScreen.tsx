@@ -24,6 +24,7 @@ type Props = {
   error: string | null;
   onRefresh: () => void;
   onLogout: () => void;
+  onOpenClasses: () => void;
 };
 
 export function HomeScreen({
@@ -33,6 +34,7 @@ export function HomeScreen({
   error,
   onRefresh,
   onLogout,
+  onOpenClasses,
 }: Props) {
   return (
     <ScrollView
@@ -106,6 +108,25 @@ export function HomeScreen({
                 : "Tu membresía no está activa o está vencida. Pasa a recepción para regularizarla."}
             </Text>
           </View>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Ver clases y reservar"
+            onPress={onOpenClasses}
+            style={({ pressed }) => [
+              sharedStyles.card,
+              styles.navCard,
+              pressed && styles.navCardPressed,
+            ]}
+          >
+            <View style={styles.navText}>
+              <Text style={styles.navTitle}>Clases y reservas</Text>
+              <Text style={sharedStyles.body}>
+                Consulta la cartelera y aparta tu lugar.
+              </Text>
+            </View>
+            <Text style={styles.navChevron}>→</Text>
+          </Pressable>
 
           <View style={sharedStyles.card}>
             <Text style={sharedStyles.label}>Membresía</Text>
@@ -278,6 +299,29 @@ const styles = StyleSheet.create({
   accessTitle: {
     color: colors.text,
     fontSize: 17,
+    fontWeight: "800",
+  },
+  navCard: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: spacing.md,
+    justifyContent: "space-between",
+  },
+  navCardPressed: {
+    backgroundColor: colors.surfaceMuted,
+  },
+  navText: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  navTitle: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  navChevron: {
+    color: colors.accent,
+    fontSize: 24,
     fontWeight: "800",
   },
   planRow: {

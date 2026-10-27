@@ -1,6 +1,6 @@
 # App móvil del socio
 
-Aplicación Expo/React Native para el socio del club. En este primer incremento cubre el **acceso con código de un solo uso (OTP) por correo** y la **consulta del perfil y la membresía**; no incluye todavía reservas, rutinas, pagos ni facturas.
+Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, la **consulta del perfil y la membresía** y la **reserva de clases**; no incluye todavía rutinas, pagos ni facturas.
 
 ## Alcance implementado
 
@@ -13,6 +13,12 @@ Aplicación Expo/React Native para el socio del club. En este primer incremento 
   - saldo de la cuenta del socio;
   - fecha de alta y estado del socio;
   - actualización manual y cierre de sesión.
+- Pantalla de clases con:
+  - cartelera de los próximos 14 días (fecha, tipo, salón, instructor y lugares disponibles);
+  - reserva de un lugar o ingreso a la lista de espera cuando la clase está llena;
+  - cancelación de la propia reserva, con aviso de la ventana sin penalización;
+  - bloqueo explicado para clases premium, membresía inactiva, clases llenas sin lista de espera y clases ya iniciadas;
+  - actualización manual con deslizamiento.
 - Mensajes de error en español y comportamiento genérico para correos no registrados (no revela si el correo existe).
 
 ## Requisitos
@@ -59,13 +65,22 @@ CORS_ORIGINS=http://localhost:8081,http://127.0.0.1:8081
 3. `GET /member/me` con `Authorization: Bearer <token>` devuelve perfil, membresía, acceso y saldo.
 4. `POST /member/auth/logout` revoca la sesión.
 
+## Flujo de clases
+
+1. `GET /member/classes?days=14` devuelve la cartelera con `can_reserve`, `blocked_reason` y la reserva activa del socio.
+2. `POST /member/classes/sessions/{session_id}/reservations` reserva un lugar o entra a la lista de espera; responde `409` con el motivo cuando el socio no puede reservar.
+3. `POST /member/classes/reservations/{reservation_id}/cancel` cancela una reserva propia antes del inicio de la clase.
+4. La app refresca la cartelera después de cada acción para mostrar el estado y los lugares actualizados.
+
+Las reservas usan el origen `app`; el backend reutiliza las reglas del módulo de clases (aforo, bloqueo de fila, lista de espera y ventana de cancelación). Las clases premium se muestran pero no se pueden reservar desde la app hasta que exista el cobro del precio extra.
+
 Límites del backend: 5 solicitudes por correo cada 15 minutos, 5 intentos por código, código de un solo uso y sesiones revocables. Los tokens y los códigos se guardan solo como hash.
 
 ## Estructura
 
 ```text
 mobile/
-├── App.tsx                 # máquina de estados restoring → email → code → home
+├── App.tsx                 # máquina de estados restoring → email → code → home → classes
 ├── index.ts                # registro de Expo
 ├── app.json                # nombre, slug, tema y plugin de SecureStore
 └── src/
@@ -79,14 +94,15 @@ mobile/
     └── screens/
         ├── LoginScreen.tsx # captura del correo
         ├── CodeScreen.tsx  # código de 6 dígitos, reenvío y código de vista previa
-        └── HomeScreen.tsx  # perfil, acceso, membresía y saldo
+        ├── HomeScreen.tsx  # perfil, acceso, membresía y saldo
+        └── ClassesScreen.tsx # cartelera, reserva, lista de espera y cancelación
 ```
 
 ## Pendientes
 
-- Reserva y cancelación de clases desde la app.
 - Rutinas asignadas, registro de entrenamientos, medidas, metas y fotos de progreso.
 - Pagos, estado de cuenta y descarga de facturas.
+- Cobro del precio extra de las clases premium desde la app.
 - Notificaciones push y recordatorios (renovación, clase, cobranza).
 - Rotación de tokens, cierre de sesiones por inactividad y MFA opcional.
 - Persistencia del token en la vista web (hoy se pierde al recargar) y almacenamiento seguro nativo con biometría.

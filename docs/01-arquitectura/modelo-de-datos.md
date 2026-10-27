@@ -178,6 +178,8 @@ La migración `20261027_0031_member_portal.py` agrega la autenticación de la ap
 
 El código se almacena solo como HMAC-SHA256 calculado con `SECRET_KEY` sobre el id del código, el id del socio y el código; la sesión solo conserva el SHA-256 del token. La base de vista previa crea estas tablas con `create_all`; en producción se aplican con Alembic. No hay relación con `app_users`, `user_sessions` ni la matriz RBAC: el portal solo expone las rutas `/member/*` y el socio autenticado únicamente puede leer su propio perfil.
 
+Las **reservas de clases desde la app** no agregan tablas ni columnas: reutilizan `class_sessions` y `class_reservations` con `origin = "app"`, y la capa `app.modules.portal.classes` solo filtra por el socio de la sesión antes de delegar en el servicio de clases. `cancelled_by` sigue siendo una FK a `app_users`, así que una cancelación hecha por el socio lo deja en `NULL`; el origen distingue la reserva, no al actor de la cancelación.
+
 ## Persistencia local de acceso offline
 
 La primera implementación usa un archivo SQLite local para el caché de decisiones en el lector/controlador, separado de PostgreSQL central:

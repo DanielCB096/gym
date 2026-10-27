@@ -1,6 +1,8 @@
 import { API_URL, REQUEST_TIMEOUT_MS } from "./config";
 import type {
   CodeRequestResult,
+  MemberClassPage,
+  MemberClassReservation,
   MemberLoginResult,
   MemberProfile,
 } from "./types";
@@ -107,4 +109,28 @@ export function getMemberProfile(token: string): Promise<MemberProfile> {
 
 export function logoutMember(token: string): Promise<void> {
   return request<void>("/member/auth/logout", { method: "POST", token });
+}
+
+export function getMemberClasses(token: string, days = 14): Promise<MemberClassPage> {
+  return request<MemberClassPage>(`/member/classes?days=${days}`, { token });
+}
+
+export function reserveMemberClass(
+  token: string,
+  sessionId: string,
+): Promise<MemberClassReservation> {
+  return request<MemberClassReservation>(
+    `/member/classes/sessions/${sessionId}/reservations`,
+    { method: "POST", token },
+  );
+}
+
+export function cancelMemberReservation(
+  token: string,
+  reservationId: string,
+): Promise<MemberClassReservation> {
+  return request<MemberClassReservation>(
+    `/member/classes/reservations/${reservationId}/cancel`,
+    { method: "POST", token },
+  );
 }

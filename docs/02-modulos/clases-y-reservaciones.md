@@ -178,13 +178,22 @@ Primer incremento entregado (2026-10-17), centrado en la operación de la agenda
 - **Clases premium**: se guarda `access_type=premium` y `extra_price_cents`, pero **no se cobra** todavía (mismo atajo deliberado y auditado que la activación de membresía).
 - **Panel web**: la vista Clases tiene dos pestañas: *Agenda* (resumen, filtros por texto, estado y día; cupo ocupado, lista de espera, alta/edición/cancelación y roster con búsqueda de socio, marcado de asistencia y cancelación) y *Catálogo* (tipos de clase y salones). Todo pasa por rutas BFF bajo `/api/admin/classes/*`.
 
-Pendiente (documentado en `docs/deuda-tecnica.md`): cobro real de clases premium, notificaciones de recordatorio y de lista de espera, app del socio, reserva automática desde control de acceso y penalizaciones efectivas por inasistencia.
+Segundo incremento (2026-10-27): **reserva y cancelación desde la app del socio**, sin migración ni tablas nuevas. La capa `app.modules.portal.classes` reutiliza el servicio de clases y añade solo las reglas del socio:
+
+- `GET /member/classes` devuelve las sesiones futuras programadas (14 días por defecto, hasta 60) con cupo, lista de espera y la reserva propia; cada sesión trae `can_reserve` y `blocked_reason` (`already_reserved`, `membership_inactive`, `premium_class`, `started`, `full`).
+- `POST /member/classes/sessions/{id}/reservations` exige membresía activa, clase programada y futura, no premium y sin reserva viva; si está llena respeta `waitlist_enabled` y asigna posición. `origin` queda en `app`.
+- `POST /member/classes/reservations/{id}/cancel` solo permite reservas propias (las ajenas responden `404`) y solo antes del inicio de la clase; delega en la cancelación existente, que promueve al primero de la lista de espera y marca `late_cancellation` si aplica.
+- `cancelled_by` queda vacío en las cancelaciones del socio porque la columna es una FK a `app_users`; el rastro disponible es `origin = "app"`.
+- Las clases premium se muestran bloqueadas con el aviso de reservar en recepción hasta que exista el cobro del extra. No hay notificaciones de confirmación ni de promoción desde lista de espera.
+
+Pendiente (documentado en `docs/deuda-tecnica.md`): cobro real de clases premium, notificaciones de recordatorio y de lista de espera, reserva automática desde control de acceso y penalizaciones efectivas por inasistencia.
 
 ## 14. Estado
 
-Primer incremento implementado y probado (catálogo, agenda con cupo y lista de espera, asistencia e inasistencias desde el panel); la app del socio, las notificaciones y el cobro de clases premium quedan en diseño / validación funcional.
+Primer incremento implementado y probado (catálogo, agenda con cupo y lista de espera, asistencia e inasistencias desde el panel); segundo incremento entregado para reserva y cancelación desde la app del socio con lista de espera. Las notificaciones y el cobro de clases premium quedan en diseño / validación funcional.
 
 ## 15. Historial de cambios
 
+- 2026-10-27: segundo incremento (reserva y cancelación desde la app del socio sobre las mismas tablas, clases premium bloqueadas, `origin = "app"`), API `/member/classes*`, pantalla Clases en Expo y pruebas `test_member_classes_api.py`.
 - 2026-10-17: primer incremento de implementación (catálogo de clases y salones, agenda con cupo y lista de espera, reservas, asistencia y cancelaciones) con migración `20261017_0009`, API `/admin/classes/*`, panel web con vista Clases y pruebas de API.
 - 2026-10-15: documento ampliado con flujos, permiso, pantallas, reglas de negocio, entidades, KPIs y criterios de aceptación.

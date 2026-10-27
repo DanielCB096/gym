@@ -25,7 +25,7 @@ Probar que cada regla crítica del negocio funcione sin errores, especialmente a
 - metas del socio: línea base congelada, una meta activa por medida, avance y cierre automático
 - fotos de progreso: validación por firma y tamaño, almacenamiento fuera de la base, descarga autenticada y eliminación explícita
 - gráfica de evolución de medidas: serie por métrica, meta activa de referencia y estado con menos de dos mediciones
-- portal del socio: código OTP de un solo uso, límites de intentos y solicitudes, aislamiento de sesiones y perfil propio
+- portal del socio: código OTP de un solo uso, límites de intentos y solicitudes, aislamiento de sesiones, perfil propio y reserva/cancelación de clases con lista de espera
 - permisos y bitácora
 - corte de caja y inventario
 
@@ -104,6 +104,18 @@ Verificación manual en vista previa (2026-10-26): en Rutinas → Seguimiento se
 
 La app móvil se valida con `npm run typecheck` y una prueba manual en la vista web de Expo contra el backend en vista previa; el job `mobile` de CI ejecuta el typecheck en cada push.
 
+## Cobertura de reservas de clases del socio
+
+`backend/tests/test_member_classes_api.py` (4 pruebas) cubre el ciclo completo sobre las reglas ya existentes del módulo de clases (aforo, bloqueo por fila, lista de espera y ventana de cancelación), sin duplicarlas:
+
+- cartelera y reserva: el listado devuelve `200` con solo las sesiones futuras, los datos de tipo/salón/cupo y `blocked_reason = premium_class` o `membership_inactive`; reservar una clase incluida responde `201` con estado `reserved`, la repetición `409`, y el listado siguiente marca `already_reserved` con la reserva embebida. Una clase premium y una clase ya iniciada responden `409`, y el segundo socio de una clase con aforo uno queda en `waitlist` con posición `1`.
+- propiedad y cancelación: cancelar la reserva de otro socio responde `404`; la cancelación antes del inicio devuelve `200`, `late_cancellation = false` y promueve al primero de la lista de espera a `reserved`; cancelar con la clase ya iniciada lanza `InvalidReservationState`.
+- aforo sin lista de espera: con `waitlist_enabled = false` y la clase llena, el listado marca `blocked_reason = full` y la reserva lanza `SessionFull`.
+- membresía vencida: una membresía fuera de periodo marca `membership_inactive` y bloquea la reserva con `MemberClassNotAllowed`.
+- aislamiento: un token de personal recibe `401` en las tres rutas `/member/classes*`.
+
+Verificación manual en vista previa (2026-10-27): con `ana.lopez@example.com` se abrió Inicio → Clases y reservas con 17 clases próximas; se canceló la reserva de recepción de «Funcional 07:00» (apareció «Reservar»), se volvió a reservar (cupo 12/20, estado «Confirmada») y la clase premium «Boxeo 20:00» quedó bloqueada con el aviso «Clase premium: reserva en recepción». Al terminar se restauró la base de vista previa y se detuvieron los servidores locales.
+
 ## Evidencia esperada
 
 - logs de prueba
@@ -113,4 +125,4 @@ La app móvil se valida con `npm run typecheck` y una prueba manual en la vista 
 
 ## Estado
 
-La suite automatizada del backend cierra en **143 pruebas**, el build de producción del panel pasa y el typecheck de la app móvil pasa. La conciliación se verificó de extremo a extremo en vista previa; los complementos PPD cuentan con pruebas de API, un seed de vista previa y verificación en navegador (selector PUE/PPD con forma `99`, tabla de parcialidades, descargas XML/PDF y rechazo de un importe mayor al saldo). La cartera PPD cuenta con una prueba de API que backdatea facturas para cubrir los cuatro tramos, comprueba que los complementos solicitados no reducen el saldo, y valida filtros, paginación y liquidación; su pestaña se verificó en la vista previa. Las metas del socio se verificaron en navegador (activa, cancelada y cumplida; alta, edición y cancelación) y las fotos de progreso cuentan con una prueba de ciclo de vida que cubre permisos, validación por firma, límite de tamaño, almacenamiento, descarga autenticada y eliminación, además de verificación en navegador de la galería, el visor, la carga y la eliminación. La gráfica de evolución de medidas se verificó en navegador con las cuatro métricas, una serie plana, la meta activa de referencia y el estado con menos de dos mediciones, sin cambios de API. La cartera PPD se verificó en Reportes → Ingresos como corte independiente del periodo y un complemento PPD timbrado se concilió con una línea bancaria en vista previa. Pendiente de ejecución en proyecto real, con un estado de cuenta bancario real y con un PAC real (el timbrado sigue siendo simulado y sin validez fiscal).
+La suite automatizada del backend cierra en **147 pruebas**, el build de producción del panel pasa y el typecheck de la app móvil pasa. La conciliación se verificó de extremo a extremo en vista previa; los complementos PPD cuentan con pruebas de API, un seed de vista previa y verificación en navegador (selector PUE/PPD con forma `99`, tabla de parcialidades, descargas XML/PDF y rechazo de un importe mayor al saldo). La cartera PPD cuenta con una prueba de API que backdatea facturas para cubrir los cuatro tramos, comprueba que los complementos solicitados no reducen el saldo, y valida filtros, paginación y liquidación; su pestaña se verificó en la vista previa. Las metas del socio se verificaron en navegador (activa, cancelada y cumplida; alta, edición y cancelación) y las fotos de progreso cuentan con una prueba de ciclo de vida que cubre permisos, validación por firma, límite de tamaño, almacenamiento, descarga autenticada y eliminación, además de verificación en navegador de la galería, el visor, la carga y la eliminación. La gráfica de evolución de medidas se verificó en navegador con las cuatro métricas, una serie plana, la meta activa de referencia y el estado con menos de dos mediciones, sin cambios de API. Las reservas de clases del socio cuentan con 4 pruebas de API (cartelera, reserva, lista de espera promovida, aforo, propiedad, clase iniciada y membresía vencida) y verificación en navegador de cancelación y reserva desde la app. La cartera PPD se verificó en Reportes → Ingresos como corte independiente del periodo y un complemento PPD timbrado se concilió con una línea bancaria en vista previa. Pendiente de ejecución en proyecto real, con un estado de cuenta bancario real y con un PAC real (el timbrado sigue siendo simulado y sin validez fiscal).
