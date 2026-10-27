@@ -166,6 +166,18 @@ La migración `20261025_0027_bank_reconciliation.py` agrega las cuentas, las lí
 
 El índice único parcial `uq_bank_movements_match` sobre `(matched_source, matched_id)` donde `matched_id IS NOT NULL` impide que dos líneas del banco reclamen la misma operación interna. `matched_id` **no** es una FK real porque apunta a cuatro tablas distintas (`payments`, `sales`, `member_account_payments`, `sale_returns`); la existencia, el método electrónico, la moneda y el sentido del movimiento se validan en el servicio antes de vincular. Desvincular limpia el vínculo y devuelve la línea a `pending`, conservando el evento. El `import_hash` es SHA-256 de cuenta, fecha, importe, referencia y descripción (sin distinguir mayúsculas), de modo que reimportar el mismo estado no duplica; dos líneas legítimamente idénticas se consideran duplicadas. El `downgrade` de la migración se niega a ejecutarse si existen movimientos bancarios. Los bloqueos `SELECT ... FOR UPDATE` de las conciliaciones son efectivos en PostgreSQL y no-op en SQLite, así que la garantía de concurrencia en producción depende del motor. No hay eventos de auditoría para cambios de cuenta y no se permite borrar una cuenta con historial.
 
+## Esquema físico: portal del socio
+
+La migración `20261027_0031_member_portal.py` agrega la autenticación de la app móvil. El socio no tiene contraseña: recibe un código temporal por correo y obtiene una sesión propia, separada de `user_sessions` del personal.
+
+| Tabla | Responsabilidad | Restricciones principales |
+|---|---|---|
+| `member_login_codes` | código OTP de un solo uso enviado al correo del socio | FK `RESTRICT` al socio, `code_hash` SHA-256/HMAC de 64 caracteres, `created_at`/`expires_at` (10 minutos), `consumed_at` nullable, `attempts` entero no negativo (máximo 5 en el servicio), `ck_member_login_codes_attempts` y `ck_member_login_codes_expiry_order`; índice por socio y fecha de creación |
+| `member_sessions` | sesión opaca de la app del socio | `token_sha256` único, `expires_at` (30 días), `revoked_at` y `last_seen_at`; `ck_member_sessions_expiry_order`; índice por socio y vencimiento |
+| `member_auth_events` | bitácora de autenticación del socio | FK nullable al socio, `event_type` (`code_requested`/`code_delivery`/`code_verified`/`login`/`logout`), `result` (`success`/`failure`), `reason_code` y `occurred_at`; índice por socio y fecha; nunca guarda código ni token |
+
+El código se almacena solo como HMAC-SHA256 calculado con `SECRET_KEY` sobre el id del código, el id del socio y el código; la sesión solo conserva el SHA-256 del token. La base de vista previa crea estas tablas con `create_all`; en producción se aplican con Alembic. No hay relación con `app_users`, `user_sessions` ni la matriz RBAC: el portal solo expone las rutas `/member/*` y el socio autenticado únicamente puede leer su propio perfil.
+
 ## Persistencia local de acceso offline
 
 La primera implementación usa un archivo SQLite local para el caché de decisiones en el lector/controlador, separado de PostgreSQL central:

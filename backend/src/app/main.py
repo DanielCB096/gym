@@ -10,6 +10,7 @@ from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
@@ -343,6 +344,20 @@ from app.modules.memberships.service import (
     start_first_charge,
     update_member,
 )
+from app.modules.portal.service import (
+    AuthenticatedMember,
+    InvalidMemberCode,
+    InvalidMemberSession,
+    MemberAuthUnavailable,
+    MemberDeliveryFailed,
+    MemberPortalError,
+    MemberProfile,
+    authenticate_member_session,
+    member_profile,
+    request_login_code,
+    revoke_member_session,
+    verify_login_code,
+)
 from app.modules.staffing.models import StaffAttendance, StaffShift
 from app.modules.staffing.service import (
     AttendanceAlreadyRecorded,
@@ -440,6 +455,11 @@ from app.timezone import DEFAULT_TIMEZONE
 
 PreviewOutcome = Literal["succeeded", "failed", "unknown", "processing"]
 PREVIEW_MODE = os.getenv("PREVIEW_MODE", "").lower() == "true"
+CORS_ORIGINS = tuple(
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip()
+)
 DATABASE_URL = os.getenv("DATABASE_URL")
 if PREVIEW_MODE and not DATABASE_URL:
     DATABASE_URL = "sqlite:///./gym_preview.db"
@@ -575,6 +595,58 @@ class LoginResponse(BaseModel):
     token_type: str
     expires_at: datetime
     user: UserResponse
+
+
+class MemberCodeRequest(BaseModel):
+    email: EmailStr
+
+
+class MemberCodeRequestResponse(BaseModel):
+    status: Literal["accepted"] = "accepted"
+    expires_in: int
+    preview_code: str | None = None
+
+
+class MemberVerifyRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class MemberSessionSummaryResponse(BaseModel):
+    id: UUID
+    first_name: str
+    last_name: str
+    email: str | None
+    status: str
+
+
+class MemberSessionMembershipResponse(BaseModel):
+    plan_name: str
+    status: str
+    starts_at: datetime
+    ends_at: datetime
+    auto_renew: bool
+    days_remaining: int
+
+
+class MemberAuthResponse(BaseModel):
+    access_token: str
+    token_type: str
+    expires_at: datetime
+    member: MemberSessionSummaryResponse
+
+
+class MemberPortalProfileResponse(BaseModel):
+    id: UUID
+    first_name: str
+    last_name: str
+    email: str | None
+    phone: str | None
+    status: str
+    member_since: datetime
+    membership: MemberSessionMembershipResponse | None
+    balance_cents: int
+    access_enabled: bool
 
 
 class CreateEmployeeRequest(BaseModel):
@@ -2295,6 +2367,26 @@ def require_api_permission(permission_code: str):
     return dependency
 
 
+def get_current_member(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    session: SessionDependency,
+) -> AuthenticatedMember:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        return authenticate_member_session(session, credentials.credentials)
+    except InvalidMemberSession as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired member session",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from error
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if PREVIEW_MODE:
@@ -2315,6 +2407,17 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
+
+# Bearer-only clients (the member app) do not rely on cookies, so credentials
+# stay disabled and every origin must be listed explicitly in CORS_ORIGINS.
+if CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(CORS_ORIGINS),
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
 
 @app.get("/health", tags=["system"])
@@ -2351,6 +2454,73 @@ def logout(
     session: SessionDependency,
 ) -> None:
     revoke_session(session, principal)
+
+
+@app.post(
+    "/member/auth/request-code",
+    response_model=MemberCodeRequestResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["member authentication"],
+)
+def request_member_code(request: MemberCodeRequest, session: SessionDependency) -> MemberCodeRequestResponse:
+    try:
+        result = request_login_code(session, email=request.email)
+    except MemberAuthUnavailable as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+    except MemberDeliveryFailed as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo enviar el código de acceso. Intenta de nuevo.",
+        ) from error
+    return MemberCodeRequestResponse(expires_in=result.expires_in, preview_code=result.preview_code)
+
+
+@app.post(
+    "/member/auth/verify",
+    response_model=MemberAuthResponse,
+    tags=["member authentication"],
+)
+def verify_member_code(request: MemberVerifyRequest, session: SessionDependency) -> MemberAuthResponse:
+    try:
+        result = verify_login_code(session, email=request.email, code=request.code)
+    except InvalidMemberCode as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Código inválido o expirado",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from error
+    except MemberAuthUnavailable as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+    return MemberAuthResponse(
+        access_token=result.access_token,
+        token_type=result.token_type,
+        expires_at=result.expires_at,
+        member=_member_summary_response(result.member),
+    )
+
+
+@app.get("/member/me", response_model=MemberPortalProfileResponse, tags=["member self-service"])
+def member_me(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberPortalProfileResponse:
+    try:
+        profile = member_profile(session, member.member_id)
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return _member_profile_response(profile)
+
+
+@app.post(
+    "/member/auth/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["member authentication"],
+)
+def member_logout(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> None:
+    revoke_member_session(session, member)
 
 
 @app.get("/admin/roles", tags=["staff administration"])
@@ -6303,6 +6473,43 @@ def _principal_response(principal: AuthenticatedUser) -> UserResponse:
         employee_id=principal.employee_id,
         roles=list(principal.roles),
         permissions=sorted(principal.permissions),
+    )
+
+
+def _member_summary_response(member: AuthenticatedMember) -> MemberSessionSummaryResponse:
+    return MemberSessionSummaryResponse(
+        id=member.member_id,
+        first_name=member.first_name,
+        last_name=member.last_name,
+        email=member.email or None,
+        status=member.status,
+    )
+
+
+def _member_profile_response(profile: MemberProfile) -> MemberPortalProfileResponse:
+    membership = (
+        MemberSessionMembershipResponse(
+            plan_name=profile.membership.plan_name,
+            status=profile.membership.status,
+            starts_at=profile.membership.starts_at,
+            ends_at=profile.membership.ends_at,
+            auto_renew=profile.membership.auto_renew,
+            days_remaining=profile.membership.days_remaining,
+        )
+        if profile.membership is not None
+        else None
+    )
+    return MemberPortalProfileResponse(
+        id=profile.id,
+        first_name=profile.first_name,
+        last_name=profile.last_name,
+        email=profile.email,
+        phone=profile.phone,
+        status=profile.status,
+        member_since=profile.member_since,
+        membership=membership,
+        balance_cents=profile.balance_cents,
+        access_enabled=profile.access_enabled,
     )
 
 

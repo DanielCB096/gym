@@ -59,9 +59,9 @@ Gestionar la operación completa de un gimnasio con foco en:
 - Base de datos: PostgreSQL
 - Cache y colas: Redis + Celery
 - Web admin: Next.js + TypeScript
-- App móvil: React Native + Expo
+- App móvil: React Native + Expo (acceso del socio con código OTP por correo)
 - Kiosco: React + Electron o PWA embebida en tablet
-- Autenticación: JWT + OAuth2 + MFA para administradores
+- Autenticación: sesiones opacas Bearer con RBAC para el personal y OTP por correo para socios; MFA para administradores pendiente
 - Facturación: integración con PAC vía XML/JSON
 - Pagos: Conekta como pasarela recomendada para México
 
@@ -99,7 +99,7 @@ git commit -m "feat: agrega alta de socio con consentimientos"
 
 ## Verificación
 
-Se ejecutan pruebas y lint en CI para cada cambio. La documentación se mantiene en este repositorio como contexto del proyecto.
+Se ejecutan pruebas y lint en CI para cada cambio (backend, panel web y typecheck de la app móvil). La documentación se mantiene en este repositorio como contexto del proyecto. La app móvil del socio se inicia desde `mobile/` con `npm install` y `npm start`; apunta al backend con `EXPO_PUBLIC_API_URL` y el portal usa `SECRET_KEY` para firmar los códigos OTP. Ver `mobile/README.md`.
 
 ## Importante
 

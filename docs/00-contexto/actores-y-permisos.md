@@ -22,7 +22,7 @@
 
 ## Reglas de acceso por rol
 
-- socios no pueden ver datos de otros socios ni gestionar la operación del gimnasio
+- socios no pueden ver datos de otros socios ni gestionar la operación del gimnasio. La app del socio no usa la matriz RBAC del personal: se autentica con un código OTP enviado a su correo y solo puede leer su propio perfil, membresía, estado de acceso y saldo. Su token de sesión vive en `member_sessions` y no sirve para ninguna ruta `/admin/*`; a la inversa, un token de personal no sirve en `/member/*`
 - recepción no puede alterar nodos financieros ni cambiar roles críticos
 - el cobro manual de membresía (efectivo, tarjeta declarada o transferencia) usa `members.manage` y exige un turno de caja abierto; recepción, gerente y dueño pueden cobrar, mientras contabilidad e instructor solo consultan. El pago queda ligado al turno y al usuario, y solo el efectivo entra al arqueo
 - el límite de crédito de los socios lo fijan dueño y gerente (`sales.credit`); recepción puede vender a cuenta y cobrar, pero no modificar el límite

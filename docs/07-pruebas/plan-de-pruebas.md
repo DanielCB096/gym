@@ -25,6 +25,7 @@ Probar que cada regla crítica del negocio funcione sin errores, especialmente a
 - metas del socio: línea base congelada, una meta activa por medida, avance y cierre automático
 - fotos de progreso: validación por firma y tamaño, almacenamiento fuera de la base, descarga autenticada y eliminación explícita
 - gráfica de evolución de medidas: serie por métrica, meta activa de referencia y estado con menos de dos mediciones
+- portal del socio: código OTP de un solo uso, límites de intentos y solicitudes, aislamiento de sesiones y perfil propio
 - permisos y bitácora
 - corte de caja y inventario
 
@@ -92,6 +93,17 @@ La gráfica se calcula en el navegador con las mediciones que ya devuelve `GET /
 
 Verificación manual en vista previa (2026-10-26): en Rutinas → Seguimiento se abrió una asignación con tres mediciones y se alternaron las pestañas Peso, Cintura, Pecho y Grasa corporal. Peso mostró la serie descendente, el resumen «68 kg → 66.2 kg», el cambio «-1.8 kg» y la línea punteada de la meta activa (64.2 kg); Cintura y Grasa corporal mostraron su serie y resumen sin meta activa, y Pecho una serie plana con una sola marca en el eje y el texto «sin cambio». En una asignación con una sola medición aparecieron «Sin meta activa» y el aviso «Registra al menos dos mediciones de peso para ver la evolución.», sin SVG. La descripción accesible de la imagen conservó fechas y valores, y la tabla de mediciones siguió visible como registro completo. Al terminar se restauró la base de vista previa desde el respaldo y se detuvieron los servidores locales.
 
+## Cobertura del portal del socio
+
+`backend/tests/test_member_portal_api.py` (4 pruebas) cubre:
+
+- acceso completo: correo desconocido con respuesta genérica, correo conocido con código de vista previa, código incorrecto `401`, verificación exitosa, perfil con plan/acceso/saldo, bloqueo de un token de socio en `/admin/dashboard`, bloqueo de un token de personal en `/member/me`, logout `204` y sesión revocada.
+- vencimiento y bloqueo: un código vencido y otro con 5 intentos fallidos dejan de servir.
+- límite de solicitudes: no se emiten más de 5 códigos por socio en 15 minutos.
+- privacidad: no se envía código a correos desconocidos ni a socios inactivos, y la respuesta no cambia.
+
+La app móvil se valida con `npm run typecheck` y una prueba manual en la vista web de Expo contra el backend en vista previa; el job `mobile` de CI ejecuta el typecheck en cada push.
+
 ## Evidencia esperada
 
 - logs de prueba
@@ -101,4 +113,4 @@ Verificación manual en vista previa (2026-10-26): en Rutinas → Seguimiento se
 
 ## Estado
 
-La suite automatizada del backend cierra en **139 pruebas** y el build de producción del panel pasa. La conciliación se verificó de extremo a extremo en vista previa; los complementos PPD cuentan con pruebas de API, un seed de vista previa y verificación en navegador (selector PUE/PPD con forma `99`, tabla de parcialidades, descargas XML/PDF y rechazo de un importe mayor al saldo). La cartera PPD cuenta con una prueba de API que backdatea facturas para cubrir los cuatro tramos, comprueba que los complementos solicitados no reducen el saldo, y valida filtros, paginación y liquidación; su pestaña se verificó en la vista previa. Las metas del socio se verificaron en navegador (activa, cancelada y cumplida; alta, edición y cancelación) y las fotos de progreso cuentan con una prueba de ciclo de vida que cubre permisos, validación por firma, límite de tamaño, almacenamiento, descarga autenticada y eliminación, además de verificación en navegador de la galería, el visor, la carga y la eliminación. La gráfica de evolución de medidas se verificó en navegador con las cuatro métricas, una serie plana, la meta activa de referencia y el estado con menos de dos mediciones, sin cambios de API. La cartera PPD se verificó en Reportes → Ingresos como corte independiente del periodo y un complemento PPD timbrado se concilió con una línea bancaria en vista previa. Pendiente de ejecución en proyecto real, con un estado de cuenta bancario real y con un PAC real (el timbrado sigue siendo simulado y sin validez fiscal).
+La suite automatizada del backend cierra en **143 pruebas**, el build de producción del panel pasa y el typecheck de la app móvil pasa. La conciliación se verificó de extremo a extremo en vista previa; los complementos PPD cuentan con pruebas de API, un seed de vista previa y verificación en navegador (selector PUE/PPD con forma `99`, tabla de parcialidades, descargas XML/PDF y rechazo de un importe mayor al saldo). La cartera PPD cuenta con una prueba de API que backdatea facturas para cubrir los cuatro tramos, comprueba que los complementos solicitados no reducen el saldo, y valida filtros, paginación y liquidación; su pestaña se verificó en la vista previa. Las metas del socio se verificaron en navegador (activa, cancelada y cumplida; alta, edición y cancelación) y las fotos de progreso cuentan con una prueba de ciclo de vida que cubre permisos, validación por firma, límite de tamaño, almacenamiento, descarga autenticada y eliminación, además de verificación en navegador de la galería, el visor, la carga y la eliminación. La gráfica de evolución de medidas se verificó en navegador con las cuatro métricas, una serie plana, la meta activa de referencia y el estado con menos de dos mediciones, sin cambios de API. La cartera PPD se verificó en Reportes → Ingresos como corte independiente del periodo y un complemento PPD timbrado se concilió con una línea bancaria en vista previa. Pendiente de ejecución en proyecto real, con un estado de cuenta bancario real y con un PAC real (el timbrado sigue siendo simulado y sin validez fiscal).

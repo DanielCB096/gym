@@ -27,9 +27,8 @@ B --> L[Auditoría]
 - acceso segmentado por rol y permisos
 
 ### 2. Frontend móvil
-- app para socios
-- reservas de clases y consulta de estado
-- actualización de tarjeta, pagos y recordatorios
+- app Expo/React Native para socios (`mobile/`): acceso sin contraseña con código OTP por correo y consulta de perfil, membresía, acceso habilitado y saldo
+- pendiente: reservas de clases, rutinas y progreso, pagos, facturas y recordatorios/notificaciones
 
 ### 3. Kiosco de recepción
 - check-in y flujo de acceso rápido
