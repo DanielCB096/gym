@@ -42,8 +42,14 @@ from app.modules.routines.models import (
     GOAL_METRICS,
     GOAL_STATUSES,
     MAX_EFFORT,
+    MAX_SET_NUMBER,
+    MAX_SET_REPS,
+    MAX_SET_WEIGHT_KG,
     MAX_WEEKLY_FREQUENCY,
+    MAX_WORKOUT_SETS,
     MIN_EFFORT,
+    MIN_SET_NUMBER,
+    MIN_SET_REPS,
     MIN_WEEKLY_FREQUENCY,
     PROGRESS_PHOTO_ANGLES,
     PROGRESS_PHOTO_CONTENT_TYPES,
@@ -57,6 +63,7 @@ from app.modules.routines.models import (
     RoutineItem,
     RoutineRevision,
     WorkoutLog,
+    WorkoutSet,
     utc_now,
 )
 from app.modules.routines.photo_storage import (
@@ -343,6 +350,24 @@ class AssignmentDetail:
 
 
 @dataclass(frozen=True)
+class WorkoutSetInput:
+    exercise_id: UUID
+    set_number: int
+    reps: int
+    weight_kg: float | None = None
+
+
+@dataclass(frozen=True)
+class WorkoutSetItem:
+    exercise_id: UUID
+    exercise_name: str
+    position: int
+    set_number: int
+    reps: int
+    weight_kg: float | None
+
+
+@dataclass(frozen=True)
 class WorkoutItem:
     id: UUID
     assignment_id: UUID
@@ -357,6 +382,7 @@ class WorkoutItem:
     origin: str
     reviewed_at: datetime | None
     created_at: datetime
+    sets: list[WorkoutSetItem]
 
 
 @dataclass(frozen=True)
@@ -1372,7 +1398,42 @@ def cancel_assignment(
 # --------------------------------------------------------------------------- #
 
 
-def _workout_item(workout: WorkoutLog) -> WorkoutItem:
+def _workout_sets_by_workout(
+    session: Session, workout_ids: list[UUID]
+) -> dict[UUID, list[WorkoutSetItem]]:
+    if not workout_ids:
+        return {}
+    rows = session.exec(
+        select(WorkoutSet, Exercise.name, RoutineItem.position)
+        .join(WorkoutLog, WorkoutLog.id == WorkoutSet.workout_id)
+        .join(Exercise, Exercise.id == WorkoutSet.exercise_id)
+        .join(
+            RoutineItem,
+            (RoutineItem.routine_id == WorkoutLog.routine_id)
+            & (RoutineItem.version == WorkoutLog.routine_version)
+            & (RoutineItem.exercise_id == WorkoutSet.exercise_id),
+        )
+        .where(WorkoutSet.workout_id.in_(workout_ids))
+        .order_by(WorkoutSet.workout_id, RoutineItem.position, WorkoutSet.set_number)
+    ).all()
+    grouped: dict[UUID, list[WorkoutSetItem]] = {}
+    for workout_set, exercise_name, position in rows:
+        grouped.setdefault(workout_set.workout_id, []).append(
+            WorkoutSetItem(
+                exercise_id=workout_set.exercise_id,
+                exercise_name=exercise_name,
+                position=position,
+                set_number=workout_set.set_number,
+                reps=workout_set.reps,
+                weight_kg=(
+                    float(workout_set.weight_kg) if workout_set.weight_kg is not None else None
+                ),
+            )
+        )
+    return grouped
+
+
+def _workout_item(workout: WorkoutLog, sets: list[WorkoutSetItem] | None = None) -> WorkoutItem:
     return WorkoutItem(
         id=workout.id,
         assignment_id=workout.assignment_id,
@@ -1387,7 +1448,50 @@ def _workout_item(workout: WorkoutLog) -> WorkoutItem:
         origin=workout.origin,
         reviewed_at=workout.reviewed_at,
         created_at=workout.created_at,
+        sets=list(sets or []),
     )
+
+
+def _validate_workout_sets(
+    session: Session, assignment: RoutineAssignment, sets: list[WorkoutSetInput] | None
+) -> list[WorkoutSetInput]:
+    if not sets:
+        return []
+    if len(sets) > MAX_WORKOUT_SETS:
+        raise InvalidWorkoutData(
+            f"Un entrenamiento admite como máximo {MAX_WORKOUT_SETS} series"
+        )
+    planned = set(
+        session.exec(
+            select(RoutineItem.exercise_id).where(
+                RoutineItem.routine_id == assignment.routine_id,
+                RoutineItem.version == assignment.routine_version,
+            )
+        ).all()
+    )
+    seen: set[tuple[UUID, int]] = set()
+    for item in sets:
+        if item.exercise_id not in planned:
+            raise InvalidWorkoutData(
+                "El ejercicio no pertenece a la versión de la rutina asignada"
+            )
+        if not (MIN_SET_NUMBER <= item.set_number <= MAX_SET_NUMBER):
+            raise InvalidWorkoutData(
+                f"El número de serie debe estar entre {MIN_SET_NUMBER} y {MAX_SET_NUMBER}"
+            )
+        if not (MIN_SET_REPS <= item.reps <= MAX_SET_REPS):
+            raise InvalidWorkoutData(
+                f"Las repeticiones deben estar entre {MIN_SET_REPS} y {MAX_SET_REPS}"
+            )
+        if item.weight_kg is not None and not (0 <= item.weight_kg <= MAX_SET_WEIGHT_KG):
+            raise InvalidWorkoutData(
+                f"El peso debe estar entre 0 y {MAX_SET_WEIGHT_KG} kg"
+            )
+        key = (item.exercise_id, item.set_number)
+        if key in seen:
+            raise InvalidWorkoutData("La serie está repetida para el mismo ejercicio")
+        seen.add(key)
+    return sets
 
 
 def log_workout(
@@ -1398,6 +1502,7 @@ def log_workout(
     duration_minutes: int | None = None,
     perceived_effort: int | None = None,
     notes: str | None = None,
+    sets: list[WorkoutSetInput] | None = None,
     actor_id: UUID | None = None,
     origin: str = "staff",
     now: datetime | None = None,
@@ -1416,6 +1521,7 @@ def log_workout(
         raise InvalidWorkoutData("La duración no puede ser negativa")
     if perceived_effort is not None and not (MIN_EFFORT <= perceived_effort <= MAX_EFFORT):
         raise InvalidWorkoutData("El esfuerzo percibido debe estar entre 1 y 10")
+    validated_sets = _validate_workout_sets(session, assignment, sets)
 
     workout = WorkoutLog(
         assignment_id=assignment_id,
@@ -1433,9 +1539,22 @@ def log_workout(
         updated_at=occurred,
     )
     session.add(workout)
+    session.flush()
+    for item in validated_sets:
+        session.add(
+            WorkoutSet(
+                workout_id=workout.id,
+                exercise_id=item.exercise_id,
+                set_number=item.set_number,
+                reps=item.reps,
+                weight_kg=item.weight_kg,
+                created_at=occurred,
+            )
+        )
     session.commit()
     session.refresh(workout)
-    return _workout_item(workout)
+    sets_by_workout = _workout_sets_by_workout(session, [workout.id])
+    return _workout_item(workout, sets_by_workout.get(workout.id))
 
 
 def list_workouts(
@@ -1458,7 +1577,9 @@ def list_workouts(
         statement = statement.where(WorkoutLog.status == status)
     statement = statement.order_by(WorkoutLog.performed_at.desc(), WorkoutLog.created_at.desc())
     statement = statement.offset((page - 1) * page_size).limit(page_size)
-    return [_workout_item(row) for row in session.exec(statement).all()]
+    workouts = session.exec(statement).all()
+    sets_by_workout = _workout_sets_by_workout(session, [workout.id for workout in workouts])
+    return [_workout_item(workout, sets_by_workout.get(workout.id)) for workout in workouts]
 
 
 def review_workout(
@@ -1477,7 +1598,8 @@ def review_workout(
     session.add(workout)
     session.commit()
     session.refresh(workout)
-    return _workout_item(workout)
+    sets_by_workout = _workout_sets_by_workout(session, [workout.id])
+    return _workout_item(workout, sets_by_workout.get(workout.id))
 
 
 # --------------------------------------------------------------------------- #

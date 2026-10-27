@@ -30,6 +30,7 @@ from app.modules.routines import (
     RoutineAssignment,
     RoutineLine,
     WorkoutItem,
+    WorkoutSetInput,
     get_assignment,
     list_assignments,
     list_member_goals,
@@ -159,6 +160,7 @@ def log_member_workout(
     duration_minutes: int | None = None,
     perceived_effort: int | None = None,
     notes: str | None = None,
+    sets: list[WorkoutSetInput] | None = None,
     now: datetime | None = None,
 ) -> WorkoutItem:
     assignment = session.get(RoutineAssignment, assignment_id)
@@ -171,6 +173,7 @@ def log_member_workout(
         duration_minutes=duration_minutes,
         perceived_effort=perceived_effort,
         notes=notes,
+        sets=sets,
         origin="app",
         now=now,
     )

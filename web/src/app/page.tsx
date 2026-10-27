@@ -1678,6 +1678,15 @@ type AssignmentDirectory = {
 
 type RecordOrigin = "staff" | "app";
 
+type BackendWorkoutSet = {
+  exercise_id: string;
+  exercise_name: string;
+  position: number;
+  set_number: number;
+  reps: number;
+  weight_kg: number | null;
+};
+
 type BackendWorkout = {
   id: string;
   assignment_id: string;
@@ -1692,7 +1701,33 @@ type BackendWorkout = {
   origin: RecordOrigin;
   reviewed_at: string | null;
   created_at: string;
+  sets: BackendWorkoutSet[];
 };
+
+function summarizeWorkoutSets(sets: BackendWorkoutSet[]): string {
+  const groups: { name: string; detail: string }[] = [];
+  for (const item of sets) {
+    const label = `${item.reps}${item.weight_kg !== null ? ` × ${item.weight_kg} kg` : ""}`;
+    const last = groups[groups.length - 1];
+    if (last && last.name === item.exercise_name) {
+      last.detail = `${last.detail} · ${label}`;
+    } else {
+      groups.push({ name: item.exercise_name, detail: label });
+    }
+  }
+  return groups.map((group) => `${group.name}: ${group.detail}`).join(" | ");
+}
+
+type WorkoutSetDraft = {
+  key: string;
+  exerciseId: string;
+  setNumber: number;
+  reps: string;
+  weight: string;
+};
+
+const MAX_WORKOUT_DRAFT_SETS = 60;
+const MAX_WORKOUT_DRAFT_SETS_PER_EXERCISE = 20;
 
 type BackendMeasurement = {
   id: string;
@@ -7516,6 +7551,7 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
   const [duration, setDuration] = useState("");
   const [effort, setEffort] = useState("");
   const [workoutNotes, setWorkoutNotes] = useState("");
+  const [setDrafts, setSetDrafts] = useState<WorkoutSetDraft[]>([]);
 
   const [measuredAt, setMeasuredAt] = useState(todayDateInput());
   const [weight, setWeight] = useState("");
@@ -7579,22 +7615,46 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
     return () => { active = false; };
   }, [assignmentId, refresh, onUnauthorized]);
 
+  const addSetDraft = (line: BackendRoutineLine) => {
+    const existing = setDrafts.filter((draft) => draft.exerciseId === line.exercise_id);
+    if (setDrafts.length >= MAX_WORKOUT_DRAFT_SETS) { onToast("Un entrenamiento admite hasta 60 series."); return; }
+    if (existing.length >= MAX_WORKOUT_DRAFT_SETS_PER_EXERCISE) { onToast("Cada ejercicio admite hasta 20 series por entrenamiento."); return; }
+    const nextNumber = existing.reduce((max, draft) => Math.max(max, draft.setNumber), 0) + 1;
+    setSetDrafts([...setDrafts, { key: `${line.exercise_id}-${nextNumber}-${setDrafts.length}`, exerciseId: line.exercise_id, setNumber: nextNumber, reps: /^\d+$/.test(line.reps) ? line.reps : "", weight: "" }]);
+  };
+
+  const updateSetDraft = (key: string, field: "reps" | "weight", value: string) => {
+    setSetDrafts((current) => current.map((draft) => (draft.key === key ? { ...draft, [field]: value } : draft)));
+  };
+
+  const removeSetDraft = (key: string) => {
+    setSetDrafts((current) => current.filter((draft) => draft.key !== key));
+  };
+
   const logWorkout = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const durationValue = duration.trim() === "" ? null : Number.parseInt(duration, 10);
     const effortValue = effort.trim() === "" ? null : Number.parseInt(effort, 10);
     if (effortValue !== null && (effortValue < 1 || effortValue > 10)) { onToast("El esfuerzo percibido debe estar entre 1 y 10."); return; }
+    const sets: { exercise_id: string; set_number: number; reps: number; weight_kg: number | null }[] = [];
+    for (const draft of setDrafts) {
+      const repsText = draft.reps.trim();
+      if (!/^\d{1,3}$/.test(repsText) || Number(repsText) < 1 || Number(repsText) > 100) { onToast(`Serie ${draft.setNumber}: las repeticiones deben ser un entero entre 1 y 100.`); return; }
+      const weightText = draft.weight.trim().replace(",", ".");
+      if (weightText !== "" && (!/^\d{1,4}(\.\d{1,2})?$/.test(weightText) || Number(weightText) > 1000)) { onToast(`Serie ${draft.setNumber}: el peso debe estar entre 0 y 1000 kg.`); return; }
+      sets.push({ exercise_id: draft.exerciseId, set_number: draft.setNumber, reps: Number(repsText), weight_kg: weightText === "" ? null : Number(weightText) });
+    }
     setBusy(true);
     try {
       const response = await fetch(`/api/admin/routines/assignments/${assignmentId}/workouts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ performed_at: performedAt, duration_minutes: durationValue, perceived_effort: effortValue, notes: workoutNotes.trim() || null }),
+        body: JSON.stringify({ performed_at: performedAt, duration_minutes: durationValue, perceived_effort: effortValue, notes: workoutNotes.trim() || null, sets }),
       });
       if (response.status === 401) { onUnauthorized(); return; }
       const payload = await response.json().catch(() => ({})) as { detail?: string };
       if (!response.ok) { onToast(payload.detail || "No se pudo registrar el entrenamiento."); return; }
-      setDuration(""); setEffort(""); setWorkoutNotes("");
+      setDuration(""); setEffort(""); setWorkoutNotes(""); setSetDrafts([]);
       setRefresh((value) => value + 1);
       onChanged();
       onToast("Entrenamiento registrado.");
@@ -7851,6 +7911,29 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
                 <label className="form-field"><span>Esfuerzo (1-10)</span><input value={effort} inputMode="numeric" placeholder="Opcional" onChange={(event) => setEffort(event.target.value)} /></label>
                 <label className="form-field inline-grow"><span>Notas</span><input value={workoutNotes} placeholder="Opcional" onChange={(event) => setWorkoutNotes(event.target.value)} /></label>
                 <button type="submit" className="button button-primary" disabled={busy}><Plus size={16} />Registrar</button>
+                <div className="workout-set-editor">
+                  <p className="workout-set-title">Series (opcional)</p>
+                  <p className="panel-hint">Repeticiones y peso por serie; se guardan con el entrenamiento.</p>
+                  {detail.plan.map((line) => {
+                    const drafts = setDrafts.filter((draft) => draft.exerciseId === line.exercise_id);
+                    return (
+                      <div className="workout-set-group" key={line.id}>
+                        <div className="workout-set-head">
+                          <strong>{line.exercise_name}</strong>
+                          <button type="button" className="text-button" onClick={() => addSetDraft(line)}>+ Añadir serie</button>
+                        </div>
+                        {drafts.map((draft) => (
+                          <div className="workout-set-line" key={draft.key}>
+                            <span className="workout-set-number">S{draft.setNumber}</span>
+                            <label className="workout-set-field"><span>Reps</span><input value={draft.reps} inputMode="numeric" aria-label={`Repeticiones de la serie ${draft.setNumber} de ${line.exercise_name}`} onChange={(event) => updateSetDraft(draft.key, "reps", event.target.value)} /></label>
+                            <label className="workout-set-field"><span>kg</span><input value={draft.weight} inputMode="decimal" placeholder="—" aria-label={`Peso de la serie ${draft.setNumber} de ${line.exercise_name}`} onChange={(event) => updateSetDraft(draft.key, "weight", event.target.value)} /></label>
+                            <button type="button" className="text-button" onClick={() => removeSetDraft(draft.key)}>Quitar</button>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
               </form>
             )}
             {workouts.length === 0 ? <p className="panel-hint">Sin entrenamientos registrados.</p> : (
@@ -7858,7 +7941,10 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
                 {workouts.map((workout) => (
                   <li className="workout-row" key={workout.id}>
                     <span className="workout-date"><strong>{formatDateOnly(workout.performed_at)}</strong><small>{workout.duration_minutes ? `${workout.duration_minutes} min` : "sin duración"}{workout.perceived_effort ? ` · esfuerzo ${workout.perceived_effort}/10` : ""} · {recordOriginLabels[workout.origin]}</small></span>
-                    <span className="workout-notes">{workout.notes ?? "—"}</span>
+                    <span className="workout-notes">
+                      {workout.notes ?? "—"}
+                      {workout.sets.length > 0 && <small className="workout-set-summary">{summarizeWorkoutSets(workout.sets)}</small>}
+                    </span>
                     <span className={`status-badge ${workoutStatusBadges[workout.status]}`}><i />{workoutStatusLabels[workout.status]}</span>
                     {canManage && workout.status === "logged" && <button type="button" className="text-button" onClick={() => reviewWorkout(workout)}>Revisar</button>}
                   </li>

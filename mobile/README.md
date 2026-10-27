@@ -1,6 +1,6 @@
 # App móvil del socio
 
-Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso** y los **pagos y el estado de cuenta** (solo lectura); no incluye todavía pago en línea ni facturas.
+Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, y los **pagos y el estado de cuenta** (solo lectura); no incluye todavía pago en línea ni facturas.
 
 ## Alcance implementado
 
@@ -25,7 +25,9 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
   - últimas medidas corporales;
   - rutinas asignadas (estado, entrenador, versión, frecuencia y entrenamientos registrados);
   - detalle de cada rutina con el plan de la versión asignada (series, repeticiones, descanso y carga) y el historial de entrenamientos;
-  - aviso de que el registro de entrenamientos, medidas y fotos se hace con el entrenador o en recepción;
+  - formulario para registrar un entrenamiento (fecha, duración, esfuerzo y notas) con un editor de **series opcional** por ejercicio del plan: repeticiones y peso por serie, con precarga de las repeticiones del plan y validación local de 1–100 repeticiones, 0–1000 kg, 60 series por entrenamiento y 20 por ejercicio;
+  - historial de entrenamientos agrupado por ejercicio («8 × 24 kg · 8 × 26 kg») con su origen y estado;
+  - aviso de que las metas y las fotos de progreso se gestionan con el entrenador o en recepción;
   - actualización manual con deslizamiento.
 - Pantalla de pagos y estado de cuenta con:
   - saldo de la cuenta, con aviso para saldo a favor o deuda, conteo de cargos y abonos, importe pagado en membresías y fecha de corte;
@@ -94,7 +96,7 @@ Las reservas usan el origen `app`; el backend reutiliza las reglas del módulo d
 2. `GET /member/routines/{assignment_id}` devuelve el plan de la **versión fijada al asignar**, el objetivo, las notas y los últimos 10 entrenamientos. Una asignación de otro socio responde `404`.
 3. `GET /member/progress` devuelve entrenamientos totales y de los últimos 30 días, última medición, histórico de medidas y metas con su avance.
 4. La app agrupa ambos resultados en una pantalla de resumen y abre el detalle de cada rutina.
-5. `POST /member/routines/{assignment_id}/workouts` registra un entrenamiento (fecha, duración, esfuerzo y notas) en una asignación **activa**; queda como «Por revisar» hasta que el entrenador lo valida.
+5. `POST /member/routines/{assignment_id}/workouts` registra un entrenamiento (fecha, duración, esfuerzo y notas) en una asignación **activa**; queda como «Por revisar» hasta que el entrenador lo valida. Acepta `sets` con las series ejecutadas (`exercise_id`, `set_number`, `reps`, `weight_kg` opcional), validadas contra el plan de la versión asignada.
 6. `POST /member/progress/measurements` registra peso, cintura, pecho y grasa (al menos uno) con notas; es append-only y actualiza las metas al momento.
 
 El socio **no** edita ni borra registros, ni captura metas o fotos desde la app: eso sigue siendo exclusivo del panel del personal (`routines.manage`). Editar la plantilla de una rutina no cambia el plan que el socio ya tiene asignado.
@@ -132,14 +134,14 @@ mobile/
         ├── HomeScreen.tsx  # perfil, acceso, membresía y saldo
         ├── ClassesScreen.tsx # cartelera, reserva, lista de espera y cancelación
         ├── RoutinesScreen.tsx # resumen de progreso, metas, medidas (con alta) y rutinas asignadas
-        ├── RoutineDetailScreen.tsx # plan, historial y registro de entrenamientos
+        ├── RoutineDetailScreen.tsx # plan, editor de series, historial y registro de entrenamientos
         └── PaymentsScreen.tsx # pagos de membresía y estado de cuenta (solo lectura)
 ```
 
 ## Pendientes
 
-- Metas y edición/borrado de registros desde la app (hoy el socio solo captura entrenamientos y medidas; su corrección se hace en recepción).
-- Detalle por serie (series, peso y esfuerzo por ejercicio) en el historial de entrenamientos.
+- Metas y edición/borrado de registros desde la app (hoy el socio captura entrenamientos con sus series y medidas; su corrección se hace en recepción).
+- Series objetivo por sesión, series por tiempo o distancia y métricas de volumen por ejercicio.
 - Aviso al entrenador de un entrenamiento pendiente de revisión y al socio cuando se revisa.
 - Fotos de progreso en la app, con consentimiento y política de acceso.
 - Pagos en línea, descarga de facturas y detalle de la venta detrás de cada cargo (hoy solo se consulta el movimiento).

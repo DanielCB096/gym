@@ -120,6 +120,22 @@ export type MemberRoutineLine = {
   notes: string | null;
 };
 
+export type MemberWorkoutSet = {
+  exercise_id: string;
+  exercise_name: string;
+  position: number;
+  set_number: number;
+  reps: number;
+  weight_kg: number | null;
+};
+
+export type MemberWorkoutSetInput = {
+  exercise_id: string;
+  set_number: number;
+  reps: number;
+  weight_kg?: number | null;
+};
+
 export type MemberWorkout = {
   id: string;
   assignment_id: string;
@@ -134,6 +150,7 @@ export type MemberWorkout = {
   origin: string;
   reviewed_at: string | null;
   created_at: string;
+  sets: MemberWorkoutSet[];
 };
 
 export type MemberWorkoutInput = {
@@ -141,6 +158,7 @@ export type MemberWorkoutInput = {
   duration_minutes?: number | null;
   perceived_effort?: number | null;
   notes?: string | null;
+  sets?: MemberWorkoutSetInput[];
 };
 
 export type MemberRoutineDetail = {

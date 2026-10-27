@@ -575,6 +575,20 @@ th.sortable-header .sort-indicator { font-size: 8px; color: #23509a; }
 .workout-date strong { display: block; font-size: 11px; }
 .workout-date small, .workout-notes { color: #9aa49d; font-size: 9px; }
 .workout-notes { white-space: normal; }
+.workout-set-summary { display: block; margin-top: 2px; color: #7c887f; font-size: 9px; line-height: 1.4; }
+
+.workout-set-editor { flex: 1 0 100%; width: 100%; padding-top: 6px; border-top: 1px dashed #e6ebe7; }
+.workout-set-title { margin: 2px 0 2px; color: #6d7a70; font-size: 9px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; }
+.workout-set-editor .panel-hint { margin: 0 0 6px; }
+.workout-set-group { padding: 7px 0; border-top: 1px solid #eef2ee; }
+.workout-set-group:first-of-type { border-top: 0; padding-top: 0; }
+.workout-set-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.workout-set-head strong { font-size: 10px; }
+.workout-set-line { display: flex; align-items: flex-end; gap: 8px; margin-top: 5px; }
+.workout-set-number { padding-bottom: 9px; color: #6d7a70; font: 700 9px "Space Grotesk", sans-serif; }
+.workout-set-field { display: flex; flex-direction: column; gap: 2px; }
+.workout-set-field span { color: #97a19a; font-size: 8px; font-weight: 700; text-transform: uppercase; }
+.workout-set-field input { width: 64px; min-height: 30px; padding: 0 7px; border: 1px solid #dfe6e0; border-radius: 5px; color: var(--ink); background: #fff; font-size: 11px; }
 
 .goal-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .goal-row { padding: 10px 12px; border: 1px solid #e6ebe7; border-radius: 6px; background: #fff; }

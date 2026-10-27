@@ -10,7 +10,9 @@ This module covers the trainer side of the routine lifecycle:
   exact plan the member trained;
 * ``routine_assignments`` bind a routine (and the version active at the time)
   to a member, with dates, weekly frequency and status;
-* ``workout_logs`` record a performed session against an assignment;
+* ``workout_logs`` record a performed session against an assignment, and
+  ``workout_sets`` keep the optional per-set detail (exercise, repetitions and
+  weight) of that session;
 * ``body_measurements`` store the member's weight and girths as an
   append-only history (the spec forbids replacing an earlier measurement);
 * ``member_goals`` track a target for one measurement against a frozen
@@ -19,8 +21,8 @@ This module covers the trainer side of the routine lifecycle:
   bytes are stored under a random key in the directory configured by
   ``PROGRESS_PHOTOS_DIR`` (never inside the database).
 
-Workout detail per set (``DetalleEntrenamiento``) and trainer-member messaging
-are deliberately out of scope; they are tracked in ``docs/deuda-tecnica.md``.
+Trainer-member messaging is deliberately out of scope; it is tracked in
+``docs/deuda-tecnica.md``.
 """
 
 from datetime import date, datetime, timezone
@@ -57,6 +59,12 @@ MIN_WEEKLY_FREQUENCY = 1
 MAX_WEEKLY_FREQUENCY = 7
 MIN_EFFORT = 1
 MAX_EFFORT = 10
+MAX_WORKOUT_SETS = 60
+MIN_SET_NUMBER = 1
+MAX_SET_NUMBER = 20
+MIN_SET_REPS = 1
+MAX_SET_REPS = 100
+MAX_SET_WEIGHT_KG = 1000
 
 
 def utc_now() -> datetime:
@@ -374,6 +382,46 @@ class WorkoutLog(SQLModel, table=True):
             server_default=func.now(),
             onupdate=func.now(),
         ),
+    )
+
+
+class WorkoutSet(SQLModel, table=True):
+    """One performed set of an exercise inside a workout log."""
+
+    __tablename__ = "workout_sets"
+    __table_args__ = (
+        CheckConstraint("set_number > 0", name="ck_workout_sets_number_positive"),
+        CheckConstraint(
+            f"reps >= {MIN_SET_REPS} AND reps <= {MAX_SET_REPS}",
+            name="ck_workout_sets_reps_range",
+        ),
+        CheckConstraint(
+            f"weight_kg IS NULL OR (weight_kg >= 0 AND weight_kg <= {MAX_SET_WEIGHT_KG})",
+            name="ck_workout_sets_weight_range",
+        ),
+        Index("uq_workout_sets_line", "workout_id", "exercise_id", "set_number", unique=True),
+        Index("ix_workout_sets_workout", "workout_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    workout_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("workout_logs.id", ondelete="CASCADE"),
+            nullable=False,
+        )
+    )
+    exercise_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True), ForeignKey("exercises.id", ondelete="RESTRICT"), nullable=False
+        )
+    )
+    set_number: int = Field(sa_type=Integer)
+    reps: int = Field(sa_type=Integer)
+    weight_kg: float | None = Field(default=None, sa_column=Column(Numeric(6, 2)))
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
 
 

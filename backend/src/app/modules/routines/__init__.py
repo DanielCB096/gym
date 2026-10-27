@@ -8,6 +8,7 @@ from app.modules.routines.models import (
     RoutineItem,
     RoutineRevision,
     WorkoutLog,
+    WorkoutSet,
 )
 from app.modules.routines.service import (
     AssignmentDetail,
@@ -55,6 +56,8 @@ from app.modules.routines.service import (
     UNSET,
     WorkoutItem,
     WorkoutNotFound,
+    WorkoutSetInput,
+    WorkoutSetItem,
     archive_routine,
     cancel_assignment,
     cancel_member_goal,
@@ -141,6 +144,9 @@ __all__ = [
     "WorkoutItem",
     "WorkoutLog",
     "WorkoutNotFound",
+    "WorkoutSet",
+    "WorkoutSetInput",
+    "WorkoutSetItem",
     "archive_routine",
     "cancel_assignment",
     "cancel_member_goal",

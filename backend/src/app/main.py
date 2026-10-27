@@ -109,6 +109,7 @@ from app.modules.routines import (
     UNSET as ROUTINES_UNSET,
     WorkoutItem,
     WorkoutNotFound,
+    WorkoutSetInput,
     archive_routine,
     cancel_assignment,
     cancel_member_goal,
@@ -1575,6 +1576,15 @@ class CreateAssignmentRequest(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
 
 
+class WorkoutSetResponse(BaseModel):
+    exercise_id: UUID
+    exercise_name: str
+    position: int
+    set_number: int
+    reps: int
+    weight_kg: float | None
+
+
 class WorkoutResponse(BaseModel):
     id: UUID
     assignment_id: UUID
@@ -1589,6 +1599,14 @@ class WorkoutResponse(BaseModel):
     origin: str
     reviewed_at: datetime | None
     created_at: datetime
+    sets: list[WorkoutSetResponse]
+
+
+class WorkoutSetRequest(BaseModel):
+    exercise_id: UUID
+    set_number: int = Field(ge=1, le=20)
+    reps: int = Field(ge=1, le=100)
+    weight_kg: float | None = Field(default=None, ge=0, le=1000)
 
 
 class LogWorkoutRequest(BaseModel):
@@ -1596,6 +1614,7 @@ class LogWorkoutRequest(BaseModel):
     duration_minutes: int | None = Field(default=None, ge=0, le=600)
     perceived_effort: int | None = Field(default=None, ge=1, le=10)
     notes: str | None = Field(default=None, max_length=2000)
+    sets: list[WorkoutSetRequest] = Field(default_factory=list, max_length=60)
 
 
 class MeasurementResponse(BaseModel):
@@ -2823,6 +2842,7 @@ def member_log_workout(
             duration_minutes=request.duration_minutes,
             perceived_effort=request.perceived_effort,
             notes=request.notes,
+            sets=_workout_set_inputs(request.sets),
         )
     except MemberPortalError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
@@ -5257,7 +5277,30 @@ def _workout_response(item: WorkoutItem) -> WorkoutResponse:
         origin=item.origin,
         reviewed_at=item.reviewed_at,
         created_at=item.created_at,
+        sets=[
+            WorkoutSetResponse(
+                exercise_id=workout_set.exercise_id,
+                exercise_name=workout_set.exercise_name,
+                position=workout_set.position,
+                set_number=workout_set.set_number,
+                reps=workout_set.reps,
+                weight_kg=workout_set.weight_kg,
+            )
+            for workout_set in item.sets
+        ],
     )
+
+
+def _workout_set_inputs(sets: list[WorkoutSetRequest]) -> list[WorkoutSetInput]:
+    return [
+        WorkoutSetInput(
+            exercise_id=item.exercise_id,
+            set_number=item.set_number,
+            reps=item.reps,
+            weight_kg=item.weight_kg,
+        )
+        for item in sets
+    ]
 
 
 def _measurement_response(item: MeasurementItem) -> MeasurementResponse:
@@ -5591,6 +5634,7 @@ def log_workout_endpoint(
             duration_minutes=request.duration_minutes,
             perceived_effort=request.perceived_effort,
             notes=request.notes,
+            sets=_workout_set_inputs(request.sets),
             actor_id=principal.user_id,
         )
     except RoutinesError as error:

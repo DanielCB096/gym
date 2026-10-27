@@ -14,7 +14,7 @@ import { ApiError, getMemberRoutine, logMemberWorkout } from "../api";
 import { describeError } from "../errors";
 import { assignmentStatusLabel, formatDay } from "../format";
 import { colors, radius, sharedStyles, spacing } from "../theme";
-import type { MemberRoutineDetail } from "../types";
+import type { MemberRoutineDetail, MemberWorkoutSet, MemberWorkoutSetInput } from "../types";
 
 type Props = {
   token: string;
@@ -22,6 +22,32 @@ type Props = {
   onBack: () => void;
   onSessionExpired: () => void;
 };
+
+type SetDraft = {
+  key: string;
+  exerciseId: string;
+  setNumber: number;
+  reps: string;
+  weight: string;
+};
+
+const MAX_DRAFT_SETS = 60;
+const MAX_DRAFT_SETS_PER_EXERCISE = 20;
+
+function groupedSetLines(sets: MemberWorkoutSet[]): { name: string; detail: string }[] {
+  const groups: { name: string; detail: string }[] = [];
+  for (const item of sets) {
+    const weight = item.weight_kg !== null ? ` × ${item.weight_kg} kg` : "";
+    const label = `${item.reps}${weight}`;
+    const last = groups[groups.length - 1];
+    if (last && last.name === item.exercise_name) {
+      last.detail = `${last.detail} · ${label}`;
+    } else {
+      groups.push({ name: item.exercise_name, detail: label });
+    }
+  }
+  return groups;
+}
 
 function todayIso(): string {
   const now = new Date();
@@ -53,6 +79,7 @@ export function RoutineDetailScreen({ token, assignmentId, onBack, onSessionExpi
   const [duration, setDuration] = useState("");
   const [effort, setEffort] = useState("");
   const [workoutNotes, setWorkoutNotes] = useState("");
+  const [setDrafts, setSetDrafts] = useState<SetDraft[]>([]);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
@@ -83,6 +110,40 @@ export function RoutineDetailScreen({ token, assignmentId, onBack, onSessionExpi
     void load("initial");
   }, [load]);
 
+  const addSetDraft = (line: MemberRoutineDetail["plan"][number]) => {
+    const existing = setDrafts.filter((draft) => draft.exerciseId === line.exercise_id);
+    if (setDrafts.length >= MAX_DRAFT_SETS) {
+      setFormError("Un entrenamiento admite hasta 60 series.");
+      return;
+    }
+    if (existing.length >= MAX_DRAFT_SETS_PER_EXERCISE) {
+      setFormError("Cada ejercicio admite hasta 20 series por entrenamiento.");
+      return;
+    }
+    const nextNumber = existing.reduce((max, draft) => Math.max(max, draft.setNumber), 0) + 1;
+    setFormError(null);
+    setSetDrafts([
+      ...setDrafts,
+      {
+        key: `${line.exercise_id}-${nextNumber}-${setDrafts.length}`,
+        exerciseId: line.exercise_id,
+        setNumber: nextNumber,
+        reps: /^\d+$/.test(line.reps) ? line.reps : "",
+        weight: "",
+      },
+    ]);
+  };
+
+  const updateSetDraft = (key: string, field: "reps" | "weight", value: string) => {
+    setSetDrafts((current) =>
+      current.map((draft) => (draft.key === key ? { ...draft, [field]: value } : draft)),
+    );
+  };
+
+  const removeSetDraft = (key: string) => {
+    setSetDrafts((current) => current.filter((draft) => draft.key !== key));
+  };
+
   const submitWorkout = async () => {
     const performed = workoutDate.trim();
     if (!validIsoDate(performed)) {
@@ -111,6 +172,30 @@ export function RoutineDetailScreen({ token, assignmentId, onBack, onSessionExpi
       setFormError("El esfuerzo debe ser un número entero del 1 al 10.");
       return;
     }
+    const setsPayload: MemberWorkoutSetInput[] = [];
+    for (const draft of setDrafts) {
+      const repsText = draft.reps.trim();
+      if (!/^\d{1,3}$/.test(repsText) || Number(repsText) < 1 || Number(repsText) > 100) {
+        setFormError(
+          `Serie ${draft.setNumber}: las repeticiones deben ser un entero entre 1 y 100.`,
+        );
+        return;
+      }
+      const weightText = draft.weight.trim().replace(",", ".");
+      if (
+        weightText !== "" &&
+        (!/^\d{1,4}(\.\d{1,2})?$/.test(weightText) || Number(weightText) > 1000)
+      ) {
+        setFormError(`Serie ${draft.setNumber}: el peso debe estar entre 0 y 1000 kg.`);
+        return;
+      }
+      setsPayload.push({
+        exercise_id: draft.exerciseId,
+        set_number: draft.setNumber,
+        reps: Number(repsText),
+        weight_kg: weightText === "" ? null : Number(weightText),
+      });
+    }
 
     setSaving(true);
     setFormError(null);
@@ -121,11 +206,13 @@ export function RoutineDetailScreen({ token, assignmentId, onBack, onSessionExpi
         duration_minutes: parsedDuration === "" ? null : Number(parsedDuration),
         perceived_effort: parsedEffort === "" ? null : Number(parsedEffort),
         notes: workoutNotes.trim() === "" ? null : workoutNotes.trim(),
+        sets: setsPayload,
       });
       setWorkoutDate(todayIso());
       setDuration("");
       setEffort("");
       setWorkoutNotes("");
+      setSetDrafts([]);
       setFormSuccess("Entrenamiento registrado. Tu entrenador lo revisará pronto.");
       await load("refresh");
     } catch (saveError) {
@@ -299,6 +386,70 @@ export function RoutineDetailScreen({ token, assignmentId, onBack, onSessionExpi
                   style={[sharedStyles.input, styles.notesInput]}
                   value={workoutNotes}
                 />
+                <View style={styles.setEditor}>
+                  <Text style={styles.fieldLabel}>Series (opcional)</Text>
+                  <Text style={sharedStyles.hint}>
+                    Anota las repeticiones y el peso de cada serie. Se guardan junto
+                    con el entrenamiento para que tu entrenador las revise.
+                  </Text>
+                  {detail.plan.map((line) => {
+                    const drafts = setDrafts.filter(
+                      (draft) => draft.exerciseId === line.exercise_id,
+                    );
+                    return (
+                      <View key={line.id} style={styles.setExercise}>
+                        <Text style={styles.setExerciseName}>{line.exercise_name}</Text>
+                        {drafts.map((draft) => (
+                          <View key={draft.key} style={styles.setRow}>
+                            <Text style={styles.setNumber}>S{draft.setNumber}</Text>
+                            <TextInput
+                              accessibilityLabel={`Repeticiones de la serie ${draft.setNumber} de ${line.exercise_name}`}
+                              keyboardType="number-pad"
+                              maxLength={3}
+                              onChangeText={(value) =>
+                                updateSetDraft(draft.key, "reps", value)
+                              }
+                              placeholder="Reps"
+                              placeholderTextColor={colors.textMuted}
+                              style={[sharedStyles.input, styles.setInput]}
+                              value={draft.reps}
+                            />
+                            <TextInput
+                              accessibilityLabel={`Peso de la serie ${draft.setNumber} de ${line.exercise_name}`}
+                              keyboardType="decimal-pad"
+                              maxLength={6}
+                              onChangeText={(value) =>
+                                updateSetDraft(draft.key, "weight", value)
+                              }
+                              placeholder="kg"
+                              placeholderTextColor={colors.textMuted}
+                              style={[sharedStyles.input, styles.setInput]}
+                              value={draft.weight}
+                            />
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel={`Quitar serie ${draft.setNumber} de ${line.exercise_name}`}
+                              hitSlop={8}
+                              onPress={() => removeSetDraft(draft.key)}
+                              style={styles.removeSet}
+                            >
+                              <Text style={styles.removeSetText}>Quitar</Text>
+                            </Pressable>
+                          </View>
+                        ))}
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Añadir serie de ${line.exercise_name}`}
+                          hitSlop={8}
+                          onPress={() => addSetDraft(line)}
+                          style={styles.addSet}
+                        >
+                          <Text style={styles.addSetText}>+ Añadir serie</Text>
+                        </Pressable>
+                      </View>
+                    );
+                  })}
+                </View>
                 {formError ? <Text style={sharedStyles.error}>{formError}</Text> : null}
                 {formSuccess ? <Text style={styles.success}>{formSuccess}</Text> : null}
                 <Pressable
@@ -348,6 +499,16 @@ export function RoutineDetailScreen({ token, assignmentId, onBack, onSessionExpi
                   </Text>
                   {workout.notes ? (
                     <Text style={sharedStyles.hint}>{workout.notes}</Text>
+                  ) : null}
+                  {workout.sets.length > 0 ? (
+                    <View style={styles.workoutSets}>
+                      {groupedSetLines(workout.sets).map((group) => (
+                        <Text key={group.name} style={styles.workoutSetLine}>
+                          <Text style={styles.workoutSetName}>{group.name}: </Text>
+                          {group.detail}
+                        </Text>
+                      ))}
+                    </View>
                   ) : null}
                 </View>
               ))
@@ -477,6 +638,68 @@ const styles = StyleSheet.create({
   notesInput: {
     minHeight: 88,
     textAlignVertical: "top",
+  },
+  setEditor: {
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: spacing.sm,
+    paddingTop: spacing.sm,
+  },
+  setExercise: {
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.md,
+    gap: spacing.xs,
+    padding: spacing.sm,
+  },
+  setExerciseName: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  setRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: spacing.xs,
+  },
+  setNumber: {
+    color: colors.accent,
+    fontSize: 13,
+    fontWeight: "800",
+    width: 26,
+  },
+  setInput: {
+    flex: 1,
+    minHeight: 42,
+    paddingVertical: spacing.xs,
+  },
+  removeSet: {
+    paddingHorizontal: spacing.xs,
+  },
+  removeSetText: {
+    color: colors.danger,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  addSet: {
+    alignSelf: "flex-start",
+    paddingVertical: spacing.xs,
+  },
+  addSetText: {
+    color: colors.accent,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  workoutSets: {
+    gap: 2,
+  },
+  workoutSetLine: {
+    color: colors.textMuted,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  workoutSetName: {
+    color: colors.text,
+    fontWeight: "700",
   },
   success: {
     color: colors.accent,
