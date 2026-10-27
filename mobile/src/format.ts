@@ -46,6 +46,40 @@ const BLOCKED_REASON_LABELS: Record<string, string> = {
   started: "La clase ya comenzó",
 };
 
+const ASSIGNMENT_LABELS: Record<string, string> = {
+  active: "Activa",
+  completed: "Completada",
+  cancelled: "Cancelada",
+};
+
+const GOAL_METRIC_LABELS: Record<string, string> = {
+  weight_kg: "Peso",
+  waist_cm: "Cintura",
+  chest_cm: "Pecho",
+  body_fat_percent: "Grasa corporal",
+};
+
+const GOAL_METRIC_UNITS: Record<string, string> = {
+  weight_kg: "kg",
+  waist_cm: "cm",
+  chest_cm: "cm",
+  body_fat_percent: "%",
+};
+
+const GOAL_STATUS_LABELS: Record<string, string> = {
+  active: "En curso",
+  achieved: "Cumplida",
+  cancelled: "Cancelada",
+};
+
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  cash: "Efectivo",
+  card: "Tarjeta",
+  transfer: "Transferencia",
+  spei: "SPEI",
+  account: "Cuenta",
+};
+
 export function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -62,6 +96,18 @@ export function formatDateTime(value: string): string {
   const hours = String(date.getHours()).padStart(2, "0");
   const minutes = String(date.getMinutes()).padStart(2, "0");
   return `${WEEKDAYS[date.getDay()]} ${date.getDate()} ${MONTHS[date.getMonth()]} · ${hours}:${minutes}`;
+}
+
+export function formatDay(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!match) {
+    return formatDate(value);
+  }
+  const month = MONTHS[Number(match[2]) - 1];
+  if (!month) {
+    return formatDate(value);
+  }
+  return `${Number(match[3])} ${month} ${match[1]}`;
 }
 
 export function formatMoney(cents: number): string {
@@ -86,4 +132,38 @@ export function blockedReasonLabel(reason: string | null): string | null {
     return null;
   }
   return BLOCKED_REASON_LABELS[reason] ?? reason;
+}
+
+export function assignmentStatusLabel(status: string): string {
+  return ASSIGNMENT_LABELS[status] ?? status;
+}
+
+export function goalMetricLabel(metric: string): string {
+  return GOAL_METRIC_LABELS[metric] ?? metric;
+}
+
+export function goalStatusLabel(status: string): string {
+  return GOAL_STATUS_LABELS[status] ?? status;
+}
+
+export function formatMetric(metric: string, value: number | null): string {
+  if (value === null) {
+    return "—";
+  }
+  const unit = GOAL_METRIC_UNITS[metric] ?? "";
+  return unit ? `${value} ${unit}` : String(value);
+}
+
+export function paymentMethodLabel(method: string | null): string {
+  if (!method) {
+    return "—";
+  }
+  return PAYMENT_METHOD_LABELS[method] ?? method;
+}
+
+export function formatSignedMoney(cents: number): string {
+  if (cents === 0) {
+    return formatMoney(0);
+  }
+  return `${cents > 0 ? "+" : "−"}${formatMoney(Math.abs(cents))}`;
 }

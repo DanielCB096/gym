@@ -354,6 +354,7 @@ class WorkoutItem:
     perceived_effort: int | None
     notes: str | None
     status: str
+    origin: str
     reviewed_at: datetime | None
     created_at: datetime
 
@@ -368,6 +369,7 @@ class MeasurementItem:
     chest_cm: float | None
     body_fat_percent: float | None
     notes: str | None
+    origin: str
     created_at: datetime
 
 
@@ -1382,6 +1384,7 @@ def _workout_item(workout: WorkoutLog) -> WorkoutItem:
         perceived_effort=workout.perceived_effort,
         notes=workout.notes,
         status=workout.status,
+        origin=workout.origin,
         reviewed_at=workout.reviewed_at,
         created_at=workout.created_at,
     )
@@ -1396,6 +1399,7 @@ def log_workout(
     perceived_effort: int | None = None,
     notes: str | None = None,
     actor_id: UUID | None = None,
+    origin: str = "staff",
     now: datetime | None = None,
 ) -> WorkoutItem:
     assignment = session.get(RoutineAssignment, assignment_id)
@@ -1423,6 +1427,7 @@ def log_workout(
         perceived_effort=perceived_effort,
         notes=(notes or "").strip() or None,
         status="logged",
+        origin=origin,
         logged_by=actor_id,
         created_at=occurred,
         updated_at=occurred,
@@ -1490,6 +1495,7 @@ def _measurement_item(measurement: BodyMeasurement) -> MeasurementItem:
         chest_cm=_as_float(measurement.chest_cm),
         body_fat_percent=_as_float(measurement.body_fat_percent),
         notes=measurement.notes,
+        origin=measurement.origin,
         created_at=measurement.created_at,
     )
 
@@ -1505,6 +1511,7 @@ def record_measurement(
     body_fat_percent: float | None = None,
     notes: str | None = None,
     actor_id: UUID | None = None,
+    origin: str = "staff",
     now: datetime | None = None,
 ) -> MeasurementItem:
     _require_member(session, member_id)
@@ -1530,6 +1537,7 @@ def record_measurement(
         body_fat_percent=body_fat_percent,
         notes=(notes or "").strip() or None,
         measured_by=actor_id,
+        origin=origin,
         created_at=occurred,
     )
     session.add(measurement)

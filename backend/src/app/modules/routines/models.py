@@ -308,6 +308,7 @@ class WorkoutLog(SQLModel, table=True):
     __tablename__ = "workout_logs"
     __table_args__ = (
         CheckConstraint("status IN ('logged', 'reviewed')", name="ck_workout_logs_status"),
+        CheckConstraint("origin IN ('staff', 'app')", name="ck_workout_logs_origin"),
         CheckConstraint("routine_version > 0", name="ck_workout_logs_version_positive"),
         CheckConstraint(
             "perceived_effort IS NULL OR (perceived_effort >= 1 AND perceived_effort <= 10)",
@@ -348,6 +349,10 @@ class WorkoutLog(SQLModel, table=True):
         default="logged",
         sa_column=Column(String(16), nullable=False, server_default=text("'logged'")),
     )
+    origin: str = Field(
+        default="staff",
+        sa_column=Column(String(8), nullable=False, server_default=text("'staff'")),
+    )
     logged_by: UUID | None = Field(
         default=None,
         sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="RESTRICT")),
@@ -384,6 +389,7 @@ class BodyMeasurement(SQLModel, table=True):
             "body_fat_percent IS NULL OR (body_fat_percent >= 0 AND body_fat_percent <= 100)",
             name="ck_body_measurements_fat_range",
         ),
+        CheckConstraint("origin IN ('staff', 'app')", name="ck_body_measurements_origin"),
         Index("ix_body_measurements_member_date", "member_id", "measured_at"),
     )
 
@@ -402,6 +408,10 @@ class BodyMeasurement(SQLModel, table=True):
     measured_by: UUID | None = Field(
         default=None,
         sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="RESTRICT")),
+    )
+    origin: str = Field(
+        default="staff",
+        sa_column=Column(String(8), nullable=False, server_default=text("'staff'")),
     )
     created_at: datetime = Field(
         default_factory=utc_now,

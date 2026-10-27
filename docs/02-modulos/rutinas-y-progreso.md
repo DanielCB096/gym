@@ -20,7 +20,7 @@ Este módulo cubre la creación y asignación de rutinas por parte del entrenado
 | Actor | Objetivo | Permisos clave |
 |---|---|---|
 | Entrenador | crear, editar y asignar rutinas | gestionar biblioteca, rutinas y avances de su cliente |
-| Socio | seguir su progreso | ver rutina, registrar entrenamientos y revisar metas |
+| Socio | seguir su progreso | consultar en la app su rutina, entrenamientos, medidas y metas; registrar sus entrenamientos (pendientes de revisión) y medidas |
 | Gerente | supervisar desempeño | consultar avances generales y asignaciones |
 | Dueño / administrador | configuración global | activar plantillas y políticas de rutinas |
 
@@ -34,10 +34,11 @@ Este módulo cubre la creación y asignación de rutinas por parte del entrenado
 5. El sistema guarda la versión de la rutina y permite seguimiento posterior.
 
 ### Flujo alterno: seguimiento del progreso
-1. El socio realiza entrenamiento y registra la sesión.
-2. El sistema guarda ejercicio, series, peso, esfuerzo y observaciones.
-3. El entrenador puede revisar el avance y ajustar la rutina si es necesario.
-4. Se compara la progresión con las metas definidas por el socio.
+1. El socio realiza el entrenamiento y lo registra desde la app (fecha, duración, esfuerzo y notas) o el entrenador lo captura en el panel.
+2. El sistema guarda el resumen, marca el origen (`app`/`staff`) y deja el entrenamiento pendiente de revisión.
+3. El entrenador revisa el entrenamiento y ajusta la rutina si es necesario.
+4. El socio registra sus medidas desde la app; el sistema las conserva como histórico y actualiza las metas.
+5. Se compara la progresión con las metas definidas.
 
 ### Flujo de cambio de rutina
 1. El entrenador revisa el progreso semanal.
@@ -72,6 +73,11 @@ Este módulo cubre la creación y asignación de rutinas por parte del entrenado
 - Componentes: mensajes, seguimiento de observaciones, recordatorios del entrenador
 - Estados: sin mensajes, nuevo, respondido
 
+### 6. Rutinas y progreso en la app del socio
+- Objetivo: consultar la rutina asignada, el avance y mantener al día el historial sin pasar por recepción
+- Componentes: resumen de entrenamientos, metas con avance, últimas medidas, tarjeta de alta de medidas, rutinas asignadas y detalle con el plan de la versión fija, historial y formulario de entrenamiento
+- Estados: cargando, vacío (sin asignaciones o sin medidas), error, sesión expirada; el formulario de entrenamiento solo aparece en asignaciones activas; cada registro muestra su origen («Desde tu app»/«Desde recepción») y los entrenamientos el estado «Por revisar»/«Revisado»
+
 ## 5. Reglas de negocio y casos límite
 
 ### Reglas clave
@@ -80,6 +86,7 @@ Este módulo cubre la creación y asignación de rutinas por parte del entrenado
 - Las medidas son append-only: una nueva medición nunca reemplaza a la anterior. Las fotos de progreso también se conservan como histórico y solo se eliminan con una acción explícita de corrección o privacidad (metadatos y archivo).
 - Cada socio tiene como máximo una meta **activa** por medida (peso, cintura, pecho o grasa corporal); una meta cumplida o cancelada no bloquea crear otra de la misma medida.
 - La línea base de una meta se congela al crearla con la última medición disponible, o con la primera medición posterior si aún no hay ninguna. El avance se calcula contra esa línea base y la meta pasa a `achieved` en cuanto una medición alcanza el objetivo; una meta cumplida no se reabre.
+- El socio puede registrar sus propios entrenamientos (solo en una asignación activa y con fecha no futura) y sus medidas desde la app; ambos quedan con origen `app`. El entrenamiento permanece pendiente de revisión hasta que el personal lo valida y la medida se conserva como histórico y actualiza las metas. El socio no edita ni borra registros: una corrección se hace en recepción o con una captura nueva.
 - La rutina debe poder revisarse en diferentes fechas sin perder el contexto de la evolución.
 
 ### Casos límite
@@ -158,9 +165,9 @@ Este módulo cubre la creación y asignación de rutinas por parte del entrenado
 
 ## 13. Implementación actual y límites
 
-Cuarto incremento entregado (2026-10-26) con las gráficas de evolución de medidas sobre las fotos, metas y el seguimiento existente; siguen fuera de alcance la app del socio, la mensajería y las notificaciones:
+Sexto incremento entregado (2026-10-27) con el **registro de entrenamientos y medidas desde la app del socio**, sobre la consulta de rutinas y progreso del quinto; siguen fuera de alcance las metas y fotos desde la app, la edición de registros, la mensajería y las notificaciones:
 
-- **Persistencia**: siete tablas del primer incremento (`exercises`, `routines`, `routine_items`, `routine_revisions`, `routine_assignments`, `workout_logs`, `body_measurements`) creadas por la migración `20261017_0010_routines.py`, más `member_goals` creada por `20261025_0029_member_goals.py` y `progress_photos` creada por `20261025_0030_progress_photos.py`. La migración `20261017_0011_routines_permissions.py` agrega los permisos `routines.read` / `routines.manage` y los otorga a dueño, gerente y entrenador; recepción, mantenimiento y contabilidad no los tienen (sección 2).
+- **Persistencia**: siete tablas del primer incremento (`exercises`, `routines`, `routine_items`, `routine_revisions`, `routine_assignments`, `workout_logs`, `body_measurements`) creadas por la migración `20261017_0010_routines.py`, más `member_goals` creada por `20261025_0029_member_goals.py`, `progress_photos` creada por `20261025_0030_progress_photos.py` y la columna `origin` (`staff`/`app`) en `workout_logs` y `body_measurements` agregada por `20261027_0032_member_activity_origin.py`. La migración `20261017_0011_routines_permissions.py` agrega los permisos `routines.read` / `routines.manage` y los otorga a dueño, gerente y entrenador; recepción, mantenimiento y contabilidad no los tienen (sección 2).
 - **Biblioteca de ejercicios**: `POST/PATCH /admin/routines/exercises` administra nombre, grupo muscular, categoría, equipo, descripción, video e imagen. `GET /admin/routines/exercises` pagina y devuelve las facetas `muscle_groups` y `categories`; los ejercicios se desactivan (`is_active=false`) en vez de borrarse porque las rutinas los referencian.
 - **Rutina como plantilla reutilizable**: a diferencia del borrador de la sección 6 (donde `Rutina` apuntaba a un `socio_id`), la rutina **no** pertenece a un socio. Es una plantilla del entrenador que se asigna a varios socios; el vínculo con el socio vive en `routine_assignments`. Así una misma rutina sirve de base para muchas personas sin duplicarse.
 - **Versionado**: `routines.version` apunta al plan vivo. `PUT /admin/routines/{id}/items` publica la versión siguiente (`version+1`) con un juego nuevo de `routine_items`, conserva las líneas anteriores en la base y registra el motivo en `routine_revisions`. `GET /admin/routines/{id}?version=n` permite leer una versión histórica. **Ninguna asignación se modifica al publicar**: cada `routine_assignment` fija `routine_version` al crearse y el entrenamiento hereda esa versión fija, de modo que reescribir la plantilla nunca altera el historial del socio.
@@ -174,14 +181,19 @@ Cuarto incremento entregado (2026-10-26) con las gráficas de evolución de medi
 - **API**: 29 rutas bajo `/admin/routines/*` (resumen, ejercicios, rutinas con versiones, asignaciones, entrenamientos, medidas, metas, fotos y progreso), todas protegidas por `routines.read` (consulta y descarga de archivos) o `routines.manage` (escritura y eliminación).
 - **Panel web**: la vista Rutinas tiene tres pestañas. *Seguimiento* lista asignaciones con filtros y abre un detalle con el plan asignado, los entrenamientos (registro y revisión), las mediciones (registro y gráfica de evolución), las fotos de progreso (carga con ángulo, fecha y nota; galería con miniaturas de carga diferida, visor ampliado con metadatos y eliminación con confirmación), las metas (alta, edición y cancelación con avance y estados) y el resumen de progreso del socio. La gráfica de evolución se calcula en el navegador con las mediciones ya cargadas (máximo 36), permite alternar peso, cintura, pecho y grasa, dibuja la meta activa de esa medida como línea de referencia y resume el cambio desde la primera medición; con menos de dos mediciones muestra un aviso en lugar de la gráfica. *Rutinas* lista plantillas con versión, ejercicios y asignaciones activas, permite crear una rutina con su plan, editar el plan publicando una versión nueva con motivo, y archivarla. *Ejercicios* administra la biblioteca con filtros por grupo y categoría. Todo pasa por rutas BFF bajo `/api/admin/routines/*`, incluidas `/members/[memberId]/photos`, `/photos/[photoId]/file` y `/photos/[photoId]`; la descarga reenvía el tipo, el `Content-Disposition` y las cabeceras de seguridad.
 - **Datos de ejemplo**: `backend/seed_routines.py` puebla la base de vista previa (12 ejercicios, 4 rutinas —una con dos versiones—, asignaciones, entrenamientos y mediciones) y agrega metas de demostración (una activa, una cancelada y una cumplida) incluso si la base ya tenía rutinas sembradas. También siembra cuatro fotos de demostración (tres ángulos del mismo socio y una de otro) como PNG generados con fecha local al mediodía, guardados en el directorio configurado; es idempotente y no vuelve a sembrar si ya existen fotos.
+- **App del socio (lectura y registro propio)**: `backend/src/app/modules/portal/routines.py` expone cinco rutas con Bearer de socio. `GET /member/routines` lista las asignaciones propias (máximo 100, activas primero) con nombre y versión de la rutina, entrenador, fechas, frecuencia, estado, notas, entrenamientos registrados y último entrenamiento, más el resumen por estado calculado en la propia capa. `GET /member/routines/{assignment_id}` devuelve el **plan de la versión fijada al asignar** (`routine_version`), el objetivo de la rutina, las notas de la asignación y los últimos 10 entrenamientos; una asignación ajena responde `404`. `GET /member/progress` devuelve entrenamientos totales y de los últimos 30 días, último entrenamiento, última medición, histórico de medidas (máximo 36) y metas con su avance. `POST /member/routines/{assignment_id}/workouts` y `POST /member/progress/measurements` permiten al socio **registrar su propio entrenamiento y sus medidas**: reutilizan `log_workout` y `record_measurement`, guardan `origin = "app"` y exigen una asignación propia y activa. El entrenamiento queda `logged` (por revisar) hasta que el personal lo marca con `POST /admin/routines/workouts/{id}/review`; la medida se acepta directamente, es append-only y actualiza las metas en la misma transacción. Los límites de entrada son duración 0–600 min, esfuerzo 1–10, notas de 2000 caracteres en el entrenamiento y 300 en la medida, peso 0–500 kg, cintura y pecho 0–400 cm y grasa 0–100 %. `logged_by` y `measured_by` quedan vacíos en los registros de la app porque son FK al personal. El `member_id` sale siempre de la sesión y ninguna ruta acepta un identificador de socio. **Sigue sin haber escritura de metas, fotos, plan o asignaciones desde la app**: eso exige `routines.manage`. En la app, la pantalla «Rutinas y progreso» agrupa el resumen, las metas, las últimas medidas con su tarjeta de alta y las rutinas asignadas, y el detalle muestra el plan numerado, el formulario de entrenamiento y el historial con su origen y estado.
 
-Pendiente (documentado en `docs/deuda-tecnica.md`): detalle por serie (series/peso/esfuerzo por ejercicio) en la app del socio, mensajería entrenador-socio, relación ejercicio-equipo que bloquee ejercicios con la máquina en mantenimiento y notificaciones automáticas.
+Pendiente (documentado en `docs/deuda-tecnica.md`): detalle por serie, edición o corrección de una captura desde la app, notificación al entrenador de un pendiente y al socio de la revisión, traza explícita del socio que capturó, fotos de progreso con consentimiento, mensajería entrenador-socio, relación ejercicio-equipo que bloquee ejercicios con la máquina en mantenimiento y notificaciones automáticas.
 
 ## 14. Estado
 
-Cuarto incremento implementado y probado (biblioteca de ejercicios, rutinas con versionado y archivado, asignaciones con versión fija, registro y revisión de entrenamientos, medidas, metas con cierre automático, fotos de progreso con almacenamiento local seguro, gráfica de evolución de medidas y resumen de progreso desde el panel); la mensajería, las notificaciones y la app del socio quedan en diseño / validación funcional.
+Sexto incremento implementado y probado (biblioteca de ejercicios, rutinas con versionado y archivado, asignaciones con versión fija, registro y revisión de entrenamientos, medidas, metas con cierre automático, fotos de progreso con almacenamiento local seguro, gráfica de evolución de medidas, resumen de progreso desde el panel, consulta de rutinas, entrenamientos, medidas y metas desde la app del socio, y registro de entrenamientos —con revisión del entrenador— y medidas desde la app); las metas y fotos desde la app, la edición de registros, la mensajería y las notificaciones quedan en diseño / validación funcional.
 
 ## 15. Historial de cambios
+
+- 2026-10-27: sexto incremento (registro desde la app): migración `20261027_0032_member_activity_origin.py` con `origin` en `workout_logs` y `body_measurements`; rutas `POST /member/routines/{assignment_id}/workouts` (estado `logged`, pendiente de revisión) y `POST /member/progress/measurements` (append-only, actualiza metas), ambas con `origin="app"`; formularios de entrenamiento y medidas en la app; origen «Personal»/«App» y revisión en el panel; pruebas de API y verificación en navegador.
+
+- 2026-10-27: quinto incremento (app del socio, solo lectura): capa `app.modules.portal.routines`, rutas `GET /member/routines`, `GET /member/routines/{assignment_id}` y `GET /member/progress`, con plan de la versión asignada, historial de entrenamientos, medidas y metas; pantallas `RoutinesScreen` y `RoutineDetailScreen` en la app Expo; sin migración ni cambios en las reglas del módulo.
 
 - 2026-10-26: cuarto incremento (gráficas de evolución): gráfica SVG en el detalle de seguimiento con selector de peso, cintura, pecho y grasa, meta activa como línea de referencia, resumen del cambio desde la primera medición y estado vacío con menos de dos datos; sin migración ni cambios de API.
 - 2026-10-26: tercer incremento (fotos de progreso): migración `20261025_0030_progress_photos.py`, almacenamiento local fuera de la base con validación por firma, límite de 8 MB y claves aleatorias, API de carga, listado, descarga autenticada y eliminación, BFF, galería con visor en el detalle de seguimiento, seed idempotente con PNG de demostración y prueba de ciclo de vida.

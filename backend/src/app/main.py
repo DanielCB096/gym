@@ -352,6 +352,22 @@ from app.modules.portal.classes import (
     list_member_classes,
     reserve_member_class,
 )
+from app.modules.portal.routines import (
+    MemberAssignmentSummary,
+    MemberProgressView,
+    MemberRoutineDetail,
+    MemberRoutineList,
+    get_member_progress,
+    get_member_routine,
+    list_member_routines,
+    log_member_workout,
+    record_member_measurement,
+)
+from app.modules.portal.payments import (
+    MemberPaymentItem,
+    get_member_account,
+    list_member_payments,
+)
 from app.modules.portal.service import (
     AuthenticatedMember,
     InvalidMemberCode,
@@ -1570,6 +1586,7 @@ class WorkoutResponse(BaseModel):
     perceived_effort: int | None
     notes: str | None
     status: str
+    origin: str
     reviewed_at: datetime | None
     created_at: datetime
 
@@ -1590,6 +1607,7 @@ class MeasurementResponse(BaseModel):
     chest_cm: float | None
     body_fat_percent: float | None
     notes: str | None
+    origin: str
     created_at: datetime
 
 
@@ -1666,6 +1684,82 @@ class RoutinesOverviewResponse(BaseModel):
     routines_archived: int
     assignments_active: int
     workouts_last_7_days: int
+
+
+class MemberRoutineAssignmentResponse(BaseModel):
+    id: UUID
+    routine_id: UUID
+    routine_name: str
+    routine_version: int
+    trainer_name: str | None
+    start_date: date
+    end_date: date | None
+    frequency_per_week: int | None
+    status: str
+    notes: str | None
+    workouts_logged: int
+    last_workout_at: date | None
+    created_at: datetime
+    ended_at: datetime | None
+
+
+class MemberRoutineListResponse(BaseModel):
+    items: list[MemberRoutineAssignmentResponse]
+    total: int
+    active: int
+    completed: int
+    cancelled: int
+
+
+class MemberRoutineDetailResponse(BaseModel):
+    assignment: MemberRoutineAssignmentResponse
+    objective: str | None
+    plan: list[RoutineLineResponse]
+    workouts: list[WorkoutResponse]
+
+
+class MemberPortalProgressResponse(BaseModel):
+    workouts_total: int
+    workouts_last_30_days: int
+    last_workout_at: date | None
+    latest_measurement: MeasurementResponse | None
+    measurements: list[MeasurementResponse]
+    goals: list[MemberGoalResponse]
+
+
+class MemberPaymentResponse(BaseModel):
+    id: UUID
+    amount_cents: int
+    currency: str
+    method: str
+    paid_at: datetime
+    period_starts_at: datetime | None
+    period_ends_at: datetime | None
+    plan_name: str | None
+    note: str | None
+
+
+class MemberPaymentPageResponse(BaseModel):
+    items: list[MemberPaymentResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+    total_paid_cents: int
+
+
+class MemberAccountResponse(BaseModel):
+    charges_cents: int
+    credits_cents: int
+    payments_cents: int
+    balance_cents: int
+    charges_count: int
+    payments_count: int
+    last_activity_at: datetime | None
+    oldest_charge_at: datetime | None
+    as_of: date
+    entries: list[MemberAccountEntryResponse]
+    entries_total: int
 
 
 class EquipmentResponse(BaseModel):
@@ -2640,6 +2734,185 @@ def cancel_member_reservation_endpoint(
     except ClassesError as error:
         raise _classes_http_error(error) from error
     return _member_reservation_response(reservation)
+
+
+@app.get(
+    "/member/routines",
+    response_model=MemberRoutineListResponse,
+    tags=["member self-service"],
+)
+def member_routines(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberRoutineListResponse:
+    try:
+        directory = list_member_routines(session, member.member_id)
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return MemberRoutineListResponse(
+        items=[_member_assignment_response(item) for item in directory.items],
+        total=directory.total,
+        active=directory.active,
+        completed=directory.completed,
+        cancelled=directory.cancelled,
+    )
+
+
+@app.get(
+    "/member/routines/{assignment_id}",
+    response_model=MemberRoutineDetailResponse,
+    tags=["member self-service"],
+)
+def member_routine_detail(
+    assignment_id: UUID,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberRoutineDetailResponse:
+    try:
+        detail = get_member_routine(session, member.member_id, assignment_id)
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return MemberRoutineDetailResponse(
+        assignment=_member_assignment_response(detail.assignment),
+        objective=detail.objective,
+        plan=[_routine_line_response(item) for item in detail.plan],
+        workouts=[_workout_response(item) for item in detail.workouts],
+    )
+
+
+@app.get(
+    "/member/progress",
+    response_model=MemberPortalProgressResponse,
+    tags=["member self-service"],
+)
+def member_progress_endpoint(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberPortalProgressResponse:
+    try:
+        progress = get_member_progress(session, member.member_id)
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return _member_progress_response(progress)
+
+
+@app.post(
+    "/member/routines/{assignment_id}/workouts",
+    response_model=WorkoutResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["member self-service"],
+)
+def member_log_workout(
+    assignment_id: UUID,
+    request: LogWorkoutRequest,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> WorkoutResponse:
+    try:
+        item = log_member_workout(
+            session,
+            member.member_id,
+            assignment_id,
+            performed_at=request.performed_at,
+            duration_minutes=request.duration_minutes,
+            perceived_effort=request.perceived_effort,
+            notes=request.notes,
+        )
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return _workout_response(item)
+
+
+@app.post(
+    "/member/progress/measurements",
+    response_model=MeasurementResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["member self-service"],
+)
+def member_record_measurement(
+    request: RecordMeasurementRequest,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MeasurementResponse:
+    try:
+        item = record_member_measurement(
+            session,
+            member.member_id,
+            measured_at=request.measured_at,
+            weight_kg=request.weight_kg,
+            waist_cm=request.waist_cm,
+            chest_cm=request.chest_cm,
+            body_fat_percent=request.body_fat_percent,
+            notes=request.notes,
+        )
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return _measurement_response(item)
+
+
+@app.get(
+    "/member/payments",
+    response_model=MemberPaymentPageResponse,
+    tags=["member self-service"],
+)
+def member_payments(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> MemberPaymentPageResponse:
+    try:
+        history = list_member_payments(
+            session, member.member_id, page=page, page_size=page_size
+        )
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return MemberPaymentPageResponse(
+        items=[_member_payment_response(item) for item in history.items],
+        total=history.total,
+        page=history.page,
+        page_size=history.page_size,
+        pages=history.pages,
+        total_paid_cents=history.total_paid_cents,
+    )
+
+
+@app.get(
+    "/member/account",
+    response_model=MemberAccountResponse,
+    tags=["member self-service"],
+)
+def member_account(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberAccountResponse:
+    try:
+        account = get_member_account(session, member.member_id)
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return MemberAccountResponse(
+        charges_cents=account.charges_cents,
+        credits_cents=account.credits_cents,
+        payments_cents=account.payments_cents,
+        balance_cents=account.balance_cents,
+        charges_count=account.charges_count,
+        payments_count=account.payments_count,
+        last_activity_at=account.last_activity_at,
+        oldest_charge_at=account.oldest_charge_at,
+        as_of=account.as_of,
+        entries=[_member_account_entry_response(entry) for entry in account.entries],
+        entries_total=account.entries_total,
+    )
 
 
 @app.get("/admin/roles", tags=["staff administration"])
@@ -4981,6 +5254,7 @@ def _workout_response(item: WorkoutItem) -> WorkoutResponse:
         perceived_effort=item.perceived_effort,
         notes=item.notes,
         status=item.status,
+        origin=item.origin,
         reviewed_at=item.reviewed_at,
         created_at=item.created_at,
     )
@@ -4996,6 +5270,7 @@ def _measurement_response(item: MeasurementItem) -> MeasurementResponse:
         chest_cm=item.chest_cm,
         body_fat_percent=item.body_fat_percent,
         notes=item.notes,
+        origin=item.origin,
         created_at=item.created_at,
     )
 
@@ -6671,6 +6946,56 @@ def _member_class_response(item: MemberClassItem) -> MemberClassResponse:
             if item.reservation is not None
             else None
         ),
+    )
+
+
+def _member_assignment_response(
+    item: MemberAssignmentSummary,
+) -> MemberRoutineAssignmentResponse:
+    return MemberRoutineAssignmentResponse(
+        id=item.id,
+        routine_id=item.routine_id,
+        routine_name=item.routine_name,
+        routine_version=item.routine_version,
+        trainer_name=item.trainer_name,
+        start_date=item.start_date,
+        end_date=item.end_date,
+        frequency_per_week=item.frequency_per_week,
+        status=item.status,
+        notes=item.notes,
+        workouts_logged=item.workouts_logged,
+        last_workout_at=item.last_workout_at,
+        created_at=item.created_at,
+        ended_at=item.ended_at,
+    )
+
+
+def _member_progress_response(progress: MemberProgressView) -> MemberPortalProgressResponse:
+    return MemberPortalProgressResponse(
+        workouts_total=progress.workouts_total,
+        workouts_last_30_days=progress.workouts_last_30_days,
+        last_workout_at=progress.last_workout_at,
+        latest_measurement=(
+            _measurement_response(progress.latest_measurement)
+            if progress.latest_measurement is not None
+            else None
+        ),
+        measurements=[_measurement_response(item) for item in progress.measurements],
+        goals=[_goal_response(item) for item in progress.goals],
+    )
+
+
+def _member_payment_response(item: MemberPaymentItem) -> MemberPaymentResponse:
+    return MemberPaymentResponse(
+        id=item.id,
+        amount_cents=item.amount_cents,
+        currency=item.currency,
+        method=item.method,
+        paid_at=item.paid_at,
+        period_starts_at=item.period_starts_at,
+        period_ends_at=item.period_ends_at,
+        plan_name=item.plan_name,
+        note=item.note,
     )
 
 

@@ -60,6 +60,7 @@ Este módulo cubre la operación de alta de socios, venta de planes, pago inicia
 
 ### Móvil
 - Mi membresía: vigencia, plan, fecha de pago y acceso
+- Historial de pagos de membresía de solo lectura (importe, plan, periodo, método y nota)
 - Configuración de pago: agregar tarjeta, cambiar método, visualizar historial
 - Recordatorios y alertas: vencimiento, cobros fallidos, cambios de plan
 
@@ -173,8 +174,11 @@ El **cobro manual de membresía** ya está implementado (2026-10-21) con la migr
 
 La pasarela real, el cobro recurrente automático, las promociones/descuentos y el prorrateo por cambio de plan a mitad de ciclo siguen en diseño. La facturación fiscal del cobro confirmado ya existe: un pago de membresía puede facturarse como CFDI 4.0 individual (`origin_type = "membership_payment"`) y acreditarse con nota de crédito desde el módulo de Facturación; el timbrado sigue siendo simulado hasta integrar el PAC real.
 
+La **app del socio** consulta sus pagos de membresía desde `GET /member/payments` (Bearer, paginado, más recientes primero) con importe, moneda, método, fecha, periodo, plan y nota, sin cobrador ni turno de caja. Es de solo lectura: el cobro sigue siendo exclusivo del panel con `members.manage` y turno abierto. Ver ADR-012.
+
 ## 14. Historial de cambios
 
+- 2026-10-27: **consulta de pagos de membresía desde la app del socio** (`GET /member/payments`, solo lectura, paginada y acotada a la sesión), sin migración ni cambios en el cobro manual. El estado de cuenta de la tienda se expone por separado en `GET /member/account`.
 - 2026-10-21: **cobro manual y renovación de membresía en mostrador** (migración `20261021_0023`). `POST /admin/members/{id}/membership/payments` registra un pago idempotente con efectivo, tarjeta declarada o transferencia, exige turno abierto, liga el pago al turno y crea/renueva la membresía. `payments` gana periodo, turno, cobrador y nota; `payment_attempts` acepta tarjeta declarada sin token. El panel agrega el cobro y el turno separa los cobros de membresía; la activación sin cobro queda como cortesía explícita.
 - 2026-10-15: documento inicial con alcance, flujos, entidades y criterios de aceptación
 - 2026-10-16: el alta de socio desde el panel ya registra al socio y su consentimiento de privacidad (`POST /admin/members`).

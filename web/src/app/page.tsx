@@ -1676,6 +1676,8 @@ type AssignmentDirectory = {
   summary: AssignmentSummary;
 };
 
+type RecordOrigin = "staff" | "app";
+
 type BackendWorkout = {
   id: string;
   assignment_id: string;
@@ -1687,6 +1689,7 @@ type BackendWorkout = {
   perceived_effort: number | null;
   notes: string | null;
   status: WorkoutState;
+  origin: RecordOrigin;
   reviewed_at: string | null;
   created_at: string;
 };
@@ -1700,6 +1703,7 @@ type BackendMeasurement = {
   chest_cm: number | null;
   body_fat_percent: number | null;
   notes: string | null;
+  origin: RecordOrigin;
   created_at: string;
 };
 
@@ -1796,6 +1800,11 @@ const workoutStatusLabels: Record<WorkoutState, string> = {
 const workoutStatusBadges: Record<WorkoutState, string> = {
   logged: "status-warn",
   reviewed: "status-good",
+};
+
+const recordOriginLabels: Record<RecordOrigin, string> = {
+  staff: "Personal",
+  app: "App",
 };
 
 const goalMetricLabels: Record<GoalMetric, string> = {
@@ -7848,7 +7857,7 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
               <ul className="workout-list">
                 {workouts.map((workout) => (
                   <li className="workout-row" key={workout.id}>
-                    <span className="workout-date"><strong>{formatDateOnly(workout.performed_at)}</strong><small>{workout.duration_minutes ? `${workout.duration_minutes} min` : "sin duración"}{workout.perceived_effort ? ` · esfuerzo ${workout.perceived_effort}/10` : ""}</small></span>
+                    <span className="workout-date"><strong>{formatDateOnly(workout.performed_at)}</strong><small>{workout.duration_minutes ? `${workout.duration_minutes} min` : "sin duración"}{workout.perceived_effort ? ` · esfuerzo ${workout.perceived_effort}/10` : ""} · {recordOriginLabels[workout.origin]}</small></span>
                     <span className="workout-notes">{workout.notes ?? "—"}</span>
                     <span className={`status-badge ${workoutStatusBadges[workout.status]}`}><i />{workoutStatusLabels[workout.status]}</span>
                     {canManage && workout.status === "logged" && <button type="button" className="text-button" onClick={() => reviewWorkout(workout)}>Revisar</button>}
@@ -7875,7 +7884,7 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
             <MeasurementTrendChart measurements={measurements} goals={goals} metric={trendMetric} onMetricChange={setTrendMetric} />
             {measurements.length === 0 ? <p className="panel-hint">Sin mediciones registradas.</p> : (
               <table className="data-table compact-table">
-                <thead><tr><th>FECHA</th><th>PESO</th><th>CINTURA</th><th>PECHO</th><th>GRASA</th><th>NOTAS</th></tr></thead>
+                <thead><tr><th>FECHA</th><th>PESO</th><th>CINTURA</th><th>PECHO</th><th>GRASA</th><th>ORIGEN</th><th>NOTAS</th></tr></thead>
                 <tbody>
                   {measurements.map((measurement) => (
                     <tr key={measurement.id}>
@@ -7884,6 +7893,7 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
                       <td>{formatMeasurementValue(measurement.waist_cm, " cm")}</td>
                       <td>{formatMeasurementValue(measurement.chest_cm, " cm")}</td>
                       <td>{formatMeasurementValue(measurement.body_fat_percent, "%")}</td>
+                      <td>{recordOriginLabels[measurement.origin]}</td>
                       <td>{measurement.notes ?? "—"}</td>
                     </tr>
                   ))}

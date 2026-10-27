@@ -1,10 +1,19 @@
 import { API_URL, REQUEST_TIMEOUT_MS } from "./config";
 import type {
   CodeRequestResult,
+  MemberAccount,
   MemberClassPage,
   MemberClassReservation,
   MemberLoginResult,
+  MemberPaymentPage,
   MemberProfile,
+  MemberMeasurement,
+  MemberMeasurementInput,
+  MemberProgress,
+  MemberRoutineDetail,
+  MemberRoutineList,
+  MemberWorkout,
+  MemberWorkoutInput,
 } from "./types";
 
 export class ApiError extends Error {
@@ -133,4 +142,49 @@ export function cancelMemberReservation(
     `/member/classes/reservations/${reservationId}/cancel`,
     { method: "POST", token },
   );
+}
+
+export function getMemberRoutines(token: string): Promise<MemberRoutineList> {
+  return request<MemberRoutineList>("/member/routines", { token });
+}
+
+export function getMemberRoutine(token: string, assignmentId: string): Promise<MemberRoutineDetail> {
+  return request<MemberRoutineDetail>(`/member/routines/${assignmentId}`, { token });
+}
+
+export function getMemberProgress(token: string): Promise<MemberProgress> {
+  return request<MemberProgress>("/member/progress", { token });
+}
+
+export function logMemberWorkout(
+  token: string,
+  assignmentId: string,
+  input: MemberWorkoutInput,
+): Promise<MemberWorkout> {
+  return request<MemberWorkout>(`/member/routines/${assignmentId}/workouts`, {
+    method: "POST",
+    token,
+    body: input,
+  });
+}
+
+export function recordMemberMeasurement(
+  token: string,
+  input: MemberMeasurementInput,
+): Promise<MemberMeasurement> {
+  return request<MemberMeasurement>("/member/progress/measurements", {
+    method: "POST",
+    token,
+    body: input,
+  });
+}
+
+export function getMemberPayments(token: string, pageSize = 20): Promise<MemberPaymentPage> {
+  return request<MemberPaymentPage>(`/member/payments?page=1&page_size=${pageSize}`, {
+    token,
+  });
+}
+
+export function getMemberAccount(token: string): Promise<MemberAccount> {
+  return request<MemberAccount>("/member/account", { token });
 }

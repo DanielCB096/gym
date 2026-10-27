@@ -27,8 +27,8 @@ B --> L[Auditoría]
 - acceso segmentado por rol y permisos
 
 ### 2. Frontend móvil
-- app Expo/React Native para socios (`mobile/`): acceso sin contraseña con código OTP por correo, consulta de perfil, membresía, acceso habilitado y saldo, y reserva o cancelación de clases con lista de espera sobre la agenda del club
-- pendiente: rutinas y progreso, pagos, facturas, cobro de clases premium y recordatorios/notificaciones
+- app Expo/React Native para socios (`mobile/`): acceso sin contraseña con código OTP por correo, consulta de perfil, membresía, acceso habilitado y saldo, reserva o cancelación de clases con lista de espera sobre la agenda del club, consulta de rutinas asignadas, entrenamientos, medidas y metas, registro de entrenamientos (pendientes de revisión del entrenador) y de medidas desde la app, y consulta de pagos de membresía y estado de cuenta
+- pendiente: pago en línea, facturas, cobro de clases premium, metas y fotos de progreso desde la app, y recordatorios/notificaciones
 
 ### 3. Kiosco de recepción
 - check-in y flujo de acceso rápido

@@ -8,11 +8,22 @@ import { ClassesScreen } from "./src/screens/ClassesScreen";
 import { CodeScreen } from "./src/screens/CodeScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
 import { LoginScreen } from "./src/screens/LoginScreen";
+import { PaymentsScreen } from "./src/screens/PaymentsScreen";
+import { RoutineDetailScreen } from "./src/screens/RoutineDetailScreen";
+import { RoutinesScreen } from "./src/screens/RoutinesScreen";
 import { clearToken, loadToken, saveToken } from "./src/storage";
 import { colors } from "./src/theme";
 import type { MemberLoginResult, MemberProfile } from "./src/types";
 
-type Stage = "restoring" | "email" | "code" | "home" | "classes";
+type Stage =
+  | "restoring"
+  | "email"
+  | "code"
+  | "home"
+  | "classes"
+  | "routines"
+  | "routineDetail"
+  | "payments";
 
 export default function App() {
   const [stage, setStage] = useState<Stage>("restoring");
@@ -25,6 +36,7 @@ export default function App() {
   const [loginNotice, setLoginNotice] = useState<string | null>(null);
   const [homeError, setHomeError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -148,6 +160,19 @@ export default function App() {
     setStage("classes");
   }
 
+  function handleOpenRoutines() {
+    setStage("routines");
+  }
+
+  function handleOpenRoutine(assignmentId: string) {
+    setSelectedAssignmentId(assignmentId);
+    setStage("routineDetail");
+  }
+
+  function handleOpenPayments() {
+    setStage("payments");
+  }
+
   async function handleSessionExpired() {
     await clearToken();
     setToken(null);
@@ -193,10 +218,35 @@ export default function App() {
             onRefresh={handleRefresh}
             onLogout={handleLogout}
             onOpenClasses={handleOpenClasses}
+            onOpenRoutines={handleOpenRoutines}
+            onOpenPayments={handleOpenPayments}
           />
         ) : null}
         {stage === "classes" && token ? (
           <ClassesScreen
+            token={token}
+            onBack={() => setStage("home")}
+            onSessionExpired={() => void handleSessionExpired()}
+          />
+        ) : null}
+        {stage === "routines" && token ? (
+          <RoutinesScreen
+            token={token}
+            onBack={() => setStage("home")}
+            onOpenRoutine={handleOpenRoutine}
+            onSessionExpired={() => void handleSessionExpired()}
+          />
+        ) : null}
+        {stage === "routineDetail" && token && selectedAssignmentId ? (
+          <RoutineDetailScreen
+            token={token}
+            assignmentId={selectedAssignmentId}
+            onBack={() => setStage("routines")}
+            onSessionExpired={() => void handleSessionExpired()}
+          />
+        ) : null}
+        {stage === "payments" && token ? (
+          <PaymentsScreen
             token={token}
             onBack={() => setStage("home")}
             onSessionExpired={() => void handleSessionExpired()}

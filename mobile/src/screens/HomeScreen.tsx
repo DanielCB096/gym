@@ -25,6 +25,8 @@ type Props = {
   onRefresh: () => void;
   onLogout: () => void;
   onOpenClasses: () => void;
+  onOpenRoutines: () => void;
+  onOpenPayments: () => void;
 };
 
 export function HomeScreen({
@@ -35,6 +37,8 @@ export function HomeScreen({
   onRefresh,
   onLogout,
   onOpenClasses,
+  onOpenRoutines,
+  onOpenPayments,
 }: Props) {
   return (
     <ScrollView
@@ -123,6 +127,44 @@ export function HomeScreen({
               <Text style={styles.navTitle}>Clases y reservas</Text>
               <Text style={sharedStyles.body}>
                 Consulta la cartelera y aparta tu lugar.
+              </Text>
+            </View>
+            <Text style={styles.navChevron}>→</Text>
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Ver rutinas y progreso"
+            onPress={onOpenRoutines}
+            style={({ pressed }) => [
+              sharedStyles.card,
+              styles.navCard,
+              pressed && styles.navCardPressed,
+            ]}
+          >
+            <View style={styles.navText}>
+              <Text style={styles.navTitle}>Rutinas y progreso</Text>
+              <Text style={sharedStyles.body}>
+                Revisa tu plan, tus medidas y tus metas.
+              </Text>
+            </View>
+            <Text style={styles.navChevron}>→</Text>
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Ver pagos y estado de cuenta"
+            onPress={onOpenPayments}
+            style={({ pressed }) => [
+              sharedStyles.card,
+              styles.navCard,
+              pressed && styles.navCardPressed,
+            ]}
+          >
+            <View style={styles.navText}>
+              <Text style={styles.navTitle}>Pagos y estado de cuenta</Text>
+              <Text style={sharedStyles.body}>
+                Revisa tus pagos y los movimientos de tu cuenta.
               </Text>
             </View>
             <Text style={styles.navChevron}>→</Text>
