@@ -103,6 +103,17 @@ CHECK_UPGRADES = {
             "('sale', 'membership_payment', 'global', 'credit_note'))",
         ),
     ),
+    "member_notifications": (
+        (
+            "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
+            "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
+            "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring'))",
+            "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
+            "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
+            "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
+            "'equipment_out_of_service'))",
+        ),
+    ),
 }
 
 # Constraints added to an existing table. The first value is a marker used to

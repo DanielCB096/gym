@@ -41,8 +41,11 @@ from app.modules.maintenance.models import (
     MaintenanceTicket,
     utc_now,
 )
-from app.modules.notifications import notify_technician_ticket_assigned
-from app.timezone import club_day_stamp
+from app.modules.notifications import (
+    notify_equipment_out_of_service,
+    notify_technician_ticket_assigned,
+)
+from app.timezone import club_date, club_day_stamp
 
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
@@ -627,6 +630,56 @@ def update_equipment(
     return _equipment_item(equipment)
 
 
+def _members_using_equipment(session: Session, equipment_id: UUID) -> list[UUID]:
+    """Members whose live routine plan includes an exercise on this machine.
+
+    The match has to honour the version the assignment froze: rewriting the
+    template must not decide who gets told about a broken unit.
+    """
+    # Imported lazily so the maintenance module does not import routines at
+    # module load time (the exercise table references the equipment table).
+    from app.modules.routines.models import Exercise, RoutineAssignment, RoutineItem
+
+    rows = session.exec(
+        select(RoutineAssignment.member_id)
+        .join(
+            RoutineItem,
+            (RoutineItem.routine_id == RoutineAssignment.routine_id)
+            & (RoutineItem.version == RoutineAssignment.routine_version),
+        )
+        .join(Exercise, Exercise.id == RoutineItem.exercise_id)
+        .where(
+            Exercise.equipment_id == equipment_id,
+            RoutineAssignment.status == "active",
+        )
+        .distinct()
+    ).all()
+    return list(rows)
+
+
+def _announce_equipment_outage(
+    session: Session, equipment: Equipment, occurred: datetime
+) -> None:
+    """Tell the members who just lost a machine from their plan.
+
+    Only the transition into ``out_of_service`` announces, so a unit that was
+    already stopped does not repeat itself, and a machine nothing in a live plan
+    uses tells nobody.
+    """
+    member_ids = _members_using_equipment(session, equipment.id)
+    if not member_ids:
+        return
+    notify_equipment_out_of_service(
+        session,
+        equipment_id=equipment.id,
+        equipment_name=equipment.name,
+        location=equipment.location,
+        member_ids=member_ids,
+        occurred_on=club_date(occurred),
+        now=occurred,
+    )
+
+
 def set_equipment_status(
     session: Session,
     equipment_id: UUID,
@@ -646,6 +699,8 @@ def set_equipment_status(
     equipment.status = status
     equipment.updated_at = _as_utc(now or utc_now())
     session.add(equipment)
+    if status == "out_of_service":
+        _announce_equipment_outage(session, equipment, equipment.updated_at)
     session.commit()
     session.refresh(equipment)
     return _equipment_item(equipment)
@@ -1029,6 +1084,7 @@ def _block_equipment(
     equipment.status = "out_of_service"
     equipment.updated_at = occurred
     session.add(equipment)
+    _announce_equipment_outage(session, equipment, occurred)
 
 
 def _start_equipment(

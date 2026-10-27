@@ -2,10 +2,13 @@
 
 Three producers feed the two inboxes:
 
-* domain events for the member, raised by the routines and classes services
-  inside the same transaction that changes the member's record. The message is
-  written from the values the event already has in hand, so no extra query is
-  needed and the notification can never disagree with the change that caused it;
+* domain events for the member, raised by the routines, classes and maintenance
+  services inside the same transaction that changes the member's record. The
+  message is written from the values the event already has in hand, so no extra
+  query is needed and the notification can never disagree with the change that
+  caused it. The one exception is the equipment outage, whose audience is a set
+  of members nobody has in hand: the caller looks it up and passes it in, because
+  finding it means joining tables this module must not know about;
 * domain events for the staff, raised by the routines and maintenance services
   when something a member does in the app or a dispatcher does at the desk turns
   into work for a named person. The audience is a panel account, so the employee
@@ -23,7 +26,7 @@ delete path on either inbox.
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import TypeVar
+from typing import Sequence, TypeVar
 from uuid import UUID
 
 from sqlalchemy import func, update
@@ -351,6 +354,47 @@ def notify_waitlist_promoted(
         ref_id=reservation_id,
         now=now,
     )
+
+
+def notify_equipment_out_of_service(
+    session: Session,
+    *,
+    equipment_id: UUID,
+    equipment_name: str,
+    location: str | None,
+    member_ids: Sequence[UUID],
+    occurred_on: date,
+    now: datetime | None = None,
+) -> int:
+    """Tell every member whose plan uses a machine that just stopped working.
+
+    The audience is handed in because finding it means joining the routine
+    tables, which live in another module; this function only writes the
+    messages. One row per member, deduplicated by equipment, member and club
+    day, so a unit pushed back into ``out_of_service`` the same day does not
+    repeat itself while a new outage on a later day does.
+    """
+    label = _clip(equipment_name.strip() or "Un equipo", 80)
+    where = f" de {_clip(location.strip(), 40)}" if location and location.strip() else ""
+    body = (
+        f"El equipo {label}{where} quedó fuera de servicio el {occurred_on:%d/%m/%Y}. "
+        "Si tu rutina usa un ejercicio con este equipo, pídele a tu entrenador "
+        "que lo sustituya."
+    )
+    for member_id in member_ids:
+        create_notification(
+            session,
+            member_id=member_id,
+            kind="equipment_out_of_service",
+            title="Un equipo está fuera de servicio",
+            body=body,
+            ref_id=equipment_id,
+            dedupe_key=(
+                f"equipment_out_of_service:{equipment_id}:{member_id}:{occurred_on:%Y%m%d}"
+            ),
+            now=now,
+        )
+    return len(member_ids)
 
 
 def notify_trainer_pending_workout(

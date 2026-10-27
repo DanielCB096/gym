@@ -92,6 +92,7 @@ const NOTIFICATION_KIND_LABELS: Record<string, string> = {
   goal_updated_by_staff: "Meta ajustada",
   class_waitlist_promoted: "Clase",
   membership_expiring: "Membresía",
+  equipment_out_of_service: "Equipo",
 };
 
 export function formatDate(value: string): string {

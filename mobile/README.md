@@ -39,7 +39,7 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
   - estados vacíos, mensajes de error y actualización manual con deslizamiento.
 - Pantalla de avisos con:
   - contador «Tienes N avisos sin leer.» o «Estás al día.»;
-  - lista del más reciente al más antiguo con etiqueta de tipo (Membresía, Clase, Meta cumplida, Meta ajustada, Meta cancelada, Entrenamiento), título, cuerpo y fecha con hora;
+  - lista del más reciente al más antiguo con etiqueta de tipo (Membresía, Clase, Meta cumplida, Meta ajustada, Meta cancelada, Entrenamiento, Equipo), título, cuerpo y fecha con hora;
   - no leídos marcados con borde y punto de color, leídos atenúados;
   - toque sobre un aviso para marcarlo como leído (inmediato, sin recargar la lista);
   - «Marcar todas como leídas», visible solo cuando hay pendientes, con confirmación de cuántos se marcaron;
@@ -124,7 +124,7 @@ El saldo puede ser negativo (saldo a favor); el aviso que lo acompaña indica qu
 
 ## Flujo de avisos
 
-1. `GET /member/notifications?page=1&page_size=30` devuelve la bandeja del socio con `total`, `pages` y `unread_total`; los avisos los generan los eventos del club (revisión de un entrenamiento, meta cumplida, meta ajustada o cancelada por el personal, lugar liberado en lista de espera y vencimiento próximo de la membresía).
+1. `GET /member/notifications?page=1&page_size=30` devuelve la bandeja del socio con `total`, `pages` y `unread_total`; los avisos los generan los eventos del club (revisión de un entrenamiento, meta cumplida, meta ajustada o cancelada por el personal, lugar liberado en lista de espera, vencimiento próximo de la membresía y equipo de la rutina que queda fuera de servicio).
 2. `POST /member/notifications/{id}/read` marca uno (idempotente) y `POST /member/notifications/read-all` marca todos devolviendo `{"updated": n}`.
 3. `GET /member/notifications/unread-count` alimenta la insignia de la pantalla de inicio; se consulta al restaurar la sesión, al iniciar sesión, al actualizar el perfil y al salir de la bandeja.
 4. Al abrir la bandeja el backend evalúa el vencimiento de la membresía y crea el recordatorio si falta ≤ 7, ≤ 3 o ≤ 1 días (una sola vez por ventana).
@@ -163,8 +163,9 @@ mobile/
 
 - Edición de metas y edición/borrado de registros desde la app (hoy el socio captura entrenamientos con sus series, medidas y metas propias, y cancela estas últimas; su corrección se hace en recepción). Falta que el entrenador apruebe una meta creada desde la app.
 - Series objetivo por sesión, series por tiempo o distancia y métricas de volumen por ejercicio.
-- Aviso al entrenador de un entrenamiento pendiente de revisión (al socio ya se le avisa cuando se revisa).
+- Cerrar el pendiente de revisión desde la app del entrenador: hoy el entrenador **sí recibe** `workout_pending_review` en la campana del panel (ADR-017), pero el aviso no se cierra al revisar y la app del socio no tiene vista de entrenador.
 - Fotos de progreso en la app, con consentimiento y política de acceso.
+- El aviso de equipo fuera de servicio **no enlaza con lo afectado**: la app no tiene pantalla de equipos y el detalle del plan todavía no renderiza `equipment_status`, así que el socio lee el aviso sin ver marcado el ejercicio cuya máquina se paró. Tampoco hay aviso cuando el equipo vuelve a estar operativo.
 - Pagos en línea, descarga de facturas y detalle de la venta detrás de cada cargo (hoy solo se consulta el movimiento).
 - Cobro del precio extra de las clases premium desde la app.
 - Notificaciones push y recordatorios programados (renovación, clase, cobranza): la bandeja ya existe, pero el aviso solo se ve cuando el socio abre la app.
