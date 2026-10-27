@@ -1,8 +1,11 @@
 from collections.abc import Iterator
 from datetime import date, datetime, timedelta, timezone
+import struct
 from uuid import uuid4
+import zlib
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
@@ -11,9 +14,29 @@ from app.main import app, get_session
 from app.modules.identity.models import Employee
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.memberships.models import Member
+from app.modules.routines.photo_storage import MAX_PROGRESS_PHOTO_BYTES, photo_path
 
 PAST = date(2026, 1, 1)
 FUTURE = date(2099, 1, 1)
+
+
+def _png_bytes() -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    pixels = zlib.compress(b"\x00\x20\x40\x60")
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", pixels)
+        + chunk(b"IEND", b"")
+    )
 
 
 def _build_engine():
@@ -494,3 +517,323 @@ def test_measurements_progress_and_overview() -> None:
             ).json()["total"] == 1
     finally:
         app.dependency_overrides.clear()
+
+
+def test_member_goals_lifecycle() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        member_id = _add_member(session, first="Ana")
+        inactive_id = _add_member(session, status="inactive", first="Baja")
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+
+            goals_url = f"/admin/routines/members/{member_id}/goals"
+            measurements_url = f"/admin/routines/members/{member_id}/measurements"
+
+            # Routines permissions guard goals too.
+            assert client.get(goals_url, headers=reception).status_code == 403
+            assert client.post(
+                goals_url,
+                headers=reception,
+                json={"metric": "weight_kg", "direction": "decrease", "target_value": 68},
+            ).status_code == 403
+            assert client.get(goals_url, headers=manager).status_code == 200
+
+            # Validation: past target date, out-of-range fat, zero target.
+            assert client.post(
+                goals_url,
+                headers=manager,
+                json={
+                    "metric": "weight_kg",
+                    "direction": "decrease",
+                    "target_value": 68,
+                    "target_date": PAST.isoformat(),
+                },
+            ).status_code == 422
+            assert client.post(
+                goals_url,
+                headers=manager,
+                json={"metric": "body_fat_percent", "direction": "decrease", "target_value": 120},
+            ).status_code == 422
+            assert client.post(
+                goals_url,
+                headers=manager,
+                json={"metric": "weight_kg", "direction": "decrease", "target_value": 0},
+            ).status_code == 422
+
+            # A goal created before any measurement starts without a baseline.
+            created = client.post(
+                goals_url,
+                headers=manager,
+                json={
+                    "metric": "weight_kg",
+                    "direction": "decrease",
+                    "target_value": 68,
+                    "target_date": FUTURE.isoformat(),
+                    "notes": "Bajar grasa para verano",
+                },
+            )
+            assert created.status_code == 201, created.text
+            goal = created.json()
+            assert goal["status"] == "active"
+            assert goal["baseline_value"] is None
+            assert goal["current_value"] is None
+            assert goal["progress_percent"] is None
+            assert goal["target_date"] == FUTURE.isoformat()
+
+            # One active goal per metric.
+            assert client.post(
+                goals_url,
+                headers=manager,
+                json={"metric": "weight_kg", "direction": "decrease", "target_value": 66},
+            ).status_code == 409
+
+            # The first measurement after creation freezes the baseline.
+            first = client.post(measurements_url, headers=manager, json={"weight_kg": 72.5})
+            assert first.status_code == 201, first.text
+            listed = client.get(goals_url, headers=manager).json()
+            assert len(listed) == 1
+            assert listed[0]["baseline_value"] == 72.5
+            assert listed[0]["current_value"] == 72.5
+            assert listed[0]["progress_percent"] == 0
+
+            # Editing moves the target; a target already met is rejected.
+            assert client.patch(
+                f"/admin/routines/goals/{goal['id']}",
+                headers=manager,
+                json={"target_value": 73},
+            ).status_code == 422
+            updated = client.patch(
+                f"/admin/routines/goals/{goal['id']}",
+                headers=manager,
+                json={"target_value": 71, "notes": "  Ajustado  "},
+            )
+            assert updated.status_code == 200, updated.text
+            assert updated.json()["target_value"] == 71
+            assert updated.json()["notes"] == "Ajustado"
+            assert updated.json()["target_date"] == FUTURE.isoformat()
+
+            # Progress is measured against the frozen baseline.
+            client.post(measurements_url, headers=manager, json={"weight_kg": 71.5})
+            listed = client.get(goals_url, headers=manager).json()[0]
+            assert listed["current_value"] == 71.5
+            assert listed["progress_percent"] == 67
+            assert listed["achieved"] is False
+
+            # Reaching the target closes the goal automatically.
+            client.post(measurements_url, headers=manager, json={"weight_kg": 70})
+            achieved = client.get(goals_url, headers=manager, params={"status": "achieved"}).json()
+            assert len(achieved) == 1
+            assert achieved[0]["status"] == "achieved"
+            assert achieved[0]["achieved"] is True
+            assert achieved[0]["achieved_value"] == 70
+            assert achieved[0]["achieved_at"] is not None
+            assert achieved[0]["progress_percent"] == 100
+
+            # Achieved goals are final.
+            assert client.patch(
+                f"/admin/routines/goals/{goal['id']}",
+                headers=manager,
+                json={"notes": "Reabrir"},
+            ).status_code == 409
+            assert client.post(
+                f"/admin/routines/goals/{goal['id']}/cancel", headers=manager
+            ).status_code == 409
+
+            # A new goal for the same metric is allowed after closure; a target
+            # already met by the latest measurement is rejected.
+            assert client.post(
+                goals_url,
+                headers=manager,
+                json={"metric": "weight_kg", "direction": "decrease", "target_value": 71},
+            ).status_code == 422
+            replacement = client.post(
+                goals_url,
+                headers=manager,
+                json={"metric": "weight_kg", "direction": "decrease", "target_value": 65},
+            )
+            assert replacement.status_code == 201, replacement.text
+            assert replacement.json()["baseline_value"] == 70
+
+            # Cancelling an active goal keeps it in history without deleting it.
+            cancelled = client.post(
+                f"/admin/routines/goals/{replacement.json()['id']}/cancel", headers=manager
+            )
+            assert cancelled.status_code == 200
+            assert cancelled.json()["status"] == "cancelled"
+            assert cancelled.json()["cancelled_at"] is not None
+            assert client.get(
+                goals_url, headers=manager, params={"status": "cancelled"}
+            ).json()[0]["id"] == replacement.json()["id"]
+
+            # Opposite direction and a metric without measurements.
+            client.post(measurements_url, headers=manager, json={"waist_cm": 90})
+            assert client.post(
+                goals_url,
+                headers=manager,
+                json={"metric": "waist_cm", "direction": "increase", "target_value": 80},
+            ).status_code == 422
+            waist_goal = client.post(
+                goals_url,
+                headers=manager,
+                json={"metric": "waist_cm", "direction": "decrease", "target_value": 85},
+            )
+            assert waist_goal.status_code == 201, waist_goal.text
+            assert waist_goal.json()["baseline_value"] == 90
+            client.post(measurements_url, headers=manager, json={"waist_cm": 84.5})
+            assert client.get(
+                goals_url, headers=manager, params={"status": "active"}
+            ).json() == []
+
+            # Unknown member and unknown goal.
+            assert client.get(
+                f"/admin/routines/members/{uuid4()}/goals", headers=manager
+            ).status_code == 404
+            assert client.patch(
+                f"/admin/routines/goals/{uuid4()}", headers=manager, json={"target_value": 70}
+            ).status_code == 404
+
+            # Inactive members cannot receive new goals.
+            assert client.post(
+                f"/admin/routines/members/{inactive_id}/goals",
+                headers=manager,
+                json={"metric": "weight_kg", "direction": "decrease", "target_value": 60},
+            ).status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_progress_photos_lifecycle(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PROGRESS_PHOTOS_DIR", str(tmp_path / "progress_photos"))
+    directory = tmp_path / "progress_photos"
+    png = _png_bytes()
+
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        member_id = _add_member(session, first="Ana")
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            trainer = _login(client, "trainer@example.com", "trainer-strong-password")
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+
+            photos_url = f"/admin/routines/members/{member_id}/photos"
+
+            def upload(headers, *, angle="front", content=png, content_type="image/png", **fields):
+                return client.post(
+                    photos_url,
+                    headers=headers,
+                    data={"angle": angle, **fields},
+                    files={"photo": ("progreso.png", content, content_type)},
+                )
+
+            assert client.get(photos_url, headers=reception).status_code == 403
+            assert upload(reception).status_code == 403
+            assert client.delete(
+                f"/admin/routines/photos/{uuid4()}", headers=reception
+            ).status_code == 403
+            assert client.get(photos_url, headers=manager).json() == []
+
+            # Invalid uploads are rejected before anything reaches the disk.
+            assert upload(manager, angle="top").status_code == 422
+            assert upload(manager, content_type="image/gif").status_code == 422
+            assert upload(manager, content_type="image/jpeg").status_code == 422
+            assert upload(manager, content=b"not really an image").status_code == 422
+            assert upload(manager, content=b"").status_code == 422
+            oversized = b"\x89PNG\r\n\x1a\n" + b"0" * (MAX_PROGRESS_PHOTO_BYTES - 7)
+            assert upload(manager, content=oversized).status_code == 413
+            assert not directory.exists()
+            assert client.post(
+                f"/admin/routines/members/{uuid4()}/photos",
+                headers=manager,
+                data={"angle": "front"},
+                files={"photo": ("progreso.png", png, "image/png")},
+            ).status_code == 404
+
+            # A real PNG is stored under a random name and only its metadata
+            # comes back from the API.
+            before: set = set()
+            older = upload(
+                manager,
+                captured_at="2026-10-18T15:30:00+00:00",
+                notes="  Primera foto  ",
+            )
+            assert older.status_code == 201, older.text
+            older_photo = older.json()
+            assert older_photo["angle"] == "front"
+            assert older_photo["notes"] == "Primera foto"
+            assert older_photo["content_type"] == "image/png"
+            assert older_photo["byte_size"] == len(png)
+            assert older_photo["captured_at"].startswith("2026-10-18T15:30:00")
+            older_file = (set(directory.iterdir()) - before).pop()
+            assert older_file.name.endswith(".png")
+            assert "progreso" not in older_file.name
+            assert len(older_file.name) == 36
+
+            newer = upload(trainer, angle="side")
+            assert newer.status_code == 201, newer.text
+            newer_file = (set(directory.iterdir()) - before - {older_file}).pop()
+
+            listed = client.get(photos_url, headers=trainer).json()
+            assert [item["id"] for item in listed] == [newer.json()["id"], older_photo["id"]]
+
+            # Download streams the stored bytes with no-store and nosniff.
+            downloaded = client.get(
+                f"/admin/routines/photos/{older_photo['id']}/file", headers=trainer
+            )
+            assert downloaded.status_code == 200
+            assert downloaded.content == png
+            assert downloaded.headers["content-type"] == "image/png"
+            assert downloaded.headers["cache-control"] == "private, no-store"
+            assert downloaded.headers["x-content-type-options"] == "nosniff"
+            assert "inline" in downloaded.headers["content-disposition"]
+            assert "foto-progreso-2026-10-18-front.png" in downloaded.headers[
+                "content-disposition"
+            ]
+            assert client.get(
+                f"/admin/routines/photos/{older_photo['id']}/file", headers=reception
+            ).status_code == 403
+            assert client.get(
+                f"/admin/routines/photos/{uuid4()}/file", headers=manager
+            ).status_code == 404
+
+            # A metadata row whose file disappeared reports a missing image;
+            # deleting it still removes the row.
+            older_file.unlink()
+            assert client.get(
+                f"/admin/routines/photos/{older_photo['id']}/file", headers=manager
+            ).status_code == 404
+            assert client.delete(
+                f"/admin/routines/photos/{older_photo['id']}", headers=manager
+            ).status_code == 204
+            assert [item["id"] for item in client.get(photos_url, headers=manager).json()] == [
+                newer.json()["id"]
+            ]
+
+            # Deleting a photo removes both the row and its file.
+            assert client.delete(
+                f"/admin/routines/photos/{newer.json()['id']}", headers=manager
+            ).status_code == 204
+            assert not newer_file.exists()
+            assert client.get(photos_url, headers=manager).json() == []
+            assert client.delete(
+                f"/admin/routines/photos/{newer.json()['id']}", headers=manager
+            ).status_code == 404
+            assert client.get(
+                f"/admin/routines/members/{uuid4()}/photos", headers=manager
+            ).status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+    with pytest.raises(ValueError):
+        photo_path("../escape.png")

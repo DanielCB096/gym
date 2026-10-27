@@ -21,6 +21,8 @@ Probar que cada regla crítica del negocio funcione sin errores, especialmente a
 - notas de crédito parciales y totales con control de saldo, cancelación y relación CFDI
 - complementos de pago PPD: parcialidades, saldo, relación 07 y cancelación de la última
 - conciliación bancaria: importación idempotente, vínculo uno a uno, diferencias con motivo y permisos
+- metas del socio: línea base congelada, una meta activa por medida, avance y cierre automático
+- fotos de progreso: validación por firma y tamaño, almacenamiento fuera de la base, descarga autenticada y eliminación explícita
 - permisos y bitácora
 - corte de caja y inventario
 
@@ -46,6 +48,33 @@ Probar que cada regla crítica del negocio funcione sin errores, especialmente a
 
 Verificación manual en vista previa (2026-10-25): alta de cuenta, activación/desactivación, importación CSV con duplicado, conciliación exacta y con diferencia, desvinculación, marcado y reapertura, filtros por estado/fecha/texto, búsqueda manual y restricciones por rol en el panel. La vista previa no prueba la carga de archivos binarios ni un banco real.
 
+## Cobertura de metas del socio
+
+`backend/tests/test_routines_api.py` (1 prueba de ciclo de vida) cubre:
+
+- permisos: recepción recibe `403` en lectura y escritura; gerente y entrenador administran.
+- validaciones: fecha objetivo pasada, grasa corporal fuera de 0–100, objetivo cero, objetivo ya cumplido por la última medición y una segunda meta activa de la misma medida (`409`).
+- línea base: una meta creada sin mediciones queda sin línea base y la primera medición posterior la congela; con mediciones previas se usa la última.
+- avance y edición: el porcentaje se calcula contra la línea base, `PATCH` mueve el objetivo, rechaza un objetivo ya cumplido y limpia o conserva la fecha y la nota.
+- cierre automático: registrar una medición que alcanza el objetivo pasa la meta a `achieved` con valor y fecha; una meta cumplida ya no se edita ni se cancela y no bloquea crear otra de la misma medida.
+- cancelación: una meta activa se cancela, permanece en el histórico con su fecha y el filtro por estado la devuelve.
+- casos límite: socio inexistente o inactivo y meta inexistente responden `404`.
+
+Verificación manual en vista previa (2026-10-25): en Rutinas → Seguimiento se abrió el detalle de una asignación con metas activa y cancelada (línea base, valor actual y avance) y el de una meta cumplida al 100 %; se creó una meta de pecho con objetivo, se editó su objetivo y nota, y se canceló. El registro de prueba se retiró de la base de vista previa al terminar.
+
+## Cobertura de fotos de progreso
+
+`backend/tests/test_routines_api.py` (1 prueba de ciclo de vida) cubre:
+
+- permisos: recepción recibe `403` en listado, carga, descarga y eliminación; gerente y entrenador administran.
+- validaciones: ángulo desconocido, tipo no admitido, contenido que no coincide con el tipo declarado, imagen vacía o basura (`422`) e imagen de más de 8 MB (`413`); una carga rechazada no crea el directorio de fotos.
+- almacenamiento: la carga válida devuelve metadatos con la nota recortada, guarda un nombre aleatorio de 36 caracteres y no conserva el nombre original; el listado ordena de la más reciente a la más antigua; un socio inexistente responde `404`.
+- descarga: devuelve los bytes, el `Content-Type`, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff` y el nombre en línea; recepción recibe `403` y una foto inexistente `404`.
+- eliminación: si el archivo falta, la descarga responde `404` pero la fila se puede borrar (`204`); borrar elimina fila y archivo, y repetir responde `404`; una clave de almacenamiento con `../` se rechaza antes de tocar el disco.
+- aislamiento: cada caso usa un `tmp_path` propio mediante `PROGRESS_PHOTOS_DIR`, así que las pruebas no escriben en el directorio real de vista previa.
+
+Verificación manual en vista previa (2026-10-26): en Rutinas → Seguimiento se abrió el detalle de una asignación con fotos sembradas; la galería mostró ángulo, fecha, tamaño y nota; el visor ampliado cargó la imagen desde el BFF; se subió una foto nueva con ángulo, fecha y nota (el contador pasó de 3 a 4) y se eliminó con confirmación (volvió a 3, con los avisos de éxito). Al terminar se restauró la base de vista previa y se revocó la sesión temporal de la verificación.
+
 ## Evidencia esperada
 
 - logs de prueba
@@ -55,4 +84,4 @@ Verificación manual en vista previa (2026-10-25): alta de cuenta, activación/d
 
 ## Estado
 
-La suite automatizada del backend cierra en **135 pruebas** y el build de producción del panel pasa. La conciliación se verificó de extremo a extremo en vista previa; los complementos PPD cuentan con pruebas de API, un seed de vista previa y verificación en navegador (selector PUE/PPD con forma `99`, tabla de parcialidades, descargas XML/PDF y rechazo de un importe mayor al saldo). La cartera PPD cuenta con una prueba de API que backdatea facturas para cubrir los cuatro tramos, comprueba que los complementos solicitados no reducen el saldo, y valida filtros, paginación y liquidación; su pestaña se verificó en la vista previa. Pendiente de ejecución en proyecto real, con un estado de cuenta bancario real y con un PAC real (el timbrado sigue siendo simulado y sin validez fiscal).
+La suite automatizada del backend cierra en **137 pruebas** y el build de producción del panel pasa. La conciliación se verificó de extremo a extremo en vista previa; los complementos PPD cuentan con pruebas de API, un seed de vista previa y verificación en navegador (selector PUE/PPD con forma `99`, tabla de parcialidades, descargas XML/PDF y rechazo de un importe mayor al saldo). La cartera PPD cuenta con una prueba de API que backdatea facturas para cubrir los cuatro tramos, comprueba que los complementos solicitados no reducen el saldo, y valida filtros, paginación y liquidación; su pestaña se verificó en la vista previa. Las metas del socio se verificaron en navegador (activa, cancelada y cumplida; alta, edición y cancelación) y las fotos de progreso cuentan con una prueba de ciclo de vida que cubre permisos, validación por firma, límite de tamaño, almacenamiento, descarga autenticada y eliminación, además de verificación en navegador de la galería, el visor, la carga y la eliminación. Pendiente de ejecución en proyecto real, con un estado de cuenta bancario real y con un PAC real (el timbrado sigue siendo simulado y sin validez fiscal).

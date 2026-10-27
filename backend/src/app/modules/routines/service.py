@@ -13,18 +13,24 @@ The rules that keep the training plan honest live here:
 * a workout is only logged against an *active* assignment and never dated in the
   future;
 * body measurements are append-only: recording a new one adds a row, it never
-  replaces an earlier measurement.
+  replaces an earlier measurement;
+* a goal freezes its starting measurement as the baseline and is closed
+  automatically when a later measurement meets the target. Achieving a goal
+  never reopens it, even if the member later moves away from the target;
+* a progress photo is validated by its actual bytes (not by the declared
+  content type or filename) and stored outside the database under a random
+  key. The row keeps only metadata.
 
-No money is involved in this module. Per-set workout detail, goals, progress
-photos and trainer-member messaging are out of this first increment (see
-``docs/deuda-tecnica.md``).
+No money is involved in this module. Per-set workout detail and trainer-member
+messaging are out of scope (see ``docs/deuda-tecnica.md``).
 """
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -32,13 +38,20 @@ from app.modules.identity.models import Employee
 from app.modules.memberships.models import Member
 from app.modules.routines.models import (
     ASSIGNMENT_STATUSES,
+    GOAL_DIRECTIONS,
+    GOAL_METRICS,
+    GOAL_STATUSES,
     MAX_EFFORT,
     MAX_WEEKLY_FREQUENCY,
     MIN_EFFORT,
     MIN_WEEKLY_FREQUENCY,
+    PROGRESS_PHOTO_ANGLES,
+    PROGRESS_PHOTO_CONTENT_TYPES,
     ROUTINE_STATUSES,
     BodyMeasurement,
     Exercise,
+    MemberGoal,
+    ProgressPhoto,
     Routine,
     RoutineAssignment,
     RoutineItem,
@@ -46,10 +59,33 @@ from app.modules.routines.models import (
     WorkoutLog,
     utc_now,
 )
+from app.modules.routines.photo_storage import (
+    MAX_PROGRESS_PHOTO_BYTES,
+    delete_photo,
+    photo_path,
+    save_photo,
+)
+from app.timezone import club_date
 
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
 MAX_MEASUREMENT_HISTORY = 36
+MAX_GOAL_NOTES = 300
+MAX_PROGRESS_PHOTO_NOTES = 300
+MAX_PROGRESS_PHOTO_HISTORY = 100
+
+_GOAL_METRIC_COLUMNS = {
+    "weight_kg": BodyMeasurement.weight_kg,
+    "waist_cm": BodyMeasurement.waist_cm,
+    "chest_cm": BodyMeasurement.chest_cm,
+    "body_fat_percent": BodyMeasurement.body_fat_percent,
+}
+_GOAL_METRIC_LABELS = {
+    "weight_kg": "peso",
+    "waist_cm": "cintura",
+    "chest_cm": "pecho",
+    "body_fat_percent": "grasa corporal",
+}
 
 # Sentinel so a partial update can tell "leave unchanged" (absent) apart from
 # "clear the value" (explicit ``None``).
@@ -121,6 +157,34 @@ class InvalidWorkoutState(RoutinesError):
 
 
 class InvalidMeasurement(RoutinesError):
+    pass
+
+
+class GoalNotFound(RoutinesError):
+    pass
+
+
+class InvalidGoalData(RoutinesError):
+    pass
+
+
+class DuplicateActiveGoal(RoutinesError):
+    pass
+
+
+class InvalidGoalState(RoutinesError):
+    pass
+
+
+class InvalidProgressPhoto(RoutinesError):
+    pass
+
+
+class ProgressPhotoTooLarge(InvalidProgressPhoto):
+    pass
+
+
+class ProgressPhotoNotFound(RoutinesError):
     pass
 
 
@@ -305,6 +369,47 @@ class MeasurementItem:
     body_fat_percent: float | None
     notes: str | None
     created_at: datetime
+
+
+@dataclass(frozen=True)
+class ProgressPhotoItem:
+    id: UUID
+    member_id: UUID
+    angle: str
+    captured_at: datetime
+    notes: str | None
+    content_type: str
+    byte_size: int
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class ProgressPhotoFile:
+    photo: ProgressPhotoItem
+    path: Path
+
+
+@dataclass(frozen=True)
+class MemberGoalItem:
+    id: UUID
+    member_id: UUID
+    metric: str
+    direction: str
+    target_value: float
+    baseline_value: float | None
+    baseline_measured_at: datetime | None
+    target_date: date | None
+    notes: str | None
+    status: str
+    current_value: float | None
+    current_measured_at: datetime | None
+    progress_percent: int | None
+    achieved: bool
+    achieved_value: float | None
+    achieved_at: datetime | None
+    cancelled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -1428,9 +1533,325 @@ def record_measurement(
         created_at=occurred,
     )
     session.add(measurement)
+    session.flush()
+    _apply_goal_updates(session, member_id, measurement=measurement, now=occurred)
     session.commit()
     session.refresh(measurement)
     return _measurement_item(measurement)
+
+
+# --------------------------------------------------------------------------- #
+# Goals
+# --------------------------------------------------------------------------- #
+
+
+def _latest_goal_measurement(
+    session: Session, member_id: UUID, metric: str
+) -> BodyMeasurement | None:
+    column = _GOAL_METRIC_COLUMNS[metric]
+    return session.exec(
+        select(BodyMeasurement)
+        .where(BodyMeasurement.member_id == member_id, column.is_not(None))
+        .order_by(BodyMeasurement.measured_at.desc(), BodyMeasurement.created_at.desc())
+    ).first()
+
+
+def _goal_measurement_value(
+    measurement: BodyMeasurement | None, metric: str
+) -> float | None:
+    if measurement is None:
+        return None
+    return _as_float(getattr(measurement, metric))
+
+
+def _goal_target_reached(goal: MemberGoal, value: float) -> bool:
+    target = _as_float(goal.target_value)
+    if target is None:
+        return False
+    return _target_reached(goal.direction, target, value)
+
+
+def _target_reached(direction: str, target: float, value: float) -> bool:
+    if direction == "decrease":
+        return value <= target
+    return value >= target
+
+
+def _goal_progress(goal: MemberGoal, current: float | None) -> tuple[bool, int | None]:
+    if goal.status == "achieved":
+        return True, 100
+    baseline = _as_float(goal.baseline_value)
+    target = _as_float(goal.target_value)
+    if current is None or baseline is None or target is None:
+        return False, None
+    if goal.direction == "decrease":
+        span = baseline - target
+        percent = (
+            100.0
+            if _goal_target_reached(goal, current)
+            else ((baseline - current) / span * 100 if span > 0 else 0.0)
+        )
+    else:
+        span = target - baseline
+        percent = (
+            100.0
+            if _goal_target_reached(goal, current)
+            else ((current - baseline) / span * 100 if span > 0 else 0.0)
+        )
+    return False, max(0, min(100, round(percent)))
+
+
+def _goal_item(goal: MemberGoal, latest: BodyMeasurement | None) -> MemberGoalItem:
+    current = _goal_measurement_value(latest, goal.metric)
+    _, progress = _goal_progress(goal, current)
+    return MemberGoalItem(
+        id=goal.id,
+        member_id=goal.member_id,
+        metric=goal.metric,
+        direction=goal.direction,
+        target_value=_as_float(goal.target_value) or 0.0,
+        baseline_value=_as_float(goal.baseline_value),
+        baseline_measured_at=(
+            _as_utc(goal.baseline_measured_at)
+            if goal.baseline_measured_at is not None
+            else None
+        ),
+        target_date=goal.target_date,
+        notes=goal.notes,
+        status=goal.status,
+        current_value=current,
+        current_measured_at=(
+            _as_utc(latest.measured_at) if latest is not None else None
+        ),
+        progress_percent=progress,
+        achieved=goal.status == "achieved",
+        achieved_value=_as_float(goal.achieved_value),
+        achieved_at=(
+            _as_utc(goal.achieved_at) if goal.achieved_at is not None else None
+        ),
+        cancelled_at=(
+            _as_utc(goal.cancelled_at) if goal.cancelled_at is not None else None
+        ),
+        created_at=_as_utc(goal.created_at),
+        updated_at=_as_utc(goal.updated_at),
+    )
+
+
+def _goal_view(session: Session, goal: MemberGoal) -> MemberGoalItem:
+    return _goal_item(
+        goal, _latest_goal_measurement(session, goal.member_id, goal.metric)
+    )
+
+
+def _require_goal(session: Session, goal_id: UUID) -> MemberGoal:
+    goal = session.get(MemberGoal, goal_id)
+    if goal is None:
+        raise GoalNotFound("La meta no existe")
+    return goal
+
+
+def _validate_goal_target(metric: str, target_value: float) -> float:
+    target = float(target_value)
+    if target <= 0:
+        raise InvalidGoalData("El objetivo debe ser mayor que cero")
+    if metric == "body_fat_percent" and target > 100:
+        raise InvalidGoalData("La grasa corporal objetivo debe estar entre 0 y 100")
+    if target > 1000:
+        raise InvalidGoalData("El objetivo es demasiado alto")
+    return target
+
+
+def _clean_goal_notes(notes: str | None) -> str | None:
+    clean = (notes or "").strip() or None
+    if clean is not None and len(clean) > MAX_GOAL_NOTES:
+        raise InvalidGoalData(
+            f"La nota de la meta no puede exceder {MAX_GOAL_NOTES} caracteres"
+        )
+    return clean
+
+
+def _apply_goal_updates(
+    session: Session,
+    member_id: UUID,
+    *,
+    measurement: BodyMeasurement,
+    now: datetime,
+) -> None:
+    goals = session.exec(
+        select(MemberGoal).where(
+            MemberGoal.member_id == member_id,
+            MemberGoal.status == "active",
+        )
+    ).all()
+    for goal in goals:
+        value = _goal_measurement_value(measurement, goal.metric)
+        if value is None:
+            continue
+        if goal.baseline_value is None:
+            goal.baseline_value = value
+            goal.baseline_measured_at = _as_utc(measurement.measured_at)
+        latest = _latest_goal_measurement(session, member_id, goal.metric)
+        current = _goal_measurement_value(latest, goal.metric)
+        if current is None or not _goal_target_reached(goal, current):
+            continue
+        goal.status = "achieved"
+        goal.achieved_value = current
+        goal.achieved_at = now
+        goal.updated_at = now
+        session.add(goal)
+
+
+def create_member_goal(
+    session: Session,
+    member_id: UUID,
+    *,
+    metric: str,
+    direction: str,
+    target_value: float,
+    target_date: date | None = None,
+    notes: str | None = None,
+    actor_id: UUID | None = None,
+    now: datetime | None = None,
+) -> MemberGoalItem:
+    member = _require_member(session, member_id)
+    if member.status == "inactive":
+        raise MemberNotEligible("El socio está inactivo")
+    if metric not in GOAL_METRICS:
+        raise InvalidGoalData("La medida de la meta no es válida")
+    if direction not in GOAL_DIRECTIONS:
+        raise InvalidGoalData("La dirección de la meta no es válida")
+    target = _validate_goal_target(metric, target_value)
+    occurred = _as_utc(now or utc_now())
+    if target_date is not None and target_date < club_date(occurred):
+        raise InvalidGoalData("La fecha objetivo no puede ser anterior a hoy")
+    existing = session.exec(
+        select(MemberGoal).where(
+            MemberGoal.member_id == member_id,
+            MemberGoal.metric == metric,
+            MemberGoal.status == "active",
+        )
+    ).first()
+    if existing is not None:
+        label = _GOAL_METRIC_LABELS[metric]
+        raise DuplicateActiveGoal(f"Ya hay una meta activa para el {label}")
+
+    latest = _latest_goal_measurement(session, member_id, metric)
+    baseline = _goal_measurement_value(latest, metric)
+    if baseline is not None and _target_reached(direction, target, baseline):
+        label = _GOAL_METRIC_LABELS[metric]
+        raise InvalidGoalData(
+            f"La meta ya se cumple con la última medición de {label}; elige un objetivo más exigente"
+        )
+
+    goal = MemberGoal(
+        member_id=member_id,
+        metric=metric,
+        direction=direction,
+        target_value=target,
+        baseline_value=baseline,
+        baseline_measured_at=(
+            _as_utc(latest.measured_at) if latest is not None else None
+        ),
+        target_date=target_date,
+        notes=_clean_goal_notes(notes),
+        status="active",
+        created_by=actor_id,
+        created_at=occurred,
+        updated_at=occurred,
+    )
+    session.add(goal)
+    try:
+        session.commit()
+    except IntegrityError as error:  # pragma: no cover - race on the partial unique index
+        session.rollback()
+        raise DuplicateActiveGoal("Ya hay una meta activa para esa medida") from error
+    session.refresh(goal)
+    return _goal_view(session, goal)
+
+
+def update_member_goal(
+    session: Session,
+    goal_id: UUID,
+    *,
+    target_value: float | None = None,
+    target_date: date | None = UNSET,  # type: ignore[assignment]
+    notes: str | None = UNSET,  # type: ignore[assignment]
+    now: datetime | None = None,
+) -> MemberGoalItem:
+    goal = _require_goal(session, goal_id)
+    if goal.status != "active":
+        raise InvalidGoalState("Solo se puede editar una meta activa")
+
+    occurred = _as_utc(now or utc_now())
+    if target_value is not None:
+        target = _validate_goal_target(goal.metric, target_value)
+        latest = _latest_goal_measurement(session, goal.member_id, goal.metric)
+        current = _goal_measurement_value(latest, goal.metric)
+        if current is not None and _target_reached(goal.direction, target, current):
+            label = _GOAL_METRIC_LABELS[goal.metric]
+            raise InvalidGoalData(
+                f"La meta ya se cumple con la última medición de {label}; elige un objetivo más exigente"
+            )
+        goal.target_value = target
+    if target_date is not UNSET:
+        if target_date is not None and target_date < club_date(occurred):
+            raise InvalidGoalData("La fecha objetivo no puede ser anterior a hoy")
+        goal.target_date = target_date
+    if notes is not UNSET:
+        goal.notes = _clean_goal_notes(notes)
+
+    goal.updated_at = occurred
+    session.add(goal)
+    session.commit()
+    session.refresh(goal)
+    return _goal_view(session, goal)
+
+
+def cancel_member_goal(
+    session: Session,
+    goal_id: UUID,
+    *,
+    actor_id: UUID | None = None,
+    now: datetime | None = None,
+) -> MemberGoalItem:
+    goal = _require_goal(session, goal_id)
+    if goal.status != "active":
+        raise InvalidGoalState("Solo se puede cancelar una meta activa")
+    occurred = _as_utc(now or utc_now())
+    goal.status = "cancelled"
+    goal.cancelled_at = occurred
+    goal.cancelled_by = actor_id
+    goal.updated_at = occurred
+    session.add(goal)
+    session.commit()
+    session.refresh(goal)
+    return _goal_view(session, goal)
+
+
+def list_member_goals(
+    session: Session,
+    member_id: UUID,
+    *,
+    status: str | None = None,
+) -> list[MemberGoalItem]:
+    _require_member(session, member_id)
+    if status is not None and status not in GOAL_STATUSES:
+        raise InvalidGoalData("El estado de la meta no es válido")
+    statement = select(MemberGoal).where(MemberGoal.member_id == member_id)
+    if status is not None:
+        statement = statement.where(MemberGoal.status == status)
+    order = case(
+        (MemberGoal.status == "active", 0),
+        (MemberGoal.status == "achieved", 1),
+        else_=2,
+    )
+    goals = session.exec(
+        statement.order_by(order, MemberGoal.created_at.desc())
+    ).all()
+    return [
+        _goal_item(goal, _latest_goal_measurement(session, member_id, goal.metric))
+        for goal in goals
+    ]
 
 
 def list_measurements(
@@ -1451,6 +1872,129 @@ def list_measurements(
         .limit(page_size)
     )
     return [_measurement_item(row) for row in session.exec(statement).all()]
+
+
+# --------------------------------------------------------------------------- #
+# Progress photos
+# --------------------------------------------------------------------------- #
+
+
+def _progress_photo_item(photo: ProgressPhoto) -> ProgressPhotoItem:
+    return ProgressPhotoItem(
+        id=photo.id,
+        member_id=photo.member_id,
+        angle=photo.angle,
+        captured_at=_as_utc(photo.captured_at),
+        notes=photo.notes,
+        content_type=photo.content_type,
+        byte_size=photo.byte_size,
+        created_at=_as_utc(photo.created_at),
+    )
+
+
+def _clean_progress_photo_notes(notes: str | None) -> str | None:
+    clean = (notes or "").strip() or None
+    if clean is not None and len(clean) > MAX_PROGRESS_PHOTO_NOTES:
+        raise InvalidProgressPhoto(
+            f"La nota de la foto no puede exceder {MAX_PROGRESS_PHOTO_NOTES} caracteres"
+        )
+    return clean
+
+
+def _require_progress_photo(session: Session, photo_id: UUID) -> ProgressPhoto:
+    photo = session.get(ProgressPhoto, photo_id)
+    if photo is None:
+        raise ProgressPhotoNotFound("La foto no existe")
+    return photo
+
+
+def record_progress_photo(
+    session: Session,
+    member_id: UUID,
+    *,
+    data: bytes,
+    content_type: str | None,
+    angle: str,
+    captured_at: datetime | None = None,
+    notes: str | None = None,
+    actor_id: UUID | None = None,
+    now: datetime | None = None,
+) -> ProgressPhotoItem:
+    _require_member(session, member_id)
+    if angle not in PROGRESS_PHOTO_ANGLES:
+        raise InvalidProgressPhoto("El ángulo de la foto no es válido")
+    declared_type = (content_type or "").split(";", 1)[0].strip().lower()
+    if declared_type not in PROGRESS_PHOTO_CONTENT_TYPES:
+        raise InvalidProgressPhoto("La foto debe ser JPEG, PNG o WebP")
+    if not data:
+        raise InvalidProgressPhoto("La imagen está vacía")
+    if len(data) > MAX_PROGRESS_PHOTO_BYTES:
+        limit_mb = MAX_PROGRESS_PHOTO_BYTES // (1024 * 1024)
+        raise ProgressPhotoTooLarge(f"La imagen no puede superar {limit_mb} MB")
+    clean_notes = _clean_progress_photo_notes(notes)
+    occurred = _as_utc(now or utc_now())
+    captured = _as_utc(captured_at) if captured_at is not None else occurred
+
+    try:
+        stored = save_photo(data, declared_type)
+    except ValueError as error:
+        raise InvalidProgressPhoto(str(error)) from error
+
+    photo = ProgressPhoto(
+        member_id=member_id,
+        angle=angle,
+        captured_at=captured,
+        notes=clean_notes,
+        content_type=stored.content_type,
+        byte_size=stored.byte_size,
+        storage_key=stored.key,
+        uploaded_by=actor_id,
+        created_at=occurred,
+    )
+    session.add(photo)
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        delete_photo(stored.key)
+        raise
+    session.refresh(photo)
+    return _progress_photo_item(photo)
+
+
+def list_progress_photos(session: Session, member_id: UUID) -> list[ProgressPhotoItem]:
+    _require_member(session, member_id)
+    photos = session.exec(
+        select(ProgressPhoto)
+        .where(ProgressPhoto.member_id == member_id)
+        .order_by(ProgressPhoto.captured_at.desc(), ProgressPhoto.created_at.desc())
+        .limit(MAX_PROGRESS_PHOTO_HISTORY)
+    ).all()
+    return [_progress_photo_item(photo) for photo in photos]
+
+
+def progress_photo_file(session: Session, photo_id: UUID) -> ProgressPhotoFile:
+    photo = _require_progress_photo(session, photo_id)
+    try:
+        path = photo_path(photo.storage_key)
+    except ValueError as error:
+        raise ProgressPhotoNotFound("El archivo de la foto no está disponible") from error
+    if not path.is_file():
+        raise ProgressPhotoNotFound("El archivo de la foto no está disponible")
+    return ProgressPhotoFile(photo=_progress_photo_item(photo), path=path)
+
+
+def delete_progress_photo(session: Session, photo_id: UUID) -> None:
+    photo = _require_progress_photo(session, photo_id)
+    storage_key = photo.storage_key
+    session.delete(photo)
+    session.commit()
+    try:
+        delete_photo(storage_key)
+    except (OSError, ValueError):
+        # The row is already gone; an orphaned file is preferable to failing a
+        # deletion the caller can no longer retry.
+        pass
 
 
 def member_progress(

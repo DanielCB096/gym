@@ -12,11 +12,15 @@ This module covers the trainer side of the routine lifecycle:
   to a member, with dates, weekly frequency and status;
 * ``workout_logs`` record a performed session against an assignment;
 * ``body_measurements`` store the member's weight and girths as an
-  append-only history (the spec forbids replacing an earlier measurement).
+  append-only history (the spec forbids replacing an earlier measurement);
+* ``member_goals`` track a target for one measurement against a frozen
+  baseline;
+* ``progress_photos`` keep the metadata of a visual progress record. The image
+  bytes are stored under a random key in the directory configured by
+  ``PROGRESS_PHOTOS_DIR`` (never inside the database).
 
-Workout detail per set (``DetalleEntrenamiento``), goals, progress photos and
-trainer-member messaging are deliberately out of this first increment; they are
-tracked in ``docs/deuda-tecnica.md``.
+Workout detail per set (``DetalleEntrenamiento``) and trainer-member messaging
+are deliberately out of scope; they are tracked in ``docs/deuda-tecnica.md``.
 """
 
 from datetime import date, datetime, timezone
@@ -43,6 +47,11 @@ from sqlmodel import Field, SQLModel
 ROUTINE_STATUSES = ("draft", "active", "archived")
 ASSIGNMENT_STATUSES = ("active", "completed", "cancelled")
 WORKOUT_STATUSES = ("logged", "reviewed")
+GOAL_METRICS = ("weight_kg", "waist_cm", "chest_cm", "body_fat_percent")
+GOAL_DIRECTIONS = ("decrease", "increase")
+GOAL_STATUSES = ("active", "achieved", "cancelled")
+PROGRESS_PHOTO_ANGLES = ("front", "side", "back", "other")
+PROGRESS_PHOTO_CONTENT_TYPES = ("image/jpeg", "image/png", "image/webp")
 
 MIN_WEEKLY_FREQUENCY = 1
 MAX_WEEKLY_FREQUENCY = 7
@@ -397,4 +406,146 @@ class BodyMeasurement(SQLModel, table=True):
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
+class ProgressPhoto(SQLModel, table=True):
+    """Metadata of a member's progress photo.
+
+    The image itself never lives in the database: ``storage_key`` points at a
+    random file inside the configured local directory, and the row keeps only
+    the facts needed to list, serve and audit the photo.
+    """
+
+    __tablename__ = "progress_photos"
+    __table_args__ = (
+        CheckConstraint(
+            "angle IN ('front', 'side', 'back', 'other')",
+            name="ck_progress_photos_angle",
+        ),
+        CheckConstraint(
+            "content_type IN ('image/jpeg', 'image/png', 'image/webp')",
+            name="ck_progress_photos_content_type",
+        ),
+        CheckConstraint("byte_size > 0", name="ck_progress_photos_byte_size"),
+        Index("ix_progress_photos_member_date", "member_id", "captured_at"),
+        Index("uq_progress_photos_storage_key", "storage_key", unique=True),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    member_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True), ForeignKey("members.id", ondelete="RESTRICT"), nullable=False
+        )
+    )
+    angle: str = Field(max_length=12)
+    captured_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    notes: str | None = Field(default=None, max_length=300)
+    content_type: str = Field(max_length=32)
+    byte_size: int = Field(sa_type=Integer)
+    storage_key: str = Field(max_length=80)
+    uploaded_by: UUID | None = Field(
+        default=None,
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="RESTRICT")),
+    )
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
+class MemberGoal(SQLModel, table=True):
+    """A member's target for one body measurement.
+
+    The baseline is the measurement that was current when the goal was created
+    (or the first one recorded afterwards), and it never moves: progress is
+    always read against that anchor. A goal is closed automatically when a
+    measurement meets the target; later measurements never reopen it.
+    """
+
+    __tablename__ = "member_goals"
+    __table_args__ = (
+        CheckConstraint(
+            "metric IN ('weight_kg', 'waist_cm', 'chest_cm', 'body_fat_percent')",
+            name="ck_member_goals_metric",
+        ),
+        CheckConstraint(
+            "direction IN ('decrease', 'increase')", name="ck_member_goals_direction"
+        ),
+        CheckConstraint(
+            "status IN ('active', 'achieved', 'cancelled')", name="ck_member_goals_status"
+        ),
+        CheckConstraint("target_value > 0", name="ck_member_goals_target_positive"),
+        CheckConstraint(
+            "baseline_value IS NULL OR baseline_value >= 0",
+            name="ck_member_goals_baseline_nonnegative",
+        ),
+        CheckConstraint(
+            "achieved_value IS NULL OR achieved_value >= 0",
+            name="ck_member_goals_achieved_nonnegative",
+        ),
+        CheckConstraint(
+            "achieved_at IS NULL OR status = 'achieved'", name="ck_member_goals_achieved_state"
+        ),
+        CheckConstraint(
+            "status <> 'achieved' OR achieved_at IS NOT NULL",
+            name="ck_member_goals_achieved_date",
+        ),
+        CheckConstraint(
+            "status <> 'cancelled' OR cancelled_at IS NOT NULL",
+            name="ck_member_goals_cancelled_date",
+        ),
+        Index("ix_member_goals_member_status", "member_id", "status", "created_at"),
+        # One live goal per metric; cancelling or achieving frees the metric for
+        # a new goal without deleting the history.
+        Index(
+            "uq_member_goals_active_metric",
+            "member_id",
+            "metric",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    member_id: UUID = Field(
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("members.id", ondelete="RESTRICT"), nullable=False)
+    )
+    metric: str = Field(max_length=24)
+    direction: str = Field(max_length=12)
+    target_value: float = Field(sa_column=Column(Numeric(6, 2), nullable=False))
+    baseline_value: float | None = Field(default=None, sa_column=Column(Numeric(6, 2)))
+    baseline_measured_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    target_date: date | None = Field(default=None, sa_column=Column(Date))
+    notes: str | None = Field(default=None, sa_column=Column(Text))
+    status: str = Field(
+        default="active",
+        sa_column=Column(String(16), nullable=False, server_default=text("'active'")),
+    )
+    achieved_value: float | None = Field(default=None, sa_column=Column(Numeric(6, 2)))
+    achieved_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    cancelled_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    cancelled_by: UUID | None = Field(
+        default=None,
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="RESTRICT")),
+    )
+    created_by: UUID | None = Field(
+        default=None,
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="RESTRICT")),
+    )
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+            onupdate=func.now(),
+        ),
     )

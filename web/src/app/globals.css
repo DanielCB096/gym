@@ -549,6 +549,7 @@ th.sortable-header .sort-indicator { font-size: 8px; color: #23509a; }
 .inline-form .form-field { margin: 0; }
 .inline-form .form-field > span { font-size: 9px; }
 .inline-form .form-field input { min-width: 96px; min-height: 34px; }
+.inline-form .form-field select { min-width: 96px; min-height: 34px; }
 .inline-form .inline-grow { flex: 1 1 160px; }
 .inline-form .inline-grow input { width: 100%; }
 
@@ -557,6 +558,43 @@ th.sortable-header .sort-indicator { font-size: 8px; color: #23509a; }
 .workout-date strong { display: block; font-size: 11px; }
 .workout-date small, .workout-notes { color: #9aa49d; font-size: 9px; }
 .workout-notes { white-space: normal; }
+
+.goal-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.goal-row { padding: 10px 12px; border: 1px solid #e6ebe7; border-radius: 6px; background: #fff; }
+.goal-row-muted { background: #fafbfa; }
+.goal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.goal-title strong { display: block; font-size: 11px; }
+.goal-title small { color: #9aa49d; font-size: 9px; }
+.goal-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; color: #7c887f; font-size: 9px; }
+.goal-meta strong { color: var(--ink); font: 600 10px "Space Grotesk", sans-serif; }
+.goal-progress { height: 5px; margin-top: 7px; overflow: hidden; border-radius: 999px; background: #eef2ee; }
+.goal-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #4f7d5d, #72a37f); }
+.goal-note { margin: 6px 0 0; color: #6b7a70; font-size: 9px; }
+.goal-actions { display: flex; gap: 12px; margin-top: 6px; }
+.goal-edit-form { margin: 8px 0 0; padding: 9px 10px; }
+
+.inline-form .photo-file-field { flex: 1 1 220px; }
+.inline-form .photo-file-field input { width: 100%; padding: 7px; font-size: 10px; }
+.photo-hint { margin: -2px 0 10px; }
+.photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+.photo-card { overflow: hidden; border: 1px solid #e6ebe7; border-radius: 7px; background: #fff; }
+.photo-thumb { display: block; width: 100%; aspect-ratio: 4 / 5; padding: 0; border: 0; background: #f1f4f0; cursor: zoom-in; }
+.photo-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.photo-info { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 9px 4px; }
+.photo-meta { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.photo-meta strong { font: 600 10px "Space Grotesk", sans-serif; }
+.photo-meta small { color: #7c887f; font-size: 8px; }
+.photo-delete { width: 26px; height: 26px; color: #9a5a51; }
+.photo-delete:hover { color: #8a3d32; background: #fbeeeb; }
+.photo-note { margin: 0; padding: 0 9px 8px; color: #6b7a70; font-size: 9px; overflow-wrap: anywhere; }
+.photo-viewer { position: fixed; z-index: 60; inset: 0; display: grid; place-items: center; padding: 22px; background: rgba(12, 20, 16, .78); }
+.photo-viewer-content { position: relative; display: flex; max-width: min(92vw, 640px); max-height: 92vh; flex-direction: column; gap: 10px; padding: 12px; border-radius: 9px; background: #fff; box-shadow: var(--shadow); }
+.photo-viewer-content > img { display: block; max-width: 100%; max-height: 68vh; object-fit: contain; border-radius: 5px; background: #f1f4f0; }
+.photo-viewer-close { position: absolute; top: 8px; right: 8px; background: rgba(255, 255, 255, .92); }
+.photo-viewer-meta { display: flex; flex-direction: column; gap: 3px; color: #6b7a70; font-size: 10px; }
+.photo-viewer-meta strong { color: var(--ink); font: 600 12px "Space Grotesk", sans-serif; }
+.photo-viewer-meta p { margin: 2px 0 0; font-size: 10px; overflow-wrap: anywhere; }
+.photo-viewer-meta .text-button { align-self: flex-start; }
 
 .compact-table { margin-top: 2px; }
 .compact-table th { height: 30px; }
@@ -801,6 +839,8 @@ th.sortable-header .sort-indicator { font-size: 8px; color: #23509a; }
 .reconciliation-import-sample { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 8px; }
 
 @media (max-width: 650px) {
+  .photo-grid { grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); }
+  .photo-viewer { padding: 12px; }
   .reconciliation-account-grid { grid-template-columns: 1fr; }
   .reconciliation-import-preview { grid-template-columns: 1fr; }
   .reconciliation-candidate { flex-direction: column; align-items: stretch; }

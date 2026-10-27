@@ -3,6 +3,9 @@ import { NextRequest, NextResponse } from "next/server";
 export const SESSION_COOKIE = "gym_session";
 export const GYM_API_URL = (process.env.GYM_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 
+// The backend rejects photos over 8 MB; leave room for the other form fields.
+const MAX_FORM_DATA_BYTES = 9 * 1024 * 1024;
+
 export async function proxyAuthenticatedGet(request: NextRequest, path: string): Promise<NextResponse> {
   const token = request.cookies.get(SESSION_COOKIE)?.value;
   if (!token) {
@@ -57,6 +60,7 @@ export async function proxyAuthenticatedDownload(
         "Content-Type": response.headers.get("content-type") ?? "text/csv; charset=utf-8",
         "Content-Disposition": response.headers.get("content-disposition") ?? "attachment",
         "Cache-Control": response.headers.get("cache-control") ?? "no-store, private",
+        "X-Content-Type-Options": response.headers.get("x-content-type-options") ?? "nosniff",
       },
     });
   } catch {
@@ -89,6 +93,47 @@ export async function proxyAuthenticatedJson(
     if (response.status === 204 || response.status === 205) {
       return new NextResponse(null, { status: response.status });
     }
+    const proxyResponse = NextResponse.json(payload, { status: response.status });
+    if (response.status === 401) {
+      clearSessionCookie(proxyResponse);
+    }
+    return proxyResponse;
+  } catch {
+    return NextResponse.json({ detail: "Identity service is unavailable" }, { status: 502 });
+  }
+}
+
+export async function proxyAuthenticatedFormData(
+  request: NextRequest,
+  path: string,
+): Promise<NextResponse> {
+  if (!isSameOriginRequest(request)) {
+    return NextResponse.json({ detail: "Cross-origin request rejected" }, { status: 403 });
+  }
+  const token = request.cookies.get(SESSION_COOKIE)?.value;
+  if (!token) {
+    return NextResponse.json({ detail: "Authentication required" }, { status: 401 });
+  }
+  const declaredLength = Number(request.headers.get("content-length") ?? "");
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_FORM_DATA_BYTES) {
+    return NextResponse.json({ detail: "La imagen supera el límite permitido" }, { status: 413 });
+  }
+
+  let body: FormData;
+  try {
+    body = await request.formData();
+  } catch {
+    return NextResponse.json({ detail: "Invalid request body" }, { status: 400 });
+  }
+
+  try {
+    const response = await fetch(`${GYM_API_URL}${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body,
+      cache: "no-store",
+    });
+    const payload = await response.json().catch(() => ({}));
     const proxyResponse = NextResponse.json(payload, { status: response.status });
     if (response.status === 401) {
       clearSessionCookie(proxyResponse);

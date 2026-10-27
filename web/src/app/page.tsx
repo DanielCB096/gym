@@ -1713,6 +1713,45 @@ type MemberProgress = {
   measurements: BackendMeasurement[];
 };
 
+type GoalMetric = "weight_kg" | "waist_cm" | "chest_cm" | "body_fat_percent";
+type GoalDirection = "decrease" | "increase";
+type GoalState = "active" | "achieved" | "cancelled";
+
+type BackendGoal = {
+  id: string;
+  member_id: string;
+  metric: GoalMetric;
+  direction: GoalDirection;
+  target_value: number;
+  baseline_value: number | null;
+  baseline_measured_at: string | null;
+  target_date: string | null;
+  notes: string | null;
+  status: GoalState;
+  current_value: number | null;
+  current_measured_at: string | null;
+  progress_percent: number | null;
+  achieved: boolean;
+  achieved_value: number | null;
+  achieved_at: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type PhotoAngle = "front" | "side" | "back" | "other";
+
+type BackendProgressPhoto = {
+  id: string;
+  member_id: string;
+  angle: PhotoAngle;
+  captured_at: string;
+  notes: string | null;
+  content_type: string;
+  byte_size: number;
+  created_at: string;
+};
+
 type RoutinesOverview = {
   exercises: number;
   routines_active: number;
@@ -1758,6 +1797,50 @@ const workoutStatusBadges: Record<WorkoutState, string> = {
   reviewed: "status-good",
 };
 
+const goalMetricLabels: Record<GoalMetric, string> = {
+  weight_kg: "Peso",
+  waist_cm: "Cintura",
+  chest_cm: "Pecho",
+  body_fat_percent: "Grasa corporal",
+};
+
+const goalMetricUnits: Record<GoalMetric, string> = {
+  weight_kg: " kg",
+  waist_cm: " cm",
+  chest_cm: " cm",
+  body_fat_percent: "%",
+};
+
+const goalDirectionLabels: Record<GoalDirection, string> = {
+  decrease: "Bajar",
+  increase: "Subir",
+};
+
+const goalStatusLabels: Record<GoalState, string> = {
+  active: "Activa",
+  achieved: "Cumplida",
+  cancelled: "Cancelada",
+};
+
+const goalStatusBadges: Record<GoalState, string> = {
+  active: "status-warn",
+  achieved: "status-good",
+  cancelled: "status-bad",
+};
+
+const GOAL_METRICS: GoalMetric[] = ["weight_kg", "waist_cm", "chest_cm", "body_fat_percent"];
+const GOAL_DIRECTIONS: GoalDirection[] = ["decrease", "increase"];
+
+const photoAngleLabels: Record<PhotoAngle, string> = {
+  front: "Frente",
+  side: "Perfil",
+  back: "Espalda",
+  other: "Otra",
+};
+
+const PHOTO_ANGLES: PhotoAngle[] = ["front", "side", "back", "other"];
+const MAX_PROGRESS_PHOTO_BYTES = 8 * 1024 * 1024;
+
 function formatDateOnly(value: string | null): string {
   if (!value) return "—";
   const [year, month, day] = value.slice(0, 10).split("-");
@@ -1789,6 +1872,12 @@ function shiftDateInput(iso: string, days: number): string {
 function formatMeasurementValue(value: number | null, unit: string): string {
   if (value === null || value === undefined) return "—";
   return `${value}${unit}`;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
 }
 
 type EquipmentState = "operational" | "maintenance" | "out_of_service" | "inspection" | "retired";
@@ -7382,6 +7471,8 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
   const [workouts, setWorkouts] = useState<BackendWorkout[]>([]);
   const [progress, setProgress] = useState<MemberProgress | null>(null);
   const [measurements, setMeasurements] = useState<BackendMeasurement[]>([]);
+  const [goals, setGoals] = useState<BackendGoal[]>([]);
+  const [photos, setPhotos] = useState<BackendProgressPhoto[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [refresh, setRefresh] = useState(0);
@@ -7399,6 +7490,23 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
   const [bodyFat, setBodyFat] = useState("");
   const [measurementNotes, setMeasurementNotes] = useState("");
 
+  const [goalMetric, setGoalMetric] = useState<GoalMetric>("weight_kg");
+  const [goalDirection, setGoalDirection] = useState<GoalDirection>("decrease");
+  const [goalTarget, setGoalTarget] = useState("");
+  const [goalTargetDate, setGoalTargetDate] = useState("");
+  const [goalNotes, setGoalNotes] = useState("");
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
+  const [editGoalTarget, setEditGoalTarget] = useState("");
+  const [editGoalTargetDate, setEditGoalTargetDate] = useState("");
+  const [editGoalNotes, setEditGoalNotes] = useState("");
+
+  const [photoAngle, setPhotoAngle] = useState<PhotoAngle>("front");
+  const [photoCapturedAt, setPhotoCapturedAt] = useState(todayDateInput());
+  const [photoNotes, setPhotoNotes] = useState("");
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [viewingPhoto, setViewingPhoto] = useState<BackendProgressPhoto | null>(null);
+  const photoInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     let active = true;
     const load = async () => {
@@ -7412,16 +7520,20 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
         if (!active) return;
         setDetail(detailData);
         const memberId = detailData.assignment.member_id;
-        const [workoutsResponse, progressResponse, measurementsResponse] = await Promise.all([
+        const [workoutsResponse, progressResponse, measurementsResponse, goalsResponse, photosResponse] = await Promise.all([
           fetch(`/api/admin/routines/assignments/${assignmentId}/workouts?page_size=50`, { cache: "no-store" }),
           fetch(`/api/admin/routines/members/${memberId}/progress`, { cache: "no-store" }),
           fetch(`/api/admin/routines/members/${memberId}/measurements?page_size=36`, { cache: "no-store" }),
+          fetch(`/api/admin/routines/members/${memberId}/goals`, { cache: "no-store" }),
+          fetch(`/api/admin/routines/members/${memberId}/photos`, { cache: "no-store" }),
         ]);
-        if ([workoutsResponse, progressResponse, measurementsResponse].some((response) => response.status === 401)) { onUnauthorized(); return; }
+        if ([workoutsResponse, progressResponse, measurementsResponse, goalsResponse, photosResponse].some((response) => response.status === 401)) { onUnauthorized(); return; }
         if (!active) return;
         if (workoutsResponse.ok) setWorkouts(await workoutsResponse.json() as BackendWorkout[]);
         if (progressResponse.ok) setProgress(await progressResponse.json() as MemberProgress);
         if (measurementsResponse.ok) setMeasurements(await measurementsResponse.json() as BackendMeasurement[]);
+        if (goalsResponse.ok) setGoals(await goalsResponse.json() as BackendGoal[]);
+        if (photosResponse.ok) setPhotos(await photosResponse.json() as BackendProgressPhoto[]);
       } catch {
         if (active) setError("No se pudo cargar la asignación.");
       } finally {
@@ -7492,8 +7604,143 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
     }
   };
 
-  const reviewWorkout = async (workout: BackendWorkout) => {
+  const createGoal = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!detail) return;
+    const targetValue = Number(goalTarget);
+    if (!goalTarget.trim() || !Number.isFinite(targetValue) || targetValue <= 0) { onToast("Captura un objetivo válido."); return; }
+    setBusy(true);
     try {
+      const response = await fetch(`/api/admin/routines/members/${detail.assignment.member_id}/goals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          metric: goalMetric,
+          direction: goalDirection,
+          target_value: targetValue,
+          target_date: goalTargetDate || null,
+          notes: goalNotes.trim() || null,
+        }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) { onToast(payload.detail || "No se pudo registrar la meta."); return; }
+      setGoalTarget(""); setGoalTargetDate(""); setGoalNotes("");
+      setRefresh((value) => value + 1);
+      onChanged();
+      onToast("Meta registrada.");
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startGoalEdit = (goal: BackendGoal) => {
+    setEditingGoalId(goal.id);
+    setEditGoalTarget(String(goal.target_value));
+    setEditGoalTargetDate(toDateInputValue(goal.target_date));
+    setEditGoalNotes(goal.notes ?? "");
+  };
+
+  const saveGoalEdit = async (event: FormEvent<HTMLFormElement>, goalId: string) => {
+    event.preventDefault();
+    const targetValue = Number(editGoalTarget);
+    if (!editGoalTarget.trim() || !Number.isFinite(targetValue) || targetValue <= 0) { onToast("Captura un objetivo válido."); return; }
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/admin/routines/goals/${goalId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target_value: targetValue,
+          target_date: editGoalTargetDate || null,
+          notes: editGoalNotes.trim() || null,
+        }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) { onToast(payload.detail || "No se pudo actualizar la meta."); return; }
+      setEditingGoalId(null);
+      setRefresh((value) => value + 1);
+      onChanged();
+      onToast("Meta actualizada.");
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelGoal = async (goalId: string) => {
+    try {
+      const response = await fetch(`/api/admin/routines/goals/${goalId}/cancel`, { method: "POST" });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) { onToast(payload.detail || "No se pudo cancelar la meta."); return; }
+      setRefresh((value) => value + 1);
+      onChanged();
+      onToast("Meta cancelada.");
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    }
+  };
+
+  const uploadPhoto = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!detail) return;
+    if (!photoFile) { onToast("Selecciona una imagen."); return; }
+    if (!["image/jpeg", "image/png", "image/webp"].includes(photoFile.type)) { onToast("La foto debe ser JPEG, PNG o WebP."); return; }
+    if (photoFile.size > MAX_PROGRESS_PHOTO_BYTES) { onToast("La imagen no puede superar 8 MB."); return; }
+    if (!photoCapturedAt) { onToast("Selecciona la fecha de la foto."); return; }
+    const form = new FormData();
+    form.append("photo", photoFile);
+    form.append("angle", photoAngle);
+    form.append("captured_at", new Date(`${photoCapturedAt}T12:00:00`).toISOString());
+    if (photoNotes.trim()) form.append("notes", photoNotes.trim());
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/admin/routines/members/${detail.assignment.member_id}/photos`, {
+        method: "POST",
+        body: form,
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) { onToast(payload.detail || "No se pudo subir la foto."); return; }
+      setPhotoFile(null);
+      setPhotoNotes("");
+      setPhotoCapturedAt(todayDateInput());
+      if (photoInputRef.current) photoInputRef.current.value = "";
+      setRefresh((value) => value + 1);
+      onChanged();
+      onToast("Foto de progreso subida.");
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deletePhoto = async (photo: BackendProgressPhoto) => {
+    if (!window.confirm(`¿Eliminar la foto del ${formatDateOnly(photo.captured_at)}? Esta acción no se puede deshacer.`)) return;
+    try {
+      const response = await fetch(`/api/admin/routines/photos/${photo.id}`, { method: "DELETE" });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { detail?: string };
+        onToast(payload.detail || "No se pudo eliminar la foto.");
+        return;
+      }
+      if (viewingPhoto?.id === photo.id) setViewingPhoto(null);
+      setRefresh((value) => value + 1);
+      onChanged();
+      onToast("Foto eliminada.");
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    }
+  };
+
+  const reviewWorkout = async (workout: BackendWorkout) => {    try {
       const response = await fetch(`/api/admin/routines/workouts/${workout.id}/review`, { method: "POST" });
       if (response.status === 401) { onUnauthorized(); return; }
       const payload = await response.json().catch(() => ({})) as { detail?: string };
@@ -7615,6 +7862,107 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
                   ))}
                 </tbody>
               </table>
+            )}
+          </div>
+        )}
+
+        {detail && (
+          <div className="detail-section">
+            <p className="form-section-label">Fotos de progreso ({photos.length})</p>
+            {canManage && (
+              <form className="inline-form" onSubmit={uploadPhoto}>
+                <label className="form-field photo-file-field"><span>Imagen</span><input ref={photoInputRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={(event: ChangeEvent<HTMLInputElement>) => setPhotoFile(event.target.files?.[0] ?? null)} /></label>
+                <label className="form-field"><span>Ángulo</span><select value={photoAngle} onChange={(event) => setPhotoAngle(event.target.value as PhotoAngle)}>{PHOTO_ANGLES.map((angle) => <option key={angle} value={angle}>{photoAngleLabels[angle]}</option>)}</select></label>
+                <label className="form-field"><span>Fecha</span><input type="date" value={photoCapturedAt} onChange={(event) => setPhotoCapturedAt(event.target.value)} /></label>
+                <label className="form-field inline-grow"><span>Nota</span><input value={photoNotes} placeholder="Opcional" onChange={(event) => setPhotoNotes(event.target.value)} /></label>
+                <button type="submit" className="button button-primary" disabled={busy || !photoFile}><Upload size={16} />Subir foto</button>
+              </form>
+            )}
+            <p className="panel-hint photo-hint">JPEG, PNG o WebP · máximo 8 MB. Solo el personal con acceso a Rutinas puede verlas.</p>
+            {photos.length === 0 ? <p className="panel-hint">Sin fotos de progreso.</p> : (
+              <ul className="photo-grid">
+                {photos.map((photo) => (
+                  <li className="photo-card" key={photo.id}>
+                    <button type="button" className="photo-thumb" onClick={() => setViewingPhoto(photo)} aria-label={`Ver foto ${photoAngleLabels[photo.angle]} del ${formatDateOnly(photo.captured_at)}`}>
+                      <img src={`/api/admin/routines/photos/${photo.id}/file`} alt={`Foto ${photoAngleLabels[photo.angle]} del ${formatDateOnly(photo.captured_at)}`} loading="lazy" decoding="async" />
+                    </button>
+                    <div className="photo-info">
+                      <span className="photo-meta"><strong>{photoAngleLabels[photo.angle]}</strong><small>{formatDateOnly(photo.captured_at)} · {formatFileSize(photo.byte_size)}</small></span>
+                      {canManage && <button type="button" className="icon-button photo-delete" aria-label="Eliminar foto" onClick={() => deletePhoto(photo)}><Trash2 size={15} /></button>}
+                    </div>
+                    {photo.notes && <p className="photo-note">{photo.notes}</p>}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {viewingPhoto && (
+              <div className="photo-viewer" role="dialog" aria-modal="true" aria-label="Foto de progreso" onClick={() => setViewingPhoto(null)}>
+                <div className="photo-viewer-content" onClick={(event) => event.stopPropagation()}>
+                  <button type="button" className="icon-button photo-viewer-close" aria-label="Cerrar" onClick={() => setViewingPhoto(null)}><X size={18} /></button>
+                  <img src={`/api/admin/routines/photos/${viewingPhoto.id}/file`} alt={`Foto ${photoAngleLabels[viewingPhoto.angle]} del ${formatDateOnly(viewingPhoto.captured_at)}`} />
+                  <div className="photo-viewer-meta">
+                    <strong>{photoAngleLabels[viewingPhoto.angle]} · {formatDateOnly(viewingPhoto.captured_at)}</strong>
+                    <span>{formatFileSize(viewingPhoto.byte_size)}</span>
+                    {viewingPhoto.notes && <p>{viewingPhoto.notes}</p>}
+                    {canManage && <button type="button" className="text-button" onClick={() => deletePhoto(viewingPhoto)}>Eliminar foto</button>}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {detail && (
+          <div className="detail-section">
+            <p className="form-section-label">Metas del socio ({goals.length})</p>
+            {canManage && (
+              <form className="inline-form" onSubmit={createGoal}>
+                <label className="form-field"><span>Medida</span><select value={goalMetric} onChange={(event) => setGoalMetric(event.target.value as GoalMetric)}>{GOAL_METRICS.map((metric) => <option key={metric} value={metric}>{goalMetricLabels[metric]}</option>)}</select></label>
+                <label className="form-field"><span>Dirección</span><select value={goalDirection} onChange={(event) => setGoalDirection(event.target.value as GoalDirection)}>{GOAL_DIRECTIONS.map((direction) => <option key={direction} value={direction}>{goalDirectionLabels[direction]}</option>)}</select></label>
+                <label className="form-field"><span>Objetivo</span><input value={goalTarget} inputMode="decimal" placeholder="Ej. 68" onChange={(event) => setGoalTarget(event.target.value)} /></label>
+                <label className="form-field"><span>Fecha objetivo</span><input type="date" value={goalTargetDate} onChange={(event) => setGoalTargetDate(event.target.value)} /></label>
+                <label className="form-field inline-grow"><span>Nota</span><input value={goalNotes} placeholder="Opcional" onChange={(event) => setGoalNotes(event.target.value)} /></label>
+                <button type="submit" className="button button-primary" disabled={busy}><Plus size={16} />Agregar meta</button>
+              </form>
+            )}
+            {goals.length === 0 ? <p className="panel-hint">Sin metas registradas.</p> : (
+              <ul className="goal-list">
+                {goals.map((goal) => (
+                  <li className={`goal-row${goal.status === "active" ? "" : " goal-row-muted"}`} key={goal.id}>
+                    <div className="goal-head">
+                      <span className="goal-title">
+                        <strong>{goalMetricLabels[goal.metric]}</strong>
+                        <small>{goalDirectionLabels[goal.direction]} a {formatMeasurementValue(goal.target_value, goalMetricUnits[goal.metric])}{goal.target_date ? ` · antes del ${formatDateOnly(goal.target_date)}` : ""}</small>
+                      </span>
+                      <span className={`status-badge ${goalStatusBadges[goal.status]}`}><i />{goalStatusLabels[goal.status]}</span>
+                    </div>
+                    <div className="goal-meta">
+                      <span>Inicio <strong>{formatMeasurementValue(goal.baseline_value, goalMetricUnits[goal.metric])}</strong></span>
+                      <span>Actual <strong>{formatMeasurementValue(goal.current_value, goalMetricUnits[goal.metric])}</strong></span>
+                      <span>{goal.progress_percent === null ? "Sin avance calculable" : `${goal.progress_percent}% de avance`}</span>
+                    </div>
+                    {goal.progress_percent !== null && (
+                      <div className="goal-progress" aria-hidden="true"><span style={{ width: `${goal.progress_percent}%` }} /></div>
+                    )}
+                    {goal.notes && <p className="goal-note">{goal.notes}</p>}
+                    {canManage && goal.status === "active" && editingGoalId !== goal.id && (
+                      <div className="goal-actions">
+                        <button type="button" className="text-button" onClick={() => startGoalEdit(goal)}>Editar</button>
+                        <button type="button" className="text-button" onClick={() => cancelGoal(goal.id)}>Cancelar meta</button>
+                      </div>
+                    )}
+                    {canManage && goal.status === "active" && editingGoalId === goal.id && (
+                      <form className="inline-form goal-edit-form" onSubmit={(event) => saveGoalEdit(event, goal.id)}>
+                        <label className="form-field"><span>Objetivo</span><input value={editGoalTarget} inputMode="decimal" onChange={(event) => setEditGoalTarget(event.target.value)} /></label>
+                        <label className="form-field"><span>Fecha objetivo</span><input type="date" value={editGoalTargetDate} onChange={(event) => setEditGoalTargetDate(event.target.value)} /></label>
+                        <label className="form-field inline-grow"><span>Nota</span><input value={editGoalNotes} placeholder="Opcional" onChange={(event) => setEditGoalNotes(event.target.value)} /></label>
+                        <button type="submit" className="button button-primary" disabled={busy}>Guardar</button>
+                        <button type="button" className="button button-secondary" onClick={() => setEditingGoalId(null)}>Cerrar</button>
+                      </form>
+                    )}
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         )}

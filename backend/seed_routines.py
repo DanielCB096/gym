@@ -6,12 +6,16 @@ Run it from the ``backend`` directory with the virtualenv Python:
 
 The script is idempotent: the exercise library is created on demand (looked up
 by name) and the routines, assignments, workouts and measurements are only
-seeded once, when the routines table is still empty. It goes through the module
-service so versioning, the pinned routine version and the workout/measurement
+seeded once, when the routines table is still empty. Goals and progress photos
+are seeded separately, so a preview database created before those features
+existed still receives their demo data. It goes through the module service so
+versioning, the pinned routine version and the workout/measurement/goal/photo
 rules are all honoured.
 """
 
+import struct
 import sys
+import zlib
 
 sys.path.insert(0, r".\src")
 
@@ -24,7 +28,16 @@ from app.modules.identity.models import Employee  # noqa: E402
 from app.modules.identity.service import ensure_default_access_control  # noqa: E402
 from app.modules.memberships.models import Member  # noqa: E402
 from app.modules.routines import service as routines_service  # noqa: E402
-from app.modules.routines.models import Exercise, Routine  # noqa: E402
+from app.modules.routines.models import (  # noqa: E402
+    BodyMeasurement,
+    Exercise,
+    MemberGoal,
+    ProgressPhoto,
+    Routine,
+    RoutineAssignment,
+)
+from app.modules.routines.photo_storage import photos_root  # noqa: E402
+from app.timezone import to_club_timezone  # noqa: E402
 
 DATABASE_URL = "sqlite:///./gym_preview.db"
 
@@ -98,6 +111,182 @@ FIRST_ROUTINE_VERSION_2 = [
 ]
 
 
+def _latest_measurement(session: Session, member_id, metric: str) -> BodyMeasurement | None:
+    column = getattr(BodyMeasurement, metric)
+    return session.exec(
+        select(BodyMeasurement)
+        .where(BodyMeasurement.member_id == member_id, column.is_not(None))
+        .order_by(BodyMeasurement.measured_at.desc(), BodyMeasurement.created_at.desc())
+    ).first()
+
+
+def _seed_goals(session: Session) -> int:
+    """Seed one active, one cancelled and one achieved goal for the demo."""
+    if session.exec(select(MemberGoal)).first() is not None:
+        return 0
+    members = session.exec(
+        select(Member)
+        .where(Member.status == "active")
+        .order_by(Member.first_name)
+        .limit(3)
+    ).all()
+    today = date.today()
+    created = 0
+
+    if members:
+        weight = _latest_measurement(session, members[0].id, "weight_kg")
+        if weight is not None and weight.weight_kg is not None:
+            current = float(weight.weight_kg)
+            routines_service.create_member_goal(
+                session,
+                members[0].id,
+                metric="weight_kg",
+                direction="decrease",
+                target_value=max(1.0, round(current - 2, 1)),
+                target_date=today + timedelta(days=60),
+                notes="Meta de composición corporal.",
+            )
+            created += 1
+
+    if len(members) > 1:
+        member = members[1]
+        waist = _latest_measurement(session, member.id, "waist_cm")
+        if waist is not None and waist.waist_cm is not None:
+            current = float(waist.waist_cm)
+            routines_service.create_member_goal(
+                session,
+                member.id,
+                metric="waist_cm",
+                direction="decrease",
+                target_value=max(1.0, round(current - 2.5, 1)),
+                target_date=today + timedelta(days=45),
+                notes="Reducir cintura para el verano.",
+            )
+            created += 1
+        chest = _latest_measurement(session, member.id, "chest_cm")
+        if chest is not None and chest.chest_cm is not None:
+            cancelled = routines_service.create_member_goal(
+                session,
+                member.id,
+                metric="chest_cm",
+                direction="increase",
+                target_value=round(float(chest.chest_cm) + 2, 1),
+                target_date=today + timedelta(days=90),
+                notes="Ganar volumen en tren superior.",
+            )
+            routines_service.cancel_member_goal(session, cancelled.id)
+            created += 1
+
+    if len(members) > 2:
+        member = members[2]
+        fat = _latest_measurement(session, member.id, "body_fat_percent")
+        if fat is not None and fat.body_fat_percent is not None:
+            current = float(fat.body_fat_percent)
+            goal = routines_service.create_member_goal(
+                session,
+                member.id,
+                metric="body_fat_percent",
+                direction="decrease",
+                target_value=max(0.1, round(current - 1, 1)),
+                target_date=today + timedelta(days=90),
+                notes="Cierre de etapa de definición.",
+            )
+            created += 1
+            if goal.status == "active":
+                latest = session.exec(
+                    select(BodyMeasurement)
+                    .where(BodyMeasurement.member_id == member.id)
+                    .order_by(BodyMeasurement.measured_at.desc(), BodyMeasurement.created_at.desc())
+                ).first()
+                routines_service.record_measurement(
+                    session,
+                    member.id,
+                    weight_kg=float(latest.weight_kg) if latest and latest.weight_kg is not None else None,
+                    waist_cm=float(latest.waist_cm) if latest and latest.waist_cm is not None else None,
+                    chest_cm=float(latest.chest_cm) if latest and latest.chest_cm is not None else None,
+                    body_fat_percent=max(0.1, round(current - 1.5, 1)),
+                    notes="Cierre de meta de grasa corporal.",
+                )
+    return created
+
+
+# (angle, days before today, top colour, bottom colour, note)
+PHOTO_DEMOS = [
+    ("front", 56, (30, 66, 52), (118, 158, 130), "Inicio del plan de fuerza."),
+    ("side", 28, (42, 80, 108), (142, 174, 198), "Semana 4: mejora postural."),
+    ("back", 0, (118, 82, 46), (198, 174, 140), "Semana 8: control de espalda."),
+]
+
+
+def _demo_png(top: tuple[int, int, int], bottom: tuple[int, int, int]) -> bytes:
+    """Build a small valid PNG gradient without adding an image dependency."""
+    width, height = 240, 320
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    rows = bytearray()
+    for y in range(height):
+        ratio = y / (height - 1)
+        colour = bytes(round(top[i] + (bottom[i] - top[i]) * ratio) for i in range(3))
+        rows.append(0)
+        rows.extend(colour * width)
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(bytes(rows), 9))
+        + chunk(b"IEND", b"")
+    )
+
+
+def _seed_photos(session: Session) -> int:
+    """Seed dated progress photos for the first one or two assigned members."""
+    if session.exec(select(ProgressPhoto)).first() is not None:
+        return 0
+    member_ids: list = []
+    assignments = session.exec(
+        select(RoutineAssignment)
+        .where(RoutineAssignment.status == "active")
+        .order_by(RoutineAssignment.created_at)
+        .limit(2)
+    ).all()
+    for assignment in assignments:
+        if assignment.member_id not in member_ids:
+            member_ids.append(assignment.member_id)
+    if not member_ids:
+        member = session.exec(
+            select(Member).where(Member.status == "active").order_by(Member.first_name)
+        ).first()
+        if member is None:
+            return 0
+        member_ids.append(member.id)
+
+    now = datetime.now(timezone.utc)
+    local_day = to_club_timezone(now).replace(hour=12, minute=0, second=0, microsecond=0)
+    created = 0
+    for index, member_id in enumerate(member_ids):
+        for angle, days_ago, top, bottom, notes in PHOTO_DEMOS[: 3 if index == 0 else 1]:
+            captured_at = (local_day - timedelta(days=days_ago)).astimezone(timezone.utc)
+            routines_service.record_progress_photo(
+                session,
+                member_id,
+                data=_demo_png(top, bottom),
+                content_type="image/png",
+                angle=angle,
+                captured_at=captured_at,
+                notes=notes,
+                now=now,
+            )
+            created += 1
+    return created
+
+
 def main() -> None:
     engine = create_engine(DATABASE_URL, echo=False)
     SQLModel.metadata.create_all(engine)
@@ -125,23 +314,34 @@ def main() -> None:
                 load_note=load,
             )
 
+        members = session.exec(
+            select(Member).where(Member.status == "active").order_by(Member.first_name)
+        ).all()
+        trainers = session.exec(
+            select(Employee).where(Employee.status == "active").order_by(Employee.first_name)
+        ).all()
+        if not members:
+            print("No active members found: assignments, workouts and measurements will stay empty.")
+
         if session.exec(select(Routine)).first() is not None:
+            goals_created = _seed_goals(session)
+            photos_created = _seed_photos(session)
             overview = routines_service.module_overview(session)
             print("Routines already seeded; skipping the demo plan.")
+            if goals_created:
+                total_goals = len(session.exec(select(MemberGoal)).all())
+                print(f"Goals created: {goals_created} (total {total_goals})")
+            if photos_created:
+                total_photos = len(session.exec(select(ProgressPhoto)).all())
+                print(
+                    f"Progress photos created: {photos_created} "
+                    f"(total {total_photos}, dir {photos_root()})"
+                )
             print(
                 f"Exercises {overview.exercises} · routines {overview.routines_active} activas · "
                 f"asignaciones {overview.assignments_active} · entrenamientos (7d) {overview.workouts_last_7_days}"
             )
             return
-
-        trainers = session.exec(
-            select(Employee).where(Employee.status == "active").order_by(Employee.first_name)
-        ).all()
-        members = session.exec(
-            select(Member).where(Member.status == "active").order_by(Member.first_name)
-        ).all()
-        if not members:
-            print("No active members found: assignments, workouts and measurements will stay empty.")
 
         # --- Routines ------------------------------------------------------
         created_routines = []
@@ -219,12 +419,22 @@ def main() -> None:
                 )
                 measurements += 1
 
+        goals_created = _seed_goals(session)
+        total_goals = len(session.exec(select(MemberGoal)).all())
+        photos_created = _seed_photos(session)
+        total_photos = len(session.exec(select(ProgressPhoto)).all())
+
         overview = routines_service.module_overview(session)
         print(f"Exercises created: {created_exercises} (total {overview.exercises})")
         print(f"Routines created: {len(created_routines)} (activas {overview.routines_active})")
         print(f"Assignments created: {assignments} (activas {overview.assignments_active})")
         print(f"Workouts created: {workouts} (últimos 7 días {overview.workouts_last_7_days})")
         print(f"Measurements created: {measurements}")
+        print(f"Goals created: {goals_created} (total {total_goals})")
+        print(
+            f"Progress photos created: {photos_created} "
+            f"(total {total_photos}, dir {photos_root()})"
+        )
         print("Done!")
 
 

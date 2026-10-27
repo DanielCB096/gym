@@ -9,7 +9,8 @@ import os
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.engine import Engine
@@ -70,6 +71,7 @@ from app.modules.routines import (
     AssignmentDetail,
     AssignmentItem,
     AssignmentNotFound,
+    DuplicateActiveGoal,
     DuplicateAssignment,
     DuplicateExercise,
     DuplicateRoutineExercise,
@@ -78,16 +80,24 @@ from app.modules.routines import (
     ExerciseNotFound,
     ExercisePage,
     ExerciseUnavailable,
+    GoalNotFound,
     InvalidAssignmentState,
+    InvalidGoalData,
+    InvalidGoalState,
     InvalidMeasurement,
+    InvalidProgressPhoto,
     InvalidRoutineData,
     InvalidRoutineState,
     InvalidWorkoutData,
     InvalidWorkoutState,
     MeasurementItem,
+    MemberGoalItem,
     MemberNotEligible,
     MemberProgress,
     ModuleOverview,
+    ProgressPhotoItem,
+    ProgressPhotoNotFound,
+    ProgressPhotoTooLarge,
     RoutineDetail,
     RoutineItemInput,
     RoutineItemView,
@@ -100,26 +110,35 @@ from app.modules.routines import (
     WorkoutNotFound,
     archive_routine,
     cancel_assignment,
+    cancel_member_goal,
     complete_assignment,
     create_assignment,
     create_exercise,
+    create_member_goal,
     create_routine,
+    delete_progress_photo,
     get_assignment,
     get_routine,
     list_assignments,
     list_exercises,
     list_measurements,
+    list_member_goals,
+    list_progress_photos,
     list_routines,
     list_workouts,
     log_workout,
     member_progress,
     module_overview,
+    progress_photo_file,
     record_measurement,
+    record_progress_photo,
     replace_routine_items,
     review_workout,
     update_exercise,
+    update_member_goal,
     update_routine,
 )
+from app.modules.routines.photo_storage import MAX_PROGRESS_PHOTO_BYTES
 from app.modules.maintenance import (
     AreaServiceStatus,
     ChecklistItem,
@@ -1473,6 +1492,53 @@ class MemberProgressResponse(BaseModel):
     last_workout_at: date | None
     latest_measurement: MeasurementResponse | None
     measurements: list[MeasurementResponse]
+
+
+class MemberGoalResponse(BaseModel):
+    id: UUID
+    member_id: UUID
+    metric: str
+    direction: str
+    target_value: float
+    baseline_value: float | None
+    baseline_measured_at: datetime | None
+    target_date: date | None
+    notes: str | None
+    status: str
+    current_value: float | None
+    current_measured_at: datetime | None
+    progress_percent: int | None
+    achieved: bool
+    achieved_value: float | None
+    achieved_at: datetime | None
+    cancelled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreateMemberGoalRequest(BaseModel):
+    metric: Literal["weight_kg", "waist_cm", "chest_cm", "body_fat_percent"]
+    direction: Literal["decrease", "increase"]
+    target_value: float = Field(gt=0, le=1000)
+    target_date: date | None = None
+    notes: str | None = Field(default=None, max_length=300)
+
+
+class UpdateMemberGoalRequest(BaseModel):
+    target_value: float | None = Field(default=None, gt=0, le=1000)
+    target_date: date | None = None
+    notes: str | None = Field(default=None, max_length=300)
+
+
+class ProgressPhotoResponse(BaseModel):
+    id: UUID
+    member_id: UUID
+    angle: str
+    captured_at: datetime
+    notes: str | None
+    content_type: str
+    byte_size: int
+    created_at: datetime
 
 
 class RoutinesOverviewResponse(BaseModel):
@@ -4458,17 +4524,24 @@ _ROUTINES_ERROR_STATUS: tuple[tuple[type[RoutinesError], int], ...] = (
     (EmptyRoutine, status.HTTP_422_UNPROCESSABLE_ENTITY),
     (DuplicateRoutineExercise, status.HTTP_422_UNPROCESSABLE_ENTITY),
     (InvalidMeasurement, status.HTTP_422_UNPROCESSABLE_ENTITY),
+    (InvalidGoalData, status.HTTP_422_UNPROCESSABLE_ENTITY),
     (InvalidWorkoutData, status.HTTP_422_UNPROCESSABLE_ENTITY),
+    (ProgressPhotoTooLarge, status.HTTP_413_REQUEST_ENTITY_TOO_LARGE),
+    (InvalidProgressPhoto, status.HTTP_422_UNPROCESSABLE_ENTITY),
     (ExerciseNotFound, status.HTTP_404_NOT_FOUND),
     (RoutineNotFound, status.HTTP_404_NOT_FOUND),
     (AssignmentNotFound, status.HTTP_404_NOT_FOUND),
     (WorkoutNotFound, status.HTTP_404_NOT_FOUND),
+    (GoalNotFound, status.HTTP_404_NOT_FOUND),
+    (ProgressPhotoNotFound, status.HTTP_404_NOT_FOUND),
     (MemberNotEligible, status.HTTP_404_NOT_FOUND),
     (DuplicateExercise, status.HTTP_409_CONFLICT),
     (ExerciseUnavailable, status.HTTP_409_CONFLICT),
     (DuplicateAssignment, status.HTTP_409_CONFLICT),
+    (DuplicateActiveGoal, status.HTTP_409_CONFLICT),
     (InvalidRoutineState, status.HTTP_409_CONFLICT),
     (InvalidAssignmentState, status.HTTP_409_CONFLICT),
+    (InvalidGoalState, status.HTTP_409_CONFLICT),
     (InvalidWorkoutState, status.HTTP_409_CONFLICT),
 )
 
@@ -4610,6 +4683,43 @@ def _measurement_response(item: MeasurementItem) -> MeasurementResponse:
         body_fat_percent=item.body_fat_percent,
         notes=item.notes,
         created_at=item.created_at,
+    )
+
+
+def _progress_photo_response(item: ProgressPhotoItem) -> ProgressPhotoResponse:
+    return ProgressPhotoResponse(
+        id=item.id,
+        member_id=item.member_id,
+        angle=item.angle,
+        captured_at=item.captured_at,
+        notes=item.notes,
+        content_type=item.content_type,
+        byte_size=item.byte_size,
+        created_at=item.created_at,
+    )
+
+
+def _goal_response(item: MemberGoalItem) -> MemberGoalResponse:
+    return MemberGoalResponse(
+        id=item.id,
+        member_id=item.member_id,
+        metric=item.metric,
+        direction=item.direction,
+        target_value=item.target_value,
+        baseline_value=item.baseline_value,
+        baseline_measured_at=item.baseline_measured_at,
+        target_date=item.target_date,
+        notes=item.notes,
+        status=item.status,
+        current_value=item.current_value,
+        current_measured_at=item.current_measured_at,
+        progress_percent=item.progress_percent,
+        achieved=item.achieved,
+        achieved_value=item.achieved_value,
+        achieved_at=item.achieved_at,
+        cancelled_at=item.cancelled_at,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
     )
 
 
@@ -4992,6 +5102,188 @@ def record_measurement_endpoint(
     except RoutinesError as error:
         raise _routines_http_error(error) from error
     return _measurement_response(item)
+
+
+@app.get(
+    "/admin/routines/members/{member_id}/photos",
+    response_model=list[ProgressPhotoResponse],
+    tags=["routines"],
+)
+def list_progress_photos_endpoint(
+    member_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.read"))],
+) -> list[ProgressPhotoResponse]:
+    try:
+        photos = list_progress_photos(session, member_id)
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return [_progress_photo_response(item) for item in photos]
+
+
+@app.post(
+    "/admin/routines/members/{member_id}/photos",
+    response_model=ProgressPhotoResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["routines"],
+)
+async def upload_progress_photo_endpoint(
+    member_id: UUID,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.manage"))],
+    photo: Annotated[UploadFile, File(description="Imagen JPEG, PNG o WebP de hasta 8 MB")],
+    angle: Annotated[str, Form()],
+    captured_at: Annotated[datetime | None, Form()] = None,
+    notes: Annotated[str | None, Form()] = None,
+) -> ProgressPhotoResponse:
+    content_type = photo.content_type
+    data = await photo.read(MAX_PROGRESS_PHOTO_BYTES + 1)
+    await photo.close()
+    try:
+        item = record_progress_photo(
+            session,
+            member_id,
+            data=data,
+            content_type=content_type,
+            angle=angle,
+            captured_at=captured_at,
+            notes=notes,
+            actor_id=principal.user_id,
+        )
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return _progress_photo_response(item)
+
+
+@app.get("/admin/routines/photos/{photo_id}/file", tags=["routines"])
+def progress_photo_file_endpoint(
+    photo_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.read"))],
+) -> FileResponse:
+    try:
+        stored = progress_photo_file(session, photo_id)
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    filename = (
+        f"foto-progreso-{stored.photo.captured_at.date().isoformat()}-"
+        f"{stored.photo.angle}{stored.path.suffix}"
+    )
+    return FileResponse(
+        stored.path,
+        media_type=stored.photo.content_type,
+        filename=filename,
+        content_disposition_type="inline",
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.delete(
+    "/admin/routines/photos/{photo_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["routines"],
+)
+def delete_progress_photo_endpoint(
+    photo_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.manage"))],
+) -> Response:
+    try:
+        delete_progress_photo(session, photo_id)
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get(
+    "/admin/routines/members/{member_id}/goals",
+    response_model=list[MemberGoalResponse],
+    tags=["routines"],
+)
+def list_member_goals_endpoint(
+    member_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.read"))],
+    status_filter: Annotated[Literal["active", "achieved", "cancelled"] | None, Query(alias="status")] = None,
+) -> list[MemberGoalResponse]:
+    try:
+        goals = list_member_goals(session, member_id, status=status_filter)
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return [_goal_response(item) for item in goals]
+
+
+@app.post(
+    "/admin/routines/members/{member_id}/goals",
+    response_model=MemberGoalResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["routines"],
+)
+def create_member_goal_endpoint(
+    member_id: UUID,
+    request: CreateMemberGoalRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.manage"))],
+) -> MemberGoalResponse:
+    try:
+        item = create_member_goal(
+            session,
+            member_id,
+            metric=request.metric,
+            direction=request.direction,
+            target_value=request.target_value,
+            target_date=request.target_date,
+            notes=request.notes,
+            actor_id=principal.user_id,
+        )
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return _goal_response(item)
+
+
+@app.patch(
+    "/admin/routines/goals/{goal_id}",
+    response_model=MemberGoalResponse,
+    tags=["routines"],
+)
+def update_member_goal_endpoint(
+    goal_id: UUID,
+    request: UpdateMemberGoalRequest,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.manage"))],
+) -> MemberGoalResponse:
+    provided = request.model_fields_set
+    try:
+        item = update_member_goal(
+            session,
+            goal_id,
+            target_value=request.target_value,
+            target_date=request.target_date if "target_date" in provided else ROUTINES_UNSET,
+            notes=request.notes if "notes" in provided else ROUTINES_UNSET,
+        )
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return _goal_response(item)
+
+
+@app.post(
+    "/admin/routines/goals/{goal_id}/cancel",
+    response_model=MemberGoalResponse,
+    tags=["routines"],
+)
+def cancel_member_goal_endpoint(
+    goal_id: UUID,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.manage"))],
+) -> MemberGoalResponse:
+    try:
+        item = cancel_member_goal(session, goal_id, actor_id=principal.user_id)
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return _goal_response(item)
 
 
 @app.get("/admin/routines", response_model=RoutineDirectoryResponse, tags=["routines"])
