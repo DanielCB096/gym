@@ -4,6 +4,8 @@ import type {
   MemberAccount,
   MemberClassPage,
   MemberClassReservation,
+  MemberGoal,
+  MemberGoalInput,
   MemberLoginResult,
   MemberPaymentPage,
   MemberProfile,
@@ -176,6 +178,24 @@ export function recordMemberMeasurement(
     method: "POST",
     token,
     body: input,
+  });
+}
+
+export function createMemberGoal(
+  token: string,
+  input: MemberGoalInput,
+): Promise<MemberGoal> {
+  return request<MemberGoal>("/member/progress/goals", {
+    method: "POST",
+    token,
+    body: input,
+  });
+}
+
+export function cancelMemberGoal(token: string, goalId: string): Promise<MemberGoal> {
+  return request<MemberGoal>(`/member/progress/goals/${goalId}/cancel`, {
+    method: "POST",
+    token,
   });
 }
 

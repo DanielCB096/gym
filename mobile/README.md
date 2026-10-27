@@ -21,13 +21,14 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
   - actualización manual con deslizamiento.
 - Pantalla de rutinas y progreso con:
   - resumen de entrenamientos totales, de los últimos 30 días y del último peso registrado;
-  - metas del socio con avance, valor actual y fecha objetivo;
+  - metas del socio con avance, valor actual, fecha objetivo y autoría («Creada desde tu app» o «Creada por el personal»);
+  - formulario de **alta de metas** (medida y dirección como opciones, objetivo, fecha objetivo opcional y nota) y **cancelación en dos pasos** de las metas que creó desde la app;
   - últimas medidas corporales;
   - rutinas asignadas (estado, entrenador, versión, frecuencia y entrenamientos registrados);
   - detalle de cada rutina con el plan de la versión asignada (series, repeticiones, descanso y carga) y el historial de entrenamientos;
   - formulario para registrar un entrenamiento (fecha, duración, esfuerzo y notas) con un editor de **series opcional** por ejercicio del plan: repeticiones y peso por serie, con precarga de las repeticiones del plan y validación local de 1–100 repeticiones, 0–1000 kg, 60 series por entrenamiento y 20 por ejercicio;
   - historial de entrenamientos agrupado por ejercicio («8 × 24 kg · 8 × 26 kg») con su origen y estado;
-  - aviso de que las metas y las fotos de progreso se gestionan con el entrenador o en recepción;
+  - «Cancelar meta» (en dos pasos) solo aparece en las metas activas creadas desde la app; las del entrenador se leen con la etiqueta «Creada por el personal» y se cancelan en recepción;
   - actualización manual con deslizamiento.
 - Pantalla de pagos y estado de cuenta con:
   - saldo de la cuenta, con aviso para saldo a favor o deuda, conteo de cargos y abonos, importe pagado en membresías y fecha de corte;
@@ -94,14 +95,15 @@ Las reservas usan el origen `app`; el backend reutiliza las reglas del módulo d
 
 1. `GET /member/routines` devuelve las asignaciones del socio, con las activas primero, y el resumen por estado.
 2. `GET /member/routines/{assignment_id}` devuelve el plan de la **versión fijada al asignar**, el objetivo, las notas y los últimos 10 entrenamientos. Una asignación de otro socio responde `404`.
-3. `GET /member/progress` devuelve entrenamientos totales y de los últimos 30 días, última medición, histórico de medidas y metas con su avance.
+3. `GET /member/progress` devuelve entrenamientos totales y de los últimos 30 días, última medición, histórico de medidas y metas con su avance y su origen.
 4. La app agrupa ambos resultados en una pantalla de resumen y abre el detalle de cada rutina.
 5. `POST /member/routines/{assignment_id}/workouts` registra un entrenamiento (fecha, duración, esfuerzo y notas) en una asignación **activa**; queda como «Por revisar» hasta que el entrenador lo valida. Acepta `sets` con las series ejecutadas (`exercise_id`, `set_number`, `reps`, `weight_kg` opcional), validadas contra el plan de la versión asignada.
 6. `POST /member/progress/measurements` registra peso, cintura, pecho y grasa (al menos uno) con notas; es append-only y actualiza las metas al momento.
+7. `POST /member/progress/goals` crea una meta propia (`weight_kg`/`waist_cm`/`chest_cm`/`body_fat_percent`, dirección `decrease`/`increase`, objetivo, fecha opcional y nota) con `origin="app"` y la línea base de la última medición; `POST /member/progress/goals/{goal_id}/cancel` cierra una meta propia como `cancelled`.
 
-El socio **no** edita ni borra registros, ni captura metas o fotos desde la app: eso sigue siendo exclusivo del panel del personal (`routines.manage`). Editar la plantilla de una rutina no cambia el plan que el socio ya tiene asignado.
+El socio **no** edita ni borra registros, no edita metas ni captura fotos desde la app: eso sigue siendo exclusivo del panel del personal (`routines.manage`). Las metas que creó el personal tampoco las cancela desde la app (`409`); se gestionan en recepción. Editar la plantilla de una rutina no cambia el plan que el socio ya tiene asignado.
 
-En los formularios se valida en el cliente el formato de fecha, que no sea futura, la duración (0–600 min), el esfuerzo (1–10), los decimales con coma y al menos una medida. El campo de notas limita a 2000 caracteres en el entrenamiento y 300 en la medida. El detalle rotula cada registro como «Desde tu app» o «Desde recepción», con el estado «Por revisar» o «Revisado».
+En los formularios se valida en el cliente el formato de fecha, que no sea futura, la duración (0–600 min), el esfuerzo (1–10), los decimales con coma y al menos una medida. El campo de notas limita a 2000 caracteres en el entrenamiento y 300 en la medida y en la meta; el objetivo de la meta se acota a 100 como máximo para la grasa corporal y 1000 para las demás medidas, y la fecha objetivo no puede ser anterior a hoy. El detalle rotula cada registro como «Desde tu app» o «Desde recepción», con el estado «Por revisar» o «Revisado», y cada meta como «Creada desde tu app» o «Creada por el personal».
 
 ## Flujo de pagos y estado de cuenta
 
@@ -133,14 +135,14 @@ mobile/
         ├── CodeScreen.tsx  # código de 6 dígitos, reenvío y código de vista previa
         ├── HomeScreen.tsx  # perfil, acceso, membresía y saldo
         ├── ClassesScreen.tsx # cartelera, reserva, lista de espera y cancelación
-        ├── RoutinesScreen.tsx # resumen de progreso, metas, medidas (con alta) y rutinas asignadas
+        ├── RoutinesScreen.tsx # resumen de progreso, metas (con alta y cancelación), medidas (con alta) y rutinas asignadas
         ├── RoutineDetailScreen.tsx # plan, editor de series, historial y registro de entrenamientos
         └── PaymentsScreen.tsx # pagos de membresía y estado de cuenta (solo lectura)
 ```
 
 ## Pendientes
 
-- Metas y edición/borrado de registros desde la app (hoy el socio captura entrenamientos con sus series y medidas; su corrección se hace en recepción).
+- Edición de metas y edición/borrado de registros desde la app (hoy el socio captura entrenamientos con sus series, medidas y metas propias, y cancela estas últimas; su corrección se hace en recepción). Falta que el entrenador apruebe una meta creada desde la app y que el socio reciba aviso cuando el personal la edita o cancela.
 - Series objetivo por sesión, series por tiempo o distancia y métricas de volumen por ejercicio.
 - Aviso al entrenador de un entrenamiento pendiente de revisión y al socio cuando se revisa.
 - Fotos de progreso en la app, con consentimiento y política de acceso.

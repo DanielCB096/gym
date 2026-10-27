@@ -7,9 +7,10 @@ only expose what belongs to the authenticated member:
 * the workouts and measurements of that member;
 * the member's progress and goals.
 
-Members may log their own workouts and record their own measurements. Both are
-marked with ``origin = "app"`` and go through the same rules as the staff panel;
-a member workout stays ``logged`` until a trainer reviews it. Everything else
+Members may log their own workouts, record their own measurements and create
+or cancel the goals they created themselves from the app. All of it is marked
+with ``origin = "app"`` and goes through the same rules as the staff panel; a
+member workout stays ``logged`` until a trainer reviews it. Everything else
 (editing goals, uploading photos, closing assignments) stays with the staff.
 """
 
@@ -24,13 +25,18 @@ from app.modules.portal.service import MemberPortalError
 from app.modules.routines import (
     AssignmentItem,
     AssignmentNotFound,
+    GoalNotFound,
+    InvalidGoalState,
     MeasurementItem,
+    MemberGoal,
     MemberGoalItem,
     Routine,
     RoutineAssignment,
     RoutineLine,
     WorkoutItem,
     WorkoutSetInput,
+    cancel_member_goal,
+    create_member_goal,
     get_assignment,
     list_assignments,
     list_member_goals,
@@ -204,6 +210,45 @@ def record_member_measurement(
         origin="app",
         now=now,
     )
+
+
+def create_member_goal_from_app(
+    session: Session,
+    member_id: UUID,
+    *,
+    metric: str,
+    direction: str,
+    target_value: float,
+    target_date: date | None = None,
+    notes: str | None = None,
+    now: datetime | None = None,
+) -> MemberGoalItem:
+    return create_member_goal(
+        session,
+        member_id,
+        metric=metric,
+        direction=direction,
+        target_value=target_value,
+        target_date=target_date,
+        notes=notes,
+        origin="app",
+        now=now,
+    )
+
+
+def cancel_member_goal_from_app(
+    session: Session,
+    member_id: UUID,
+    goal_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> MemberGoalItem:
+    goal = session.get(MemberGoal, goal_id)
+    if goal is None or goal.member_id != member_id:
+        raise GoalNotFound("La meta no existe")
+    if goal.origin != "app":
+        raise InvalidGoalState("La meta la creó el personal; cancélala en recepción")
+    return cancel_member_goal(session, goal_id, now=now)
 
 
 def _assignment_counts(session: Session, member_id: UUID) -> dict[str, int]:

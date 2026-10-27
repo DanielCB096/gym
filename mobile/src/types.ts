@@ -201,6 +201,7 @@ export type MemberGoal = {
   target_date: string | null;
   notes: string | null;
   status: string;
+  origin: string;
   current_value: number | null;
   current_measured_at: string | null;
   progress_percent: number | null;
@@ -210,6 +211,14 @@ export type MemberGoal = {
   cancelled_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type MemberGoalInput = {
+  metric: string;
+  direction: string;
+  target_value: number;
+  target_date?: string | null;
+  notes?: string | null;
 };
 
 export type MemberProgress = {

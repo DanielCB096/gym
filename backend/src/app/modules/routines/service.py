@@ -429,6 +429,7 @@ class MemberGoalItem:
     target_date: date | None
     notes: str | None
     status: str
+    origin: str
     current_value: float | None
     current_measured_at: datetime | None
     progress_percent: int | None
@@ -1749,6 +1750,7 @@ def _goal_item(goal: MemberGoal, latest: BodyMeasurement | None) -> MemberGoalIt
         target_date=goal.target_date,
         notes=goal.notes,
         status=goal.status,
+        origin=goal.origin,
         current_value=current,
         current_measured_at=(
             _as_utc(latest.measured_at) if latest is not None else None
@@ -1841,6 +1843,7 @@ def create_member_goal(
     target_date: date | None = None,
     notes: str | None = None,
     actor_id: UUID | None = None,
+    origin: str = "staff",
     now: datetime | None = None,
 ) -> MemberGoalItem:
     member = _require_member(session, member_id)
@@ -1863,7 +1866,7 @@ def create_member_goal(
     ).first()
     if existing is not None:
         label = _GOAL_METRIC_LABELS[metric]
-        raise DuplicateActiveGoal(f"Ya hay una meta activa para el {label}")
+        raise DuplicateActiveGoal(f"Ya hay una meta activa de {label}")
 
     latest = _latest_goal_measurement(session, member_id, metric)
     baseline = _goal_measurement_value(latest, metric)
@@ -1885,6 +1888,7 @@ def create_member_goal(
         target_date=target_date,
         notes=_clean_goal_notes(notes),
         status="active",
+        origin=origin,
         created_by=actor_id,
         created_at=occurred,
         updated_at=occurred,
@@ -1894,7 +1898,7 @@ def create_member_goal(
         session.commit()
     except IntegrityError as error:  # pragma: no cover - race on the partial unique index
         session.rollback()
-        raise DuplicateActiveGoal("Ya hay una meta activa para esa medida") from error
+        raise DuplicateActiveGoal("Ya hay una meta activa de esa medida") from error
     session.refresh(goal)
     return _goal_view(session, goal)
 

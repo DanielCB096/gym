@@ -72,6 +72,11 @@ const GOAL_STATUS_LABELS: Record<string, string> = {
   cancelled: "Cancelada",
 };
 
+const GOAL_DIRECTION_LABELS: Record<string, string> = {
+  decrease: "Bajar",
+  increase: "Subir",
+};
+
 const PAYMENT_METHOD_LABELS: Record<string, string> = {
   cash: "Efectivo",
   card: "Tarjeta",
@@ -144,6 +149,14 @@ export function goalMetricLabel(metric: string): string {
 
 export function goalStatusLabel(status: string): string {
   return GOAL_STATUS_LABELS[status] ?? status;
+}
+
+export function goalDirectionLabel(direction: string): string {
+  return GOAL_DIRECTION_LABELS[direction] ?? direction;
+}
+
+export function goalMetricUnit(metric: string): string {
+  return GOAL_METRIC_UNITS[metric] ?? "";
 }
 
 export function formatMetric(metric: string, value: number | null): string {

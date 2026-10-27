@@ -533,6 +533,7 @@ class MemberGoal(SQLModel, table=True):
         CheckConstraint(
             "status IN ('active', 'achieved', 'cancelled')", name="ck_member_goals_status"
         ),
+        CheckConstraint("origin IN ('staff', 'app')", name="ck_member_goals_origin"),
         CheckConstraint("target_value > 0", name="ck_member_goals_target_positive"),
         CheckConstraint(
             "baseline_value IS NULL OR baseline_value >= 0",
@@ -582,6 +583,10 @@ class MemberGoal(SQLModel, table=True):
     status: str = Field(
         default="active",
         sa_column=Column(String(16), nullable=False, server_default=text("'active'")),
+    )
+    origin: str = Field(
+        default="staff",
+        sa_column=Column(String(8), nullable=False, server_default=text("'staff'")),
     )
     achieved_value: float | None = Field(default=None, sa_column=Column(Numeric(6, 2)))
     achieved_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))

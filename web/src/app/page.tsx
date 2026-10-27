@@ -1768,6 +1768,7 @@ type BackendGoal = {
   target_date: string | null;
   notes: string | null;
   status: GoalState;
+  origin: RecordOrigin;
   current_value: number | null;
   current_measured_at: string | null;
   progress_percent: number | null;
@@ -8055,7 +8056,7 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
                     <div className="goal-head">
                       <span className="goal-title">
                         <strong>{goalMetricLabels[goal.metric]}</strong>
-                        <small>{goalDirectionLabels[goal.direction]} a {formatMeasurementValue(goal.target_value, goalMetricUnits[goal.metric])}{goal.target_date ? ` · antes del ${formatDateOnly(goal.target_date)}` : ""}</small>
+                        <small>{goalDirectionLabels[goal.direction]} a {formatMeasurementValue(goal.target_value, goalMetricUnits[goal.metric])}{goal.target_date ? ` · antes del ${formatDateOnly(goal.target_date)}` : ""} · {recordOriginLabels[goal.origin]}</small>
                       </span>
                       <span className={`status-badge ${goalStatusBadges[goal.status]}`}><i />{goalStatusLabels[goal.status]}</span>
                     </div>

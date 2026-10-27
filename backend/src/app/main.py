@@ -358,6 +358,8 @@ from app.modules.portal.routines import (
     MemberProgressView,
     MemberRoutineDetail,
     MemberRoutineList,
+    cancel_member_goal_from_app,
+    create_member_goal_from_app,
     get_member_progress,
     get_member_routine,
     list_member_routines,
@@ -1661,6 +1663,7 @@ class MemberGoalResponse(BaseModel):
     target_date: date | None
     notes: str | None
     status: str
+    origin: str
     current_value: float | None
     current_measured_at: datetime | None
     progress_percent: int | None
@@ -2878,6 +2881,53 @@ def member_record_measurement(
     except RoutinesError as error:
         raise _routines_http_error(error) from error
     return _measurement_response(item)
+
+
+@app.post(
+    "/member/progress/goals",
+    response_model=MemberGoalResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["member self-service"],
+)
+def member_create_goal(
+    request: CreateMemberGoalRequest,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberGoalResponse:
+    try:
+        item = create_member_goal_from_app(
+            session,
+            member.member_id,
+            metric=request.metric,
+            direction=request.direction,
+            target_value=request.target_value,
+            target_date=request.target_date,
+            notes=request.notes,
+        )
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return _goal_response(item)
+
+
+@app.post(
+    "/member/progress/goals/{goal_id}/cancel",
+    response_model=MemberGoalResponse,
+    tags=["member self-service"],
+)
+def member_cancel_goal(
+    goal_id: UUID,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberGoalResponse:
+    try:
+        item = cancel_member_goal_from_app(session, member.member_id, goal_id)
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return _goal_response(item)
 
 
 @app.get(
@@ -5343,6 +5393,7 @@ def _goal_response(item: MemberGoalItem) -> MemberGoalResponse:
         target_date=item.target_date,
         notes=item.notes,
         status=item.status,
+        origin=item.origin,
         current_value=item.current_value,
         current_measured_at=item.current_measured_at,
         progress_percent=item.progress_percent,
