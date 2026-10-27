@@ -27,8 +27,8 @@ B --> L[Auditoría]
 - acceso segmentado por rol y permisos
 
 ### 2. Frontend móvil
-- app Expo/React Native para socios (`mobile/`): acceso sin contraseña con código OTP por correo, consulta de perfil, membresía, acceso habilitado y saldo, reserva o cancelación de clases con lista de espera sobre la agenda del club, consulta de rutinas asignadas, entrenamientos (con detalle por serie), medidas y metas, registro de entrenamientos con series (pendientes de revisión del entrenador), de medidas y de metas propias —con cancelación de esas últimas— desde la app, y consulta de pagos de membresía y estado de cuenta
-- pendiente: pago en línea, facturas, cobro de clases premium, fotos de progreso desde la app, aprobación de las metas del socio por el entrenador y recordatorios/notificaciones
+- app Expo/React Native para socios (`mobile/`): acceso sin contraseña con código OTP por correo, consulta de perfil, membresía, acceso habilitado y saldo, reserva o cancelación de clases con lista de espera sobre la agenda del club, consulta de rutinas asignadas, entrenamientos (con detalle por serie), medidas y metas, registro de entrenamientos con series (pendientes de revisión del entrenador), de medidas y de metas propias —con cancelación de esas últimas— desde la app, consulta de pagos de membresía y estado de cuenta, y bandeja de avisos del club (revisiones, cambios de metas, lugares liberados y vencimiento de la membresía) con insignia de no leídos en el inicio
+- pendiente: pago en línea, facturas, cobro de clases premium, fotos de progreso desde la app, aprobación de las metas del socio por el entrenador y notificaciones push o por correo (la bandeja ya existe, pero el aviso solo se ve al abrir la app)
 
 ### 3. Kiosco de recepción
 - check-in y flujo de acceso rápido
@@ -48,6 +48,8 @@ B --> L[Auditoría]
 ## Patrón de solución
 
 Se adopta un enfoque modular por dominio: membresías, acceso, clases, inventario, facturación, mantenimiento, personal y comunicación. Esto permite añadir servicios extra sin rediseñar el núcleo.
+
+Los **avisos del socio** (`app/modules/notifications`) se escriben **dentro de la transacción del evento** que los provoca —revisión de un entrenamiento, cambio o logro de una meta, promoción de lista de espera— y no desde un worker: hoy no hay Celery ni Redis desplegados y el requisito era que ningún aviso existiera sin el cambio que anuncia ni faltara después de un commit. El único aviso que no nace de un evento es el recordatorio de vencimiento de la membresía, que se **calcula de forma diferida al leer la bandeja** y se protege contra duplicados con un `dedupe_key` único por ventana (7/3/1 días). Cuando se desplieguen jobs, ese cálculo se puede invocar desde el worker sin cambiar el modelo.
 
 ## Estrategia de crecimiento
 

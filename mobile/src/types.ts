@@ -251,6 +251,25 @@ export type MemberPaymentPage = {
   total_paid_cents: number;
 };
 
+export type MemberNotification = {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  ref_id: string | null;
+  created_at: string;
+  read_at: string | null;
+};
+
+export type MemberNotificationPage = {
+  items: MemberNotification[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+  unread_total: number;
+};
+
 export type MemberAccountEntry = {
   kind: string;
   occurred_at: string;

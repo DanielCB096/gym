@@ -345,6 +345,14 @@ from app.modules.memberships.service import (
     start_first_charge,
     update_member,
 )
+from app.modules.notifications import (
+    MemberNotificationItem,
+    NotificationError,
+    list_member_notifications,
+    mark_all_notifications_read,
+    mark_notification_read,
+    unread_notification_count,
+)
 from app.modules.portal.classes import (
     MemberClassItem,
     MemberClassNotAllowed,
@@ -1784,6 +1792,33 @@ class MemberAccountResponse(BaseModel):
     entries_total: int
 
 
+class MemberNotificationResponse(BaseModel):
+    id: UUID
+    kind: str
+    title: str
+    body: str
+    ref_id: UUID | None
+    created_at: datetime
+    read_at: datetime | None
+
+
+class MemberNotificationPageResponse(BaseModel):
+    items: list[MemberNotificationResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+    unread_total: int
+
+
+class MemberNotificationCountResponse(BaseModel):
+    unread: int
+
+
+class MemberNotificationReadAllResponse(BaseModel):
+    updated: int
+
+
 class EquipmentResponse(BaseModel):
     id: UUID
     name: str
@@ -2982,6 +3017,76 @@ def member_account(
         as_of=account.as_of,
         entries=[_member_account_entry_response(entry) for entry in account.entries],
         entries_total=account.entries_total,
+    )
+
+
+@app.get(
+    "/member/notifications",
+    response_model=MemberNotificationPageResponse,
+    tags=["member self-service"],
+)
+def member_notifications(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> MemberNotificationPageResponse:
+    try:
+        inbox = list_member_notifications(
+            session, member.member_id, page=page, page_size=page_size
+        )
+    except NotificationError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return MemberNotificationPageResponse(
+        items=[_member_notification_response(item) for item in inbox.items],
+        total=inbox.total,
+        page=inbox.page,
+        page_size=inbox.page_size,
+        pages=inbox.pages,
+        unread_total=inbox.unread_total,
+    )
+
+
+@app.get(
+    "/member/notifications/unread-count",
+    response_model=MemberNotificationCountResponse,
+    tags=["member self-service"],
+)
+def member_notifications_unread(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberNotificationCountResponse:
+    return MemberNotificationCountResponse(unread=unread_notification_count(session, member.member_id))
+
+
+@app.post(
+    "/member/notifications/{notification_id}/read",
+    response_model=MemberNotificationResponse,
+    tags=["member self-service"],
+)
+def member_notification_read(
+    notification_id: UUID,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberNotificationResponse:
+    try:
+        item = mark_notification_read(session, member.member_id, notification_id)
+    except NotificationError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return _member_notification_response(item)
+
+
+@app.post(
+    "/member/notifications/read-all",
+    response_model=MemberNotificationReadAllResponse,
+    tags=["member self-service"],
+)
+def member_notifications_read_all(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberNotificationReadAllResponse:
+    return MemberNotificationReadAllResponse(
+        updated=mark_all_notifications_read(session, member.member_id)
     )
 
 
@@ -5937,7 +6042,7 @@ def update_member_goal_endpoint(
     goal_id: UUID,
     request: UpdateMemberGoalRequest,
     session: SessionDependency,
-    _: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.manage"))],
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.manage"))],
 ) -> MemberGoalResponse:
     provided = request.model_fields_set
     try:
@@ -5947,6 +6052,7 @@ def update_member_goal_endpoint(
             target_value=request.target_value,
             target_date=request.target_date if "target_date" in provided else ROUTINES_UNSET,
             notes=request.notes if "notes" in provided else ROUTINES_UNSET,
+            actor_id=principal.user_id,
         )
     except RoutinesError as error:
         raise _routines_http_error(error) from error
@@ -7091,6 +7197,18 @@ def _member_payment_response(item: MemberPaymentItem) -> MemberPaymentResponse:
         period_ends_at=item.period_ends_at,
         plan_name=item.plan_name,
         note=item.note,
+    )
+
+
+def _member_notification_response(item: MemberNotificationItem) -> MemberNotificationResponse:
+    return MemberNotificationResponse(
+        id=item.id,
+        kind=item.kind,
+        title=item.title,
+        body=item.body,
+        ref_id=item.ref_id,
+        created_at=item.created_at,
+        read_at=item.read_at,
     )
 
 

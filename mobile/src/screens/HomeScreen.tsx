@@ -22,11 +22,13 @@ type Props = {
   fallbackName: string | null;
   refreshing: boolean;
   error: string | null;
+  unreadNotifications: number;
   onRefresh: () => void;
   onLogout: () => void;
   onOpenClasses: () => void;
   onOpenRoutines: () => void;
   onOpenPayments: () => void;
+  onOpenNotifications: () => void;
 };
 
 export function HomeScreen({
@@ -34,11 +36,13 @@ export function HomeScreen({
   fallbackName,
   refreshing,
   error,
+  unreadNotifications,
   onRefresh,
   onLogout,
   onOpenClasses,
   onOpenRoutines,
   onOpenPayments,
+  onOpenNotifications,
 }: Props) {
   return (
     <ScrollView
@@ -112,6 +116,38 @@ export function HomeScreen({
                 : "Tu membresía no está activa o está vencida. Pasa a recepción para regularizarla."}
             </Text>
           </View>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              unreadNotifications > 0
+                ? `Ver notificaciones, ${unreadNotifications} sin leer`
+                : "Ver notificaciones"
+            }
+            onPress={onOpenNotifications}
+            style={({ pressed }) => [
+              sharedStyles.card,
+              styles.navCard,
+              pressed && styles.navCardPressed,
+            ]}
+          >
+            <View style={styles.navText}>
+              <View style={styles.navTitleRow}>
+                <Text style={styles.navTitle}>Avisos del gimnasio</Text>
+                {unreadNotifications > 0 ? (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>
+                      {unreadNotifications > 99 ? "99+" : unreadNotifications}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              <Text style={sharedStyles.body}>
+                Revisiones, metas y clases: lo que el personal resolvió sobre ti.
+              </Text>
+            </View>
+            <Text style={styles.navChevron}>→</Text>
+          </Pressable>
 
           <Pressable
             accessibilityRole="button"
@@ -359,6 +395,24 @@ const styles = StyleSheet.create({
   navTitle: {
     color: colors.text,
     fontSize: 18,
+    fontWeight: "800",
+  },
+  navTitleRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: spacing.sm,
+  },
+  badge: {
+    alignItems: "center",
+    backgroundColor: colors.accent,
+    borderRadius: 999,
+    minWidth: 24,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  badgeText: {
+    color: colors.accentText,
+    fontSize: 12,
     fontWeight: "800",
   },
   navChevron: {

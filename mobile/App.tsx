@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, SafeAreaView, StyleSheet, Text, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 
-import { ApiError, getMemberProfile, logoutMember } from "./src/api";
+import { ApiError, getMemberProfile, getUnreadNotificationCount, logoutMember } from "./src/api";
 import { describeError } from "./src/errors";
 import { ClassesScreen } from "./src/screens/ClassesScreen";
 import { CodeScreen } from "./src/screens/CodeScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
 import { LoginScreen } from "./src/screens/LoginScreen";
+import { NotificationsScreen } from "./src/screens/NotificationsScreen";
 import { PaymentsScreen } from "./src/screens/PaymentsScreen";
 import { RoutineDetailScreen } from "./src/screens/RoutineDetailScreen";
 import { RoutinesScreen } from "./src/screens/RoutinesScreen";
@@ -23,7 +24,8 @@ type Stage =
   | "classes"
   | "routines"
   | "routineDetail"
-  | "payments";
+  | "payments"
+  | "notifications";
 
 export default function App() {
   const [stage, setStage] = useState<Stage>("restoring");
@@ -36,6 +38,7 @@ export default function App() {
   const [loginNotice, setLoginNotice] = useState<string | null>(null);
   const [homeError, setHomeError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -58,6 +61,7 @@ export default function App() {
         setProfile(next);
         setFallbackName(next.first_name);
         setStage("home");
+        void refreshUnreadNotifications(stored);
       } catch (error) {
         if (!active) {
           return;
@@ -76,6 +80,14 @@ export default function App() {
     };
   }, []);
 
+  async function refreshUnreadNotifications(activeToken: string) {
+    try {
+      setUnreadNotifications(await getUnreadNotificationCount(activeToken));
+    } catch {
+      // The badge is optional; the inbox reports the real count when it is opened.
+    }
+  }
+
   function handleCodeRequested(nextEmail: string, nextPreviewCode: string | null) {
     setEmail(nextEmail);
     setPreviewCode(nextPreviewCode);
@@ -90,6 +102,7 @@ export default function App() {
     setHomeError(null);
     await saveToken(result.access_token);
     setStage("home");
+    void refreshUnreadNotifications(result.access_token);
     try {
       const next = await getMemberProfile(result.access_token);
       setProfile(next);
@@ -115,6 +128,7 @@ export default function App() {
       const next = await getMemberProfile(token);
       setProfile(next);
       setFallbackName(next.first_name);
+      await refreshUnreadNotifications(token);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         await clearToken();
@@ -141,6 +155,7 @@ export default function App() {
     setHomeError(null);
     setLoginError(null);
     setLoginNotice(null);
+    setUnreadNotifications(0);
     setStage("email");
     if (activeToken) {
       try {
@@ -173,12 +188,17 @@ export default function App() {
     setStage("payments");
   }
 
+  function handleOpenNotifications() {
+    setStage("notifications");
+  }
+
   async function handleSessionExpired() {
     await clearToken();
     setToken(null);
     setProfile(null);
     setFallbackName(null);
     setHomeError(null);
+    setUnreadNotifications(0);
     setLoginNotice("Tu sesión expiró. Vuelve a entrar.");
     setStage("email");
   }
@@ -220,6 +240,8 @@ export default function App() {
             onOpenClasses={handleOpenClasses}
             onOpenRoutines={handleOpenRoutines}
             onOpenPayments={handleOpenPayments}
+            unreadNotifications={unreadNotifications}
+            onOpenNotifications={handleOpenNotifications}
           />
         ) : null}
         {stage === "classes" && token ? (
@@ -250,6 +272,14 @@ export default function App() {
             token={token}
             onBack={() => setStage("home")}
             onSessionExpired={() => void handleSessionExpired()}
+          />
+        ) : null}
+        {stage === "notifications" && token ? (
+          <NotificationsScreen
+            token={token}
+            onBack={() => setStage("home")}
+            onSessionExpired={() => void handleSessionExpired()}
+            onUnreadChange={setUnreadNotifications}
           />
         ) : null}
       </SafeAreaView>

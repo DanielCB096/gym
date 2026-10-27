@@ -36,6 +36,12 @@ from sqlmodel import Session, select
 
 from app.modules.identity.models import Employee
 from app.modules.memberships.models import Member
+from app.modules.notifications import (
+    notify_goal_achieved,
+    notify_goal_cancelled_by_staff,
+    notify_goal_updated_by_staff,
+    notify_workout_reviewed,
+)
 from app.modules.routines.models import (
     ASSIGNMENT_STATUSES,
     GOAL_DIRECTIONS,
@@ -92,6 +98,12 @@ _GOAL_METRIC_LABELS = {
     "waist_cm": "cintura",
     "chest_cm": "pecho",
     "body_fat_percent": "grasa corporal",
+}
+_GOAL_METRIC_UNITS = {
+    "weight_kg": "kg",
+    "waist_cm": "cm",
+    "chest_cm": "cm",
+    "body_fat_percent": "%",
 }
 
 # Sentinel so a partial update can tell "leave unchanged" (absent) apart from
@@ -1597,6 +1609,15 @@ def review_workout(
     workout.reviewed_at = occurred
     workout.updated_at = occurred
     session.add(workout)
+    routine = session.get(Routine, workout.routine_id)
+    notify_workout_reviewed(
+        session,
+        member_id=workout.member_id,
+        workout_id=workout.id,
+        performed_on=workout.performed_at,
+        routine_name=routine.name if routine is not None else None,
+        now=occurred,
+    )
     session.commit()
     session.refresh(workout)
     sets_by_workout = _workout_sets_by_workout(session, [workout.id])
@@ -1802,6 +1823,12 @@ def _clean_goal_notes(notes: str | None) -> str | None:
     return clean
 
 
+def _goal_value_text(metric: str, value: object) -> str:
+    """A goal number the way the member reads it: ``72.5 kg``, not ``Decimal``."""
+
+    return f"{float(value):g} {_GOAL_METRIC_UNITS[metric]}"
+
+
 def _apply_goal_updates(
     session: Session,
     member_id: UUID,
@@ -1831,6 +1858,15 @@ def _apply_goal_updates(
         goal.achieved_at = now
         goal.updated_at = now
         session.add(goal)
+        notify_goal_achieved(
+            session,
+            member_id=member_id,
+            goal_id=goal.id,
+            metric_label=_GOAL_METRIC_LABELS[goal.metric],
+            target_text=_goal_value_text(goal.metric, goal.target_value),
+            achieved_text=_goal_value_text(goal.metric, current),
+            now=now,
+        )
 
 
 def create_member_goal(
@@ -1910,6 +1946,7 @@ def update_member_goal(
     target_value: float | None = None,
     target_date: date | None = UNSET,  # type: ignore[assignment]
     notes: str | None = UNSET,  # type: ignore[assignment]
+    actor_id: UUID | None = None,
     now: datetime | None = None,
 ) -> MemberGoalItem:
     goal = _require_goal(session, goal_id)
@@ -1917,6 +1954,9 @@ def update_member_goal(
         raise InvalidGoalState("Solo se puede editar una meta activa")
 
     occurred = _as_utc(now or utc_now())
+    previous_target = float(goal.target_value)
+    previous_date = goal.target_date
+    changed_target_text: str | None = None
     if target_value is not None:
         target = _validate_goal_target(goal.metric, target_value)
         latest = _latest_goal_measurement(session, goal.member_id, goal.metric)
@@ -1927,6 +1967,8 @@ def update_member_goal(
                 f"La meta ya se cumple con la última medición de {label}; elige un objetivo más exigente"
             )
         goal.target_value = target
+        if target != previous_target:
+            changed_target_text = _goal_value_text(goal.metric, target)
     if target_date is not UNSET:
         if target_date is not None and target_date < club_date(occurred):
             raise InvalidGoalData("La fecha objetivo no puede ser anterior a hoy")
@@ -1934,8 +1976,19 @@ def update_member_goal(
     if notes is not UNSET:
         goal.notes = _clean_goal_notes(notes)
 
+    changed_date = goal.target_date if goal.target_date != previous_date else None
     goal.updated_at = occurred
     session.add(goal)
+    if actor_id is not None and (changed_target_text or changed_date):
+        notify_goal_updated_by_staff(
+            session,
+            member_id=goal.member_id,
+            goal_id=goal.id,
+            metric_label=_GOAL_METRIC_LABELS[goal.metric],
+            new_target_text=changed_target_text,
+            new_target_date=changed_date,
+            now=occurred,
+        )
     session.commit()
     session.refresh(goal)
     return _goal_view(session, goal)
@@ -1957,6 +2010,14 @@ def cancel_member_goal(
     goal.cancelled_by = actor_id
     goal.updated_at = occurred
     session.add(goal)
+    if actor_id is not None:
+        notify_goal_cancelled_by_staff(
+            session,
+            member_id=goal.member_id,
+            goal_id=goal.id,
+            metric_label=_GOAL_METRIC_LABELS[goal.metric],
+            now=occurred,
+        )
     session.commit()
     session.refresh(goal)
     return _goal_view(session, goal)

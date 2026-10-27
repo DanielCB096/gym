@@ -120,7 +120,7 @@ Este módulo cubre la operación de alta de socios, venta de planes, pago inicia
 
 ## 8. Notificaciones y automatizaciones
 
-- recordatorio 7 días antes del vencimiento
+- recordatorio 7 días antes del vencimiento —implementado en la bandeja de avisos de la app del socio: al leerla se genera `membership_expiring` en las ventanas de 7, 3 y 1 día, una sola vez por ventana (ver `notificaciones-del-socio.md`); sigue sin push ni correo y exige abrir la app
 - recordatorio 24 h antes del cobro recurrente
 - notificación de cobro fallido y tarjeta por vencer
 - aviso de suspensión por falta de pago

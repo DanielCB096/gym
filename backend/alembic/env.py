@@ -8,6 +8,7 @@ from sqlmodel import SQLModel
 import app.modules.memberships.models
 import app.modules.identity.models
 import app.modules.portal.models
+import app.modules.notifications.models
 
 config = context.config
 

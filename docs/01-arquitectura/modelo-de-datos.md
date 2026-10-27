@@ -192,6 +192,21 @@ El **detalle por serie** vive en `workout_sets` (migración `20261027_0033_worko
 
 Los **pagos y el estado de cuenta del socio** reutilizan `payments` (con su `membership_id` y el plan de la membresía) y el estado de cuenta calculado por `member_account_statement` sobre las ventas a cuenta, las devoluciones abonadas y `member_account_payments`. `app.modules.portal.payments` solo filtra por el socio de la sesión, pagina los pagos y recorta a 100 los movimientos más recientes; no crea tablas, columnas ni movimientos, y deja fuera los datos internos del personal (turno, cobrador y límite de crédito).
 
+Los **avisos del socio** viven en `member_notifications` (migración `20261027_0035_member_notifications.py`), la primera tabla del módulo transversal `app.modules.notifications`. Es un **mensaje congelado**, no una referencia a datos vivos: el título y el cuerpo se redactan al producirse el evento, así que editar o borrar el origen nunca deja un aviso incomprensible; `ref_id` guarda el identificador de origen **sin FK** porque puede apuntar a distintas tablas según el `kind`.
+
+| Tabla | Responsabilidad | Restricciones principales |
+|---|---|---|
+| `member_notifications` | un aviso para un socio, con su texto congelado y su fecha de lectura | FK `RESTRICT` al socio; `kind` con CHECK `ck_member_notifications_kind` (`workout_reviewed`/`goal_achieved`/`goal_updated_by_staff`/`goal_cancelled_by_staff`/`class_waitlist_promoted`/`membership_expiring`); `title` 1–140 y `body` 1–500 con CHECK; `ref_id` UUID sin FK; `dedupe_key` hasta 120 con **índice único parcial** donde no es nulo; `created_at` con `server_default now()`; `read_at` nullable; índices `(member_id, created_at)` y `(member_id, read_at)` |
+
+| Relación | Regla |
+|---|---|
+| un socio recibe muchos avisos y un aviso pertenece a un solo socio | borrar un socio con avisos está bloqueado por la FK `RESTRICT`: el borrado de socios sigue siendo lógico |
+| un aviso describe un evento de otro módulo | no hay FK al origen: `ref_id` es una pista, y la integridad del texto no depende de que el origen siga existiendo |
+| dos avisos iguales no pueden coexistir | lo impide el índice único parcial sobre `dedupe_key`; `create_notification` escribe en un savepoint y devuelve la fila existente si pierde la carrera |
+| un aviso no se edita ni se borra | `read_at` es la única columna que cambia después del alta; la bandeja es historial |
+
+El **recordatorio de vencimiento de membresía** no necesita programador: `_ensure_membership_expiring` lo calcula al leer la bandeja sobre la membresía `active` que termina primero y lo escribe con `dedupe_key = membership_expiring:<membership_id>:<7|3|1>`, de modo que hay **un aviso por ventana** y no uno por día. Los demás avisos los escriben los servicios de `routines` y `classes` dentro de la misma transacción del cambio que anuncian.
+
 ## Persistencia local de acceso offline
 
 La primera implementación usa un archivo SQLite local para el caché de decisiones en el lector/controlador, separado de PostgreSQL central:

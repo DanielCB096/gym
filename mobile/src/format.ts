@@ -85,6 +85,15 @@ const PAYMENT_METHOD_LABELS: Record<string, string> = {
   account: "Cuenta",
 };
 
+const NOTIFICATION_KIND_LABELS: Record<string, string> = {
+  workout_reviewed: "Entrenamiento",
+  goal_achieved: "Meta cumplida",
+  goal_cancelled_by_staff: "Meta cancelada",
+  goal_updated_by_staff: "Meta ajustada",
+  class_waitlist_promoted: "Clase",
+  membership_expiring: "Membresía",
+};
+
 export function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -172,6 +181,10 @@ export function paymentMethodLabel(method: string | null): string {
     return "—";
   }
   return PAYMENT_METHOD_LABELS[method] ?? method;
+}
+
+export function notificationKindLabel(kind: string): string {
+  return NOTIFICATION_KIND_LABELS[kind] ?? "Aviso";
 }
 
 export function formatSignedMoney(cents: number): string {

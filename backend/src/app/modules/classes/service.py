@@ -40,6 +40,7 @@ from app.modules.classes.models import (
 )
 from app.modules.identity.models import Employee
 from app.modules.memberships.models import Member
+from app.modules.notifications import notify_waitlist_promoted
 
 DEFAULT_SESSION_PAGE_SIZE = 25
 MAX_SESSION_PAGE_SIZE = 100
@@ -950,6 +951,16 @@ def _promote_next_waitlist(
     session.add(candidate)
     session.flush()
     _renumber_waitlist(session, session_id)
+    class_session = session.get(ClassSession, session_id)
+    if class_session is not None:
+        notify_waitlist_promoted(
+            session,
+            member_id=candidate.member_id,
+            reservation_id=candidate.id,
+            class_title=class_session.title,
+            starts_at=_as_utc(class_session.starts_at),
+            now=candidate.updated_at,
+        )
     return candidate
 
 

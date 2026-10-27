@@ -11,6 +11,8 @@ import type {
   MemberProfile,
   MemberMeasurement,
   MemberMeasurementInput,
+  MemberNotification,
+  MemberNotificationPage,
   MemberProgress,
   MemberRoutineDetail,
   MemberRoutineList,
@@ -207,4 +209,38 @@ export function getMemberPayments(token: string, pageSize = 20): Promise<MemberP
 
 export function getMemberAccount(token: string): Promise<MemberAccount> {
   return request<MemberAccount>("/member/account", { token });
+}
+
+export function getMemberNotifications(
+  token: string,
+  pageSize = 30,
+): Promise<MemberNotificationPage> {
+  return request<MemberNotificationPage>(`/member/notifications?page=1&page_size=${pageSize}`, {
+    token,
+  });
+}
+
+export function getUnreadNotificationCount(token: string): Promise<number> {
+  return request<{ unread: number }>("/member/notifications/unread-count", { token }).then(
+    (result) => result.unread,
+  );
+}
+
+export function markMemberNotificationRead(
+  token: string,
+  notificationId: string,
+): Promise<MemberNotification> {
+  return request<MemberNotification>(`/member/notifications/${notificationId}/read`, {
+    method: "POST",
+    token,
+  });
+}
+
+export function markAllMemberNotificationsRead(
+  token: string,
+): Promise<number> {
+  return request<{ updated: number }>("/member/notifications/read-all", {
+    method: "POST",
+    token,
+  }).then((result) => result.updated);
 }

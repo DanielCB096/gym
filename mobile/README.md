@@ -1,6 +1,6 @@
 # App móvil del socio
 
-Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, y los **pagos y el estado de cuenta** (solo lectura); no incluye todavía pago en línea ni facturas.
+Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, los **pagos y el estado de cuenta** (solo lectura) y la **bandeja de avisos del gimnasio**; no incluye todavía pago en línea ni facturas.
 
 ## Alcance implementado
 
@@ -12,6 +12,7 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
   - plan, estado de la membresía, periodo y días restantes;
   - saldo de la cuenta del socio;
   - fecha de alta y estado del socio;
+  - tarjeta «Avisos del gimnasio» con la insignia de avisos sin leer (tope visible `99+`);
   - actualización manual y cierre de sesión.
 - Pantalla de clases con:
   - cartelera de los próximos 14 días (fecha, tipo, salón, instructor y lugares disponibles);
@@ -35,6 +36,14 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
   - pagos de membresía con importe, plan, periodo, método y nota;
   - movimientos de cuenta en orden descendente, con importe con signo, saldo después del movimiento, referencia y método;
   - aviso cuando el historial supera los 100 movimientos que devuelve el backend;
+  - estados vacíos, mensajes de error y actualización manual con deslizamiento.
+- Pantalla de avisos con:
+  - contador «Tienes N avisos sin leer.» o «Estás al día.»;
+  - lista del más reciente al más antiguo con etiqueta de tipo (Membresía, Clase, Meta cumplida, Meta ajustada, Meta cancelada, Entrenamiento), título, cuerpo y fecha con hora;
+  - no leídos marcados con borde y punto de color, leídos atenúados;
+  - toque sobre un aviso para marcarlo como leído (inmediato, sin recargar la lista);
+  - «Marcar todas como leídas», visible solo cuando hay pendientes, con confirmación de cuántos se marcaron;
+  - aviso cuando los pendientes superan los 30 de la primera página;
   - estados vacíos, mensajes de error y actualización manual con deslizamiento.
 - Mensajes de error en español y comportamiento genérico para correos no registrados (no revela si el correo existe).
 
@@ -113,13 +122,22 @@ En los formularios se valida en el cliente el formato de fecha, que no sea futur
 
 El saldo puede ser negativo (saldo a favor); el aviso que lo acompaña indica que la liquidación se hace en recepción, igual que los cobros y abonos.
 
+## Flujo de avisos
+
+1. `GET /member/notifications?page=1&page_size=30` devuelve la bandeja del socio con `total`, `pages` y `unread_total`; los avisos los generan los eventos del club (revisión de un entrenamiento, meta cumplida, meta ajustada o cancelada por el personal, lugar liberado en lista de espera y vencimiento próximo de la membresía).
+2. `POST /member/notifications/{id}/read` marca uno (idempotente) y `POST /member/notifications/read-all` marca todos devolviendo `{"updated": n}`.
+3. `GET /member/notifications/unread-count` alimenta la insignia de la pantalla de inicio; se consulta al restaurar la sesión, al iniciar sesión, al actualizar el perfil y al salir de la bandeja.
+4. Al abrir la bandeja el backend evalúa el vencimiento de la membresía y crea el recordatorio si falta ≤ 7, ≤ 3 o ≤ 1 días (una sola vez por ventana).
+
+La app **no** crea, edita ni borra avisos, y no recibe notificaciones push: el aviso queda en la bandeja hasta que el socio abre la app. Un fallo al consultar el contador se ignora en silencio porque la bandeja muestra el conteo real al abrirla.
+
 Límites del backend: 5 solicitudes por correo cada 15 minutos, 5 intentos por código, código de un solo uso y sesiones revocables. Los tokens y los códigos se guardan solo como hash.
 
 ## Estructura
 
 ```text
 mobile/
-├── App.tsx                 # máquina de estados restoring → email → code → home → classes → routines → routineDetail → payments
+├── App.tsx                 # máquina de estados restoring → email → code → home → classes → routines → routineDetail → payments → notifications
 ├── index.ts                # registro de Expo
 ├── app.json                # nombre, slug, tema y plugin de SecureStore
 └── src/
@@ -133,22 +151,23 @@ mobile/
     └── screens/
         ├── LoginScreen.tsx # captura del correo
         ├── CodeScreen.tsx  # código de 6 dígitos, reenvío y código de vista previa
-        ├── HomeScreen.tsx  # perfil, acceso, membresía y saldo
+        ├── HomeScreen.tsx  # perfil, acceso, membresía, saldo y accesos a avisos, clases, rutinas y pagos
         ├── ClassesScreen.tsx # cartelera, reserva, lista de espera y cancelación
         ├── RoutinesScreen.tsx # resumen de progreso, metas (con alta y cancelación), medidas (con alta) y rutinas asignadas
         ├── RoutineDetailScreen.tsx # plan, editor de series, historial y registro de entrenamientos
-        └── PaymentsScreen.tsx # pagos de membresía y estado de cuenta (solo lectura)
+        ├── PaymentsScreen.tsx # pagos de membresía y estado de cuenta (solo lectura)
+        └── NotificationsScreen.tsx # bandeja de avisos del club, marcar leído individual o masivo
 ```
 
 ## Pendientes
 
-- Edición de metas y edición/borrado de registros desde la app (hoy el socio captura entrenamientos con sus series, medidas y metas propias, y cancela estas últimas; su corrección se hace en recepción). Falta que el entrenador apruebe una meta creada desde la app y que el socio reciba aviso cuando el personal la edita o cancela.
+- Edición de metas y edición/borrado de registros desde la app (hoy el socio captura entrenamientos con sus series, medidas y metas propias, y cancela estas últimas; su corrección se hace en recepción). Falta que el entrenador apruebe una meta creada desde la app.
 - Series objetivo por sesión, series por tiempo o distancia y métricas de volumen por ejercicio.
-- Aviso al entrenador de un entrenamiento pendiente de revisión y al socio cuando se revisa.
+- Aviso al entrenador de un entrenamiento pendiente de revisión (al socio ya se le avisa cuando se revisa).
 - Fotos de progreso en la app, con consentimiento y política de acceso.
 - Pagos en línea, descarga de facturas y detalle de la venta detrás de cada cargo (hoy solo se consulta el movimiento).
 - Cobro del precio extra de las clases premium desde la app.
-- Notificaciones push y recordatorios (renovación, clase, cobranza).
+- Notificaciones push y recordatorios programados (renovación, clase, cobranza): la bandeja ya existe, pero el aviso solo se ve cuando el socio abre la app.
 - Rotación de tokens, cierre de sesiones por inactividad y MFA opcional.
 - Persistencia del token en la vista web (hoy se pierde al recargar) y almacenamiento seguro nativo con biometría.
 - Deep links, iconos y splash definitivos, y publicación en tiendas.

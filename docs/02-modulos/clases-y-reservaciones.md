@@ -184,13 +184,13 @@ Segundo incremento (2026-10-27): **reserva y cancelación desde la app del socio
 - `POST /member/classes/sessions/{id}/reservations` exige membresía activa, clase programada y futura, no premium y sin reserva viva; si está llena respeta `waitlist_enabled` y asigna posición. `origin` queda en `app`.
 - `POST /member/classes/reservations/{id}/cancel` solo permite reservas propias (las ajenas responden `404`) y solo antes del inicio de la clase; delega en la cancelación existente, que promueve al primero de la lista de espera y marca `late_cancellation` si aplica.
 - `cancelled_by` queda vacío en las cancelaciones del socio porque la columna es una FK a `app_users`; el rastro disponible es `origin = "app"`.
-- Las clases premium se muestran bloqueadas con el aviso de reservar en recepción hasta que exista el cobro del extra. No hay notificaciones de confirmación ni de promoción desde lista de espera.
+- Las clases premium se muestran bloqueadas con el aviso de reservar en recepción hasta que exista el cobro del extra. La promoción desde la lista de espera ya avisa al socio promovido con `class_waitlist_promoted` (ver `notificaciones-del-socio.md`); la confirmación de la propia reserva y los recordatorios de la clase próxima siguen sin avisarse.
 
-Pendiente (documentado en `docs/deuda-tecnica.md`): cobro real de clases premium, notificaciones de recordatorio y de lista de espera, reserva automática desde control de acceso y penalizaciones efectivas por inasistencia.
+Pendiente (documentado en `docs/deuda-tecnica.md`): cobro real de clases premium, recordatorios de la clase próxima y aviso a la lista de espera cuando un lugar se libera sin promoción, reserva automática desde control de acceso y penalizaciones efectivas por inasistencia.
 
 ## 14. Estado
 
-Primer incremento implementado y probado (catálogo, agenda con cupo y lista de espera, asistencia e inasistencias desde el panel); segundo incremento entregado para reserva y cancelación desde la app del socio con lista de espera. Las notificaciones y el cobro de clases premium quedan en diseño / validación funcional.
+Primer incremento implementado y probado (catálogo, agenda con cupo y lista de espera, asistencia e inasistencias desde el panel); segundo incremento entregado para reserva y cancelación desde la app del socio con lista de espera; la promoción a la cabeza de la fila ya deja su aviso en la bandeja del socio (`class_waitlist_promoted`, ver `notificaciones-del-socio.md`). Los recordatorios, la confirmación de la propia reserva y el cobro de clases premium quedan en diseño / validación funcional.
 
 ## 15. Historial de cambios
 
