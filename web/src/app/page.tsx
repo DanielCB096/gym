@@ -7499,6 +7499,7 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
   const [editGoalTarget, setEditGoalTarget] = useState("");
   const [editGoalTargetDate, setEditGoalTargetDate] = useState("");
   const [editGoalNotes, setEditGoalNotes] = useState("");
+  const [trendMetric, setTrendMetric] = useState<GoalMetric>("weight_kg");
 
   const [photoAngle, setPhotoAngle] = useState<PhotoAngle>("front");
   const [photoCapturedAt, setPhotoCapturedAt] = useState(todayDateInput());
@@ -7846,6 +7847,7 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
                 <button type="submit" className="button button-primary" disabled={busy}><Plus size={16} />Registrar</button>
               </form>
             )}
+            <MeasurementTrendChart measurements={measurements} goals={goals} metric={trendMetric} onMetricChange={setTrendMetric} />
             {measurements.length === 0 ? <p className="panel-hint">Sin mediciones registradas.</p> : (
               <table className="data-table compact-table">
                 <thead><tr><th>FECHA</th><th>PESO</th><th>CINTURA</th><th>PECHO</th><th>GRASA</th><th>NOTAS</th></tr></thead>
@@ -7974,6 +7976,120 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
         </div>
       </section>
     </div>
+  );
+}
+
+type MeasurementPoint = { label: string; at: number; value: number };
+
+const TREND_CHART_WIDTH = 600;
+const TREND_CHART_HEIGHT = 190;
+
+function measurementPoints(measurements: BackendMeasurement[], metric: GoalMetric): MeasurementPoint[] {
+  return measurements
+    .map((measurement) => {
+      const value = measurement[metric];
+      if (value === null || !Number.isFinite(value)) return null;
+      const at = new Date(measurement.measured_at).getTime();
+      if (Number.isNaN(at)) return null;
+      return { label: formatDateOnly(measurement.measured_at), at, value };
+    })
+    .filter((point): point is MeasurementPoint => point !== null)
+    .sort((a, b) => a.at - b.at);
+}
+
+function formatTrendDelta(delta: number, unit: string): string {
+  if (Math.abs(delta) < 0.05) return "sin cambio";
+  return `${delta > 0 ? "+" : ""}${delta.toFixed(1)}${unit}`;
+}
+
+function MeasurementTrendChart({ measurements, goals, metric, onMetricChange }: { measurements: BackendMeasurement[]; goals: BackendGoal[]; metric: GoalMetric; onMetricChange: (metric: GoalMetric) => void }) {
+  const unit = goalMetricUnits[metric];
+  const points = measurementPoints(measurements, metric);
+  const goal = goals.find((item) => item.metric === metric && item.status === "active") ?? null;
+  const first = points[0] ?? null;
+  const latest = points[points.length - 1] ?? null;
+
+  return (
+    <div className="trend-panel">
+      <div className="trend-toolbar">
+        <div className="trend-tabs" aria-label="Medida de la gráfica">
+          {GOAL_METRICS.map((option) => (
+            <button key={option} type="button" className="trend-tab" aria-pressed={option === metric} onClick={() => onMetricChange(option)}>{goalMetricLabels[option]}</button>
+          ))}
+        </div>
+        {first && latest && points.length >= 2 ? (
+          <p className="trend-summary">
+            <strong>{formatMeasurementValue(first.value, unit)} → {formatMeasurementValue(latest.value, unit)}</strong>
+            <span>{formatTrendDelta(latest.value - first.value, unit)} desde {first.label}</span>
+          </p>
+        ) : (
+          <p className="trend-summary"><span>{goal ? `Meta activa: ${formatMeasurementValue(goal.target_value, unit)}` : "Sin meta activa"}</span></p>
+        )}
+      </div>
+      {points.length < 2 ? (
+        <p className="panel-hint">
+          {points.length === 0
+            ? `Aún no hay mediciones de ${goalMetricLabels[metric].toLowerCase()} para graficar.`
+            : `Registra al menos dos mediciones de ${goalMetricLabels[metric].toLowerCase()} para ver la evolución.`}
+        </p>
+      ) : (
+        <MeasurementTrendSvg points={points} goal={goal} metric={metric} />
+      )}
+    </div>
+  );
+}
+
+function MeasurementTrendSvg({ points, goal, metric }: { points: MeasurementPoint[]; goal: BackendGoal | null; metric: GoalMetric }) {
+  const unit = goalMetricUnits[metric];
+  const padLeft = 42;
+  const padRight = 14;
+  const padTop = 16;
+  const padBottom = 24;
+  const plotWidth = TREND_CHART_WIDTH - padLeft - padRight;
+  const plotHeight = TREND_CHART_HEIGHT - padTop - padBottom;
+  const first = points[0];
+  const last = points[points.length - 1];
+  const values = points.map((point) => point.value);
+  if (goal) values.push(goal.target_value);
+  const dataMin = Math.min(...values);
+  const dataMax = Math.max(...values);
+  const span = dataMax - dataMin;
+  const padding = span < 0.1 ? 1 : span * 0.12;
+  const min = dataMin - padding;
+  const max = dataMax + padding;
+  const x = (at: number) => padLeft + ((at - first.at) / (last.at - first.at || 1)) * plotWidth;
+  const y = (value: number) => padTop + (1 - (value - min) / (max - min)) * plotHeight;
+  const tickValues = span < 0.1 ? [dataMin] : [0, 1 / 3, 2 / 3, 1].map((fraction) => dataMin + span * fraction);
+  const linePath = points.map((point, index) => `${index === 0 ? "M" : "L"}${x(point.at).toFixed(2)} ${y(point.value).toFixed(2)}`).join(" ");
+  const middleIndex = Math.floor((points.length - 1) / 2);
+  const showMiddleLabel = middleIndex > 0 && middleIndex < points.length - 1;
+  const goalY = goal ? y(goal.target_value) : null;
+  const goalLabelY = goalY === null ? null : goalY - padTop < 10 ? goalY + 10 : goalY - 4;
+
+  return (
+    <svg className="trend-chart" viewBox={`0 0 ${TREND_CHART_WIDTH} ${TREND_CHART_HEIGHT}`} role="img" aria-label={`Evolución de ${goalMetricLabels[metric].toLowerCase()}: de ${formatMeasurementValue(first.value, unit)} el ${first.label} a ${formatMeasurementValue(last.value, unit)} el ${last.label}${goal ? `, meta ${formatMeasurementValue(goal.target_value, unit)}` : ""}.`}>
+      {tickValues.map((tick) => (
+        <g key={tick}>
+          <line className="trend-grid" x1={padLeft} x2={TREND_CHART_WIDTH - padRight} y1={y(tick)} y2={y(tick)} />
+          <text className="trend-axis" x={padLeft - 6} y={y(tick) + 3} textAnchor="end">{tick.toFixed(1)}</text>
+        </g>
+      ))}
+      {goalY !== null && goalLabelY !== null && (
+        <g>
+          <line className="trend-goal" x1={padLeft} x2={TREND_CHART_WIDTH - padRight} y1={goalY} y2={goalY} />
+          <text className="trend-goal-label" x={TREND_CHART_WIDTH - padRight} y={goalLabelY} textAnchor="end">Meta {formatMeasurementValue(goal?.target_value ?? null, unit)}</text>
+        </g>
+      )}
+      <path className="trend-line" d={linePath} />
+      {points.map((point, index) => (
+        <circle className="trend-point" key={`${point.at}-${index}`} cx={x(point.at)} cy={y(point.value)} r={3.2}>
+          <title>{`${point.label}: ${formatMeasurementValue(point.value, unit)}`}</title>
+        </circle>
+      ))}
+      <text className="trend-axis" x={x(first.at)} y={TREND_CHART_HEIGHT - 6} textAnchor="start">{first.label}</text>
+      {showMiddleLabel && <text className="trend-axis" x={x(points[middleIndex].at)} y={TREND_CHART_HEIGHT - 6} textAnchor="middle">{points[middleIndex].label}</text>}
+      <text className="trend-axis" x={x(last.at)} y={TREND_CHART_HEIGHT - 6} textAnchor="end">{last.label}</text>
+    </svg>
   );
 }
 

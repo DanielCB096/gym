@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-26 · Gráficas de evolución
+
+- Se implementó la **gráfica de evolución de medidas** en el detalle de Seguimiento de Rutinas, sin migración ni API nueva: usa las mediciones y metas que el detalle ya carga. Permite alternar peso, cintura, pecho y grasa corporal; dibuja una línea con puntos (tooltip nativo con fecha y valor), resume el cambio desde la primera medición (`de X a Y · Δ desde <fecha>`) y muestra la **meta activa** de esa medida como línea punteada de referencia. Con menos de dos mediciones de la medida elegida muestra un aviso en lugar de la gráfica.
+- **Alcance y accesibilidad**: el cálculo ocurre en el navegador sobre un máximo de 36 mediciones ya cargadas; no hay endpoint de series, agregación en servidor ni exportación de la imagen. La gráfica usa SVG con `role="img"` y una etiqueta que resume inicio, fin y meta, y la tabla de mediciones existente sigue siendo la vía accesible completa.
+- **Panel web**: componentes `MeasurementTrendChart` y `MeasurementTrendSvg` en `web/src/app/page.tsx`, con estilos `.trend-*` responsive en `web/src/app/globals.css`. No hay rutas BFF nuevas.
+- **Verificación**: `npm run typecheck` y `npm run build` del panel pasan; en vista previa se comprobó la gráfica con las mediciones sembradas, el cambio entre las cuatro métricas, una serie plana, la línea de meta activa y el aviso de una asignación con menos de dos mediciones. La suite del backend sigue en **137 pruebas** (sin cambios de código del backend).
+- Documentos actualizados: `docs/02-modulos/rutinas-y-progreso.md`, `docs/07-pruebas/plan-de-pruebas.md`, `docs/deuda-tecnica.md`, `docs/README.md`, `docs/roadmap.md`, `web/README.md` y este changelog. **Siguen pendientes** en Rutinas: mensajería entrenador-socio y notificaciones automáticas; en la gráfica, endpoint de series con rango, comparación de medidas, zoom/exportación y superposición de metas históricas.
+
 ## 2026-10-26
 
 - Se implementaron las **fotos de progreso** en Rutinas y seguimiento de progreso (migración `20261025_0030_progress_photos.py`): la tabla `progress_photos` guarda socio, ángulo (`front`/`side`/`back`/`other`), fecha de captura, nota de hasta 300 caracteres, tipo de contenido (`image/jpeg`, `image/png`, `image/webp`), tamaño en bytes, clave de almacenamiento única, usuario que subió y fecha de alta. Los bytes de la imagen **no** viven en la base: se guardan en `PROGRESS_PHOTOS_DIR` (por defecto `./uploads/progress_photos`, ignorado por Git). No hay permiso nuevo: la consulta y la descarga usan `routines.read`, y la carga y la eliminación `routines.manage`.
