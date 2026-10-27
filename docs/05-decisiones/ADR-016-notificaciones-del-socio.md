@@ -20,7 +20,7 @@ Tampoco había un lugar dónde guardar el aviso: no existe ninguna tabla de noti
 - **La bandeja es de solo lectura para el socio y no se puede borrar**: `GET /member/notifications` (paginado, `page_size` 1–50, con `unread_total`), `GET /member/notifications/unread-count`, `POST /member/notifications/{id}/read` (idempotente) y `POST /member/notifications/read-all` (devuelve `updated`). El `member_id` sale siempre de la sesión y un aviso ajeno o inexistente responde `404` sin revelar si existe. **No se agregan permisos**: son rutas de auto-servicio bajo `get_current_member`, igual que el resto de `/member/*`.
 - **`update_member_goal` recibe `actor_id`** para distinguir quién movió la meta: el endpoint administrativo lo pasa (`principal.user_id`, con `routines.manage`) y solo entonces se notifica al socio, y únicamente si cambió el objetivo o la fecha. La cancelación desde la app no pasa actor, así que el socio no se auto-notifica algo que acaba de hacer.
 - **La app muestra la bandeja, no el push**: nueva `NotificationsScreen` con contador de no leídos, botón «Marcar todas como leídas», toque individual para marcar leído y etiqueta de tipo (`Membresía`, `Clase`, `Meta cumplida`, …). El inicio suma la tarjeta «Avisos del gimnasio» con una insignia de no leídos (tope visible 99+). El badge se refresca al abrir la sesión, al actualizar el perfil y al volver de la bandeja.
-- **El destinatario de este incremento es solo el socio.** La campana del panel sigue siendo dato de muestra y el aviso al entrenador de un entrenamiento pendiente queda fuera: no hay un mapeo limpio de empleado → `app_users` para saber a quién avisar, y esa traza es la misma deuda que arrastra `logged_by`/`created_by`.
+- **El destinatario de este incremento es solo el socio.** La campana del panel siguió mostrando datos de muestra y el aviso al entrenador de un entrenamiento pendiente quedó fuera. Se justificó como bloqueado «porque no hay un mapeo limpio de empleado → `app_users`», **una premisa que resultó ser falsa**: `AppUser.employee_id` ya existe (único, FK `RESTRICT` a `employees.id`) y lo puebla `POST /admin/users`. Lo que faltaba no era el vínculo sino un consumidor, y ese trabajo se hizo en el incremento siguiente (**ADR-017**).
 
 ## Consecuencias y límites
 
@@ -31,7 +31,7 @@ Tampoco había un lugar dónde guardar el aviso: no existe ninguna tabla de noti
 - `ref_id` es una referencia **sin FK** (puede apuntar a varias tablas según el `kind`): no garantiza que el origen siga existiendo, que es justo lo que se buscaba al congelar el texto.
 - Un fallo al redactar el aviso aborta la operación de dominio que lo acompaña (misma transacción). Es deliberado: se prefirió coherencia a tolerar un cambio sin su aviso.
 - La traducción está fija en español dentro del servicio; no hay catálogo de textos ni preferencia de idioma del socio.
-- Antes de producción: decidir la retención y la política de privacidad de los avisos, el push/correo como transporte, la campana real del panel y el aviso al entrenador (pendiente de la traza empleado→cuenta).
+- Antes de producción: decidir la retención y la política de privacidad de los avisos y el push/correo como transporte. La campana real del panel y el aviso al entrenador **ya se resolvieron en ADR-017**, no con esta deuda.
 
 ## Referencias
 
@@ -44,3 +44,8 @@ Tampoco había un lugar dónde guardar el aviso: no existe ninguna tabla de noti
 - `backend/tests/test_member_notifications_api.py`
 - `mobile/src/screens/NotificationsScreen.tsx`, `mobile/src/screens/HomeScreen.tsx` (insignia), `mobile/src/api.ts`
 - ADR-010 (reservas de clases), ADR-015 (metas desde la app) y ADR-009 (autenticación del socio)
+- ADR-017 (bandeja de avisos del personal), que corrige la premisa sobre el mapeo empleado → `app_users`
+
+## Corrección posterior
+
+- 2026-10-27 (ADR-017): la afirmación de que no existía un mapeo limpio empleado → `app_users` era falsa. La columna `AppUser.employee_id` vive en el módulo de identidad desde el RBAC (ADR-008) —única, FK `RESTRICT` a `employees.id`— y la escriben `POST /admin/users` y el alta de colaborador. Lo que faltaba no era el vínculo sino un consumidor que lo usara para resolver la audiencia de un aviso.

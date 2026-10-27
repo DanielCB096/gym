@@ -134,6 +134,7 @@ Este módulo gestiona todo lo relacionado con la disponibilidad física del gimn
 
 ## 8. Notificaciones y automatizaciones
 
+- **aviso de ticket asignado al técnico** — implementado: al crear o editar un ticket con `assigned_to`, el módulo `notifications` escribe `maintenance_ticket_assigned` en la bandeja del panel de la cuenta vinculada a ese empleado, dentro de la misma transacción del ticket (ver `notificaciones-del-socio.md` y ADR-017)
 - alerta de mantenimiento preventivo vencido
 - aviso de equipo fuera de servicio en app, kiosco y recepción
 - recordatorio de inspección de limpieza por área
@@ -184,6 +185,7 @@ Primer incremento entregado (2026-10-17), **autocontenido**: no habla con provee
 - **Preventivos**: un registro de tipo `preventive` con `next_due_on` actualiza `equipment.next_preventive_due`; el resumen y el listado cuentan como **vencidos** los equipos operativos o en revisión cuya fecha ya pasó.
 - **Rondas de limpieza/inspección**: `maintenance_checklists` guarda el área como texto (el borrador no definía una entidad de área), el resultado y las observaciones; un resultado `observation` exige `observations` no vacío.
 - **Folio de ticket**: `MT-{YYYYMMDD}-{hex6}`, generado en el servicio; la fecha es el **día local del gimnasio** (`APP_TIMEZONE`), no el día UTC.
+- **Asignación con aviso**: cuando `create_ticket` o `update_ticket` reciben `assigned_to`, se escribe `maintenance_ticket_assigned` en `staff_notifications` de la cuenta cuyo `AppUser.employee_id` coincide con el empleado, en la misma transacción. Si el empleado **no tiene cuenta activa** el aviso se omite y la asignación se guarda igual; el `dedupe_key` `maintenance_ticket_assigned:<ticket>:<empleado>` hace que re-guardar el mismo técnico no re-anuncie el ticket, aunque una reasignación A → B → A tampoco vuelve a avisar a A.
 - **Permisos**: `maintenance.read` (consulta) lo tienen dueño, gerente, mantenimiento, recepción y entrenador; `maintenance.report` (crear ticket y fijar estado del equipo) lo tienen dueño, gerente, mantenimiento, recepción y entrenador; `maintenance.manage` (alta/edición/baja de equipos, gestión y cierre de tickets, registros y rondas) lo tienen dueño, gerente y mantenimiento; contabilidad no participa.
 - **Vínculo ejercicio↔equipo**: `exercises.equipment_id` es opcional; los ejercicios y las líneas de rutina exponen `equipment_status` y el plan de la rutina muestra una **advertencia suave** (`Equipo en mantenimiento` / `Fuera de servicio`) cuando la máquina vinculada no está operativa. No bloquea el ejercicio: es aviso, no prohibición. Vincular un equipo inexistente o retirado responde `422`.
 - **API**: 21 rutas bajo `/admin/maintenance/*` — resumen, directorio y opciones de equipos, alta/edición/estado/baja, registros por equipo y globales, tickets con asignación/inicio/resolución/cancelación, rondas y estado de servicio por área.
@@ -194,10 +196,11 @@ Pendiente (documentado en `docs/deuda-tecnica.md`): avisos automáticos a socios
 
 ## 14. Estado
 
-Primer incremento implementado y probado (equipos con estado y baja, tickets con bloqueo y restauración, bitácora técnica append-only, rondas de limpieza e inspección, estado de servicio por área y vínculo ejercicio↔equipo) y conectado al panel; los avisos automáticos a socios y kiosco, los proveedores y órdenes de compra, el presupuesto de reemplazo y los adjuntos en tickets quedan en diseño / validación funcional.
+Primer incremento implementado y probado (equipos con estado y baja, tickets con bloqueo y restauración, bitácora técnica append-only, rondas de limpieza e inspección, estado de servicio por área y vínculo ejercicio↔equipo) y conectado al panel; **la asignación de un ticket ya avisa al técnico en la campana del panel** (`maintenance_ticket_assigned`, tabla `staff_notifications`, ADR-017). Los avisos automáticos a socios y kiosco, los proveedores y órdenes de compra, el presupuesto de reemplazo y los adjuntos en tickets quedan en diseño / validación funcional.
 
 ## 15. Historial de cambios
 
+- 2026-10-27: la asignación de un ticket (`create_ticket` / `update_ticket` con `assigned_to`) emite el aviso `maintenance_ticket_assigned` en la bandeja del panel del técnico, sobre la nueva tabla `staff_notifications` (migración `20261027_0036_staff_notifications.py`), con deduplicación por ticket y empleado y omisión silenciosa cuando el empleado no tiene cuenta activa. Sin cambios de rutas, permisos ni estados del ticket.
 - 2026-10-18: el folio de ticket `MT-…` pasa a usar la fecha del **día local del gimnasio** (`APP_TIMEZONE`) en vez de UTC, para alinearse con las ventas, las devoluciones y los reportes; se agregó una prueba.
 - 2026-10-17: primer incremento de implementación (equipos con estado y baja, tickets con bloqueo/restauración y folio, bitácora técnica append-only, rondas de limpieza e inspección, estado por área y vínculo ejercicio↔equipo) con las migraciones `20261017_0012`, `20261017_0013` y `20261017_0014`, API `/admin/maintenance/*`, panel web con la vista Mantenimiento, seeder de vista previa y pruebas de API.
 - 2026-10-15: documento ampliado con flujos operativos, pantallas, reglas, KPI e integraciones.

@@ -130,11 +130,12 @@ Este módulo cubre la gestión de personal del gimnasio: alta y baja de empleado
 - Clases: el instructor se asocia a agenda, asistencia y comisiones por clase.
 - Control de acceso: el personal también tiene asistencia por puerta/lector.
 - Facturación: los recibos de nómina y pagos de honorarios se acompañan de CFDI.
-- Comunicación: avisos de vacaciones, cambios de horario y fin de contrato.
+- Comunicación: avisos de vacaciones, cambios de horario y fin de contrato. **Ninguno está implementado**; lo que sí existe es la bandeja del personal (`staff_notifications`, ADR-017), que hoy solo recibe avisos de otros módulos (entrenamientos del socio pendientes de revisión y tickets de mantenimiento asignados).
 
 ## 8. Notificaciones y automatizaciones
 
-- Aviso de faltas o retrasos.
+- Bandeja real del panel (campana con insignia de no leídos) alimentada por eventos del dominio: ver `docs/02-modulos/notificaciones-del-socio.md` y ADR-017. El destinatario se resuelve con `employee_id`, así que el aviso llega a la cuenta del colaborador y no al rol.
+- Lo demás de esta lista sigue siendo diseño, sin emisor ni tabla: aviso de faltas o retrasos.
 - Recordatorio de vencimiento de capacitación o certificación.
 - Nómina cerrada y recibo disponible para revisión.
 - Notificación de vacaciones solicitadas y aprobadas.
@@ -174,7 +175,7 @@ Este módulo cubre la gestión de personal del gimnasio: alta y baja de empleado
 
 ## 13. Estado
 
-Roles, usuarios, directorio de personal, turnos y asistencia: implementación inicial. Nómina, contratos y expedición de recibos o CFDI: pendientes.
+Roles, usuarios, directorio de personal, turnos y asistencia: implementación inicial. Nómina, contratos y expedición de recibos o CFDI: pendientes. Los avisos del panel ya existen (ADR-017) pero los del propio módulo Personal (faltas, certificaciones, vacaciones, nómina) no.
 
 ## 14. Historial de cambios
 
@@ -183,7 +184,7 @@ Roles, usuarios, directorio de personal, turnos y asistencia: implementación in
 
 ## 15. Implementación inicial
 
-- `Employee` almacena el directorio operativo; `AppUser` es la identidad de inicio de sesión y puede asociarse a un empleado.
+- `Employee` almacena el directorio operativo; `AppUser` es la identidad de inicio de sesión y se asocia a un empleado por la columna `employee_id` (única, FK `RESTRICT` a `employees`), que `POST /admin/users` llena al crear la cuenta. Ese vínculo es **el único mapeo empleado → cuenta** y es lo que resuelve a quién llega un aviso del panel (`staff_user_for_employee`, ADR-017): sin cuenta enlazada, o con la cuenta desactivada, no hay bandeja aunque sí expediente, y el emisor omite el aviso en silencio.
 - Los roles y permisos son entidades persistidas; el backend calcula permisos efectivos en cada sesión y los exige en las rutas administrativas.
 - Las contraseñas se hashean con Argon2. Los tokens Bearer son aleatorios, expiran en 8 horas y solo se conserva su hash SHA-256.
 - Los inicios de sesión fallidos, cierres de sesión, creación de cuentas y cambios de rol generan eventos auditables.

@@ -113,6 +113,16 @@ type BackendSession = {
   is_current: boolean;
 };
 
+type BackendNotice = {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  ref_id: string | null;
+  created_at: string;
+  read_at: string | null;
+};
+
 type BackendAttendance = {
   id: string;
   shift_id: string;
@@ -1525,6 +1535,10 @@ function formatClassClock(value: string): string {
   return new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
+function formatNoticeMoment(value: string): string {
+  return new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
 function toDateTimeLocalValue(value: string): string {
   const date = new Date(value);
   const pad = (input: number) => String(input).padStart(2, "0");
@@ -2630,6 +2644,10 @@ export default function HomePage() {
   const [newMemberOpen, setNewMemberOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notices, setNotices] = useState<BackendNotice[] | null>(null);
+  const [unreadNotices, setUnreadNotices] = useState(0);
+  const [noticesLoading, setNoticesLoading] = useState(false);
+  const [noticesError, setNoticesError] = useState("");
   const [toast, setToast] = useState("");
   const [authState, setAuthState] = useState<"checking" | "signed_in" | "signed_out">("checking");
   const [currentUser, setCurrentUser] = useState<SessionUser | null>(null);
@@ -2942,6 +2960,105 @@ export default function HomePage() {
     }
   };
 
+  const refreshUnreadNotices = async () => {
+    try {
+      const response = await fetch("/api/admin/notifications/unread-count", { cache: "no-store" });
+      if (response.status === 401) {
+        setAuthState("signed_out");
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as { unread?: number };
+      setUnreadNotices(response.ok ? payload.unread ?? 0 : 0);
+    } catch {
+      setUnreadNotices(0);
+    }
+  };
+
+  useEffect(() => {
+    if (authState !== "signed_in") {
+      setUnreadNotices(0);
+      setNotices(null);
+      setNoticesError("");
+      return;
+    }
+    void refreshUnreadNotices();
+  }, [authState]);
+
+  const loadNotices = async () => {
+    setNoticesLoading(true);
+    setNoticesError("");
+    try {
+      const response = await fetch("/api/admin/notifications?page_size=12", { cache: "no-store" });
+      if (response.status === 401) {
+        setAuthState("signed_out");
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as {
+        items?: BackendNotice[];
+        unread_total?: number;
+        detail?: string;
+      };
+      if (!response.ok) {
+        setNoticesError(payload.detail || "No se pudo cargar la bandeja.");
+        return;
+      }
+      setNotices(payload.items ?? []);
+      setUnreadNotices(payload.unread_total ?? 0);
+    } catch {
+      setNoticesError("No se pudo conectar con el backend.");
+    } finally {
+      setNoticesLoading(false);
+    }
+  };
+
+  const toggleNotices = () => {
+    const next = !notificationsOpen;
+    setNotificationsOpen(next);
+    if (next) void loadNotices();
+  };
+
+  const markNoticeRead = async (notice: BackendNotice) => {
+    if (notice.read_at) return;
+    const stamped = new Date().toISOString();
+    try {
+      const response = await fetch(`/api/admin/notifications/${encodeURIComponent(notice.id)}/read`, { method: "POST" });
+      if (response.status === 401) {
+        setAuthState("signed_out");
+        return;
+      }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { detail?: string };
+        showToast(payload.detail || "No se pudo marcar el aviso.");
+        return;
+      }
+      setNotices((current) => (current ?? []).map((item) => (item.id === notice.id ? { ...item, read_at: stamped } : item)));
+      setUnreadNotices((count) => Math.max(count - 1, 0));
+    } catch {
+      showToast("No se pudo conectar con el backend.");
+    }
+  };
+
+  const markAllNoticesRead = async () => {
+    const stamped = new Date().toISOString();
+    try {
+      const response = await fetch("/api/admin/notifications/read-all", { method: "POST" });
+      if (response.status === 401) {
+        setAuthState("signed_out");
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as { updated?: number; detail?: string };
+      if (!response.ok) {
+        showToast(payload.detail || "No se pudo limpiar la bandeja.");
+        return;
+      }
+      setNotices((current) => (current ?? []).map((item) => (item.read_at ? item : { ...item, read_at: stamped })));
+      setUnreadNotices(0);
+      showToast(payload.updated ? `${payload.updated} aviso(s) marcados como leídos.` : "Bandeja al día.");
+    } catch {
+      showToast("No se pudo conectar con el backend.");
+    }
+  };
+
   const selectPage = (page: PageName) => {
     setActivePage(page);
     setMobileNavOpen(false);
@@ -3066,15 +3183,34 @@ export default function HomePage() {
           <div className="topbar-actions">
             <div className="preview-pill"><span />Vista previa · datos de muestra</div>
             <div className="notification-wrap">
-              <button className={`icon-button notification-button ${notificationsOpen ? "icon-button-selected" : ""}`} aria-label="Notificaciones" onClick={() => setNotificationsOpen((open) => !open)}>
-                <Bell size={19} /><i />
+              <button className={`icon-button notification-button ${notificationsOpen ? "icon-button-selected" : ""}`} aria-label={unreadNotices > 0 ? `Notificaciones, ${unreadNotices} sin leer` : "Notificaciones"} onClick={toggleNotices}>
+                <Bell size={19} />{unreadNotices > 0 && <i />}
               </button>
               {notificationsOpen && (
                 <div className="notification-popover">
-                  <strong>Notificaciones</strong>
-                  <p><span className="notification-dot coral-dot" />7 membresías requieren seguimiento.</p>
-                  <p><span className="notification-dot lime-dot" />Todos los lectores están conectados.</p>
-                  <button onClick={() => setNotificationsOpen(false)}>Listo</button>
+                  <div className="notification-head">
+                    <strong>Notificaciones</strong>
+                    <span>{unreadNotices > 0 ? `${unreadNotices} sin leer` : "Todo leído"}</span>
+                  </div>
+                  {noticesLoading && <p className="notification-state">Cargando…</p>}
+                  {!noticesLoading && noticesError && <p className="notification-state notification-failed">{noticesError}</p>}
+                  {!noticesLoading && !noticesError && notices !== null && notices.length === 0 && (
+                    <p className="notification-state">Sin avisos por ahora.</p>
+                  )}
+                  {!noticesLoading && !noticesError && (notices ?? []).map((notice) => (
+                    <button key={notice.id} className={`notification-item ${notice.read_at ? "is-read" : "is-new"}`} onClick={() => void markNoticeRead(notice)}>
+                      <span className={`notification-dot ${notice.read_at ? "lime-dot" : "coral-dot"}`} />
+                      <span className="notification-copy">
+                        <strong>{notice.title}</strong>
+                        <span>{notice.body}</span>
+                        <em>{formatNoticeMoment(notice.created_at)}</em>
+                      </span>
+                    </button>
+                  ))}
+                  <div className="notification-actions">
+                    <button onClick={() => void markAllNoticesRead()}>Marcar todo leído</button>
+                    <button onClick={() => setNotificationsOpen(false)}>Listo</button>
+                  </div>
                 </div>
               )}
             </div>

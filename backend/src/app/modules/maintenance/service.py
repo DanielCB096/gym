@@ -41,6 +41,7 @@ from app.modules.maintenance.models import (
     MaintenanceTicket,
     utc_now,
 )
+from app.modules.notifications import notify_technician_ticket_assigned
 from app.timezone import club_day_stamp
 
 DEFAULT_PAGE_SIZE = 25
@@ -906,6 +907,17 @@ def create_ticket(
 
     session.add(ticket)
     try:
+        session.flush()
+        if assigned_to is not None:
+            notify_technician_ticket_assigned(
+                session,
+                technician_employee_id=assigned_to,
+                ticket_id=ticket.id,
+                ticket_code=ticket.code,
+                equipment_name=equipment.name,
+                ticket_title=ticket.title,
+                now=occurred,
+            )
         session.commit()
     except IntegrityError as error:  # pragma: no cover - race on the unique code
         session.rollback()
@@ -970,6 +982,20 @@ def update_ticket(
 
     ticket.updated_at = occurred
     session.add(ticket)
+    if assigned_to is not UNSET and assigned_to is not None:
+        # Re-saving the same assignee is not spam: the dedupe key of the notice
+        # is the ticket plus the technician, so only a genuinely new pair adds a
+        # row. The first notice of a ticket comes from create_ticket.
+        assignee_equipment = session.get(Equipment, ticket.equipment_id)
+        notify_technician_ticket_assigned(
+            session,
+            technician_employee_id=assigned_to,
+            ticket_id=ticket.id,
+            ticket_code=ticket.code,
+            equipment_name=assignee_equipment.name if assignee_equipment is not None else "un equipo",
+            ticket_title=ticket.title,
+            now=occurred,
+        )
     session.commit()
     session.refresh(ticket)
     equipment = session.get(Equipment, ticket.equipment_id)

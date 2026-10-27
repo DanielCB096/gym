@@ -348,10 +348,15 @@ from app.modules.memberships.service import (
 from app.modules.notifications import (
     MemberNotificationItem,
     NotificationError,
+    StaffNotificationItem,
     list_member_notifications,
+    list_staff_notifications,
     mark_all_notifications_read,
+    mark_all_staff_notifications_read,
     mark_notification_read,
+    mark_staff_notification_read,
     unread_notification_count,
+    unread_staff_notification_count,
 )
 from app.modules.portal.classes import (
     MemberClassItem,
@@ -1819,6 +1824,33 @@ class MemberNotificationReadAllResponse(BaseModel):
     updated: int
 
 
+class StaffNotificationResponse(BaseModel):
+    id: UUID
+    kind: str
+    title: str
+    body: str
+    ref_id: UUID | None
+    created_at: datetime
+    read_at: datetime | None
+
+
+class StaffNotificationPageResponse(BaseModel):
+    items: list[StaffNotificationResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+    unread_total: int
+
+
+class StaffNotificationCountResponse(BaseModel):
+    unread: int
+
+
+class StaffNotificationReadAllResponse(BaseModel):
+    updated: int
+
+
 class EquipmentResponse(BaseModel):
     id: UUID
     name: str
@@ -3087,6 +3119,73 @@ def member_notifications_read_all(
 ) -> MemberNotificationReadAllResponse:
     return MemberNotificationReadAllResponse(
         updated=mark_all_notifications_read(session, member.member_id)
+    )
+
+
+@app.get(
+    "/admin/notifications",
+    response_model=StaffNotificationPageResponse,
+    tags=["staff self-service"],
+)
+def staff_notifications(
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> StaffNotificationPageResponse:
+    inbox = list_staff_notifications(session, principal.user_id, page=page, page_size=page_size)
+    return StaffNotificationPageResponse(
+        items=[_staff_notification_response(item) for item in inbox.items],
+        total=inbox.total,
+        page=inbox.page,
+        page_size=inbox.page_size,
+        pages=inbox.pages,
+        unread_total=inbox.unread_total,
+    )
+
+
+@app.get(
+    "/admin/notifications/unread-count",
+    response_model=StaffNotificationCountResponse,
+    tags=["staff self-service"],
+)
+def staff_notifications_unread(
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+) -> StaffNotificationCountResponse:
+    return StaffNotificationCountResponse(
+        unread=unread_staff_notification_count(session, principal.user_id)
+    )
+
+
+@app.post(
+    "/admin/notifications/{notification_id}/read",
+    response_model=StaffNotificationResponse,
+    tags=["staff self-service"],
+)
+def staff_notification_read(
+    notification_id: UUID,
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+) -> StaffNotificationResponse:
+    try:
+        item = mark_staff_notification_read(session, principal.user_id, notification_id)
+    except NotificationError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return _staff_notification_response(item)
+
+
+@app.post(
+    "/admin/notifications/read-all",
+    response_model=StaffNotificationReadAllResponse,
+    tags=["staff self-service"],
+)
+def staff_notifications_read_all(
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+) -> StaffNotificationReadAllResponse:
+    return StaffNotificationReadAllResponse(
+        updated=mark_all_staff_notifications_read(session, principal.user_id)
     )
 
 
@@ -7202,6 +7301,18 @@ def _member_payment_response(item: MemberPaymentItem) -> MemberPaymentResponse:
 
 def _member_notification_response(item: MemberNotificationItem) -> MemberNotificationResponse:
     return MemberNotificationResponse(
+        id=item.id,
+        kind=item.kind,
+        title=item.title,
+        body=item.body,
+        ref_id=item.ref_id,
+        created_at=item.created_at,
+        read_at=item.read_at,
+    )
+
+
+def _staff_notification_response(item: StaffNotificationItem) -> StaffNotificationResponse:
+    return StaffNotificationResponse(
         id=item.id,
         kind=item.kind,
         title=item.title,

@@ -40,6 +40,7 @@ from app.modules.notifications import (
     notify_goal_achieved,
     notify_goal_cancelled_by_staff,
     notify_goal_updated_by_staff,
+    notify_trainer_pending_workout,
     notify_workout_reviewed,
 )
 from app.modules.routines.models import (
@@ -1563,6 +1564,20 @@ def log_workout(
                 weight_kg=item.weight_kg,
                 created_at=occurred,
             )
+        )
+    if origin == "app":
+        # A workout the member logged themselves is work for the trainer named on
+        # the assignment; a workout the staff logged is already being watched.
+        member = session.get(Member, assignment.member_id)
+        routine = session.get(Routine, assignment.routine_id)
+        notify_trainer_pending_workout(
+            session,
+            trainer_employee_id=assignment.trainer_id,
+            member_label=_member_name(member),
+            workout_id=workout.id,
+            performed_on=performed_at,
+            routine_name=routine.name if routine is not None else None,
+            now=occurred,
         )
     session.commit()
     session.refresh(workout)

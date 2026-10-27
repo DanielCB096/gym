@@ -1,36 +1,45 @@
 """Notification inbox service.
 
-Two producers feed the inbox:
+Three producers feed the two inboxes:
 
-* domain events, raised by the routines and classes services inside the same
-  transaction that changes the member's record. The message is written from the
-  values the event already has in hand, so no extra query is needed and the
-  notification can never disagree with the change that caused it;
+* domain events for the member, raised by the routines and classes services
+  inside the same transaction that changes the member's record. The message is
+  written from the values the event already has in hand, so no extra query is
+  needed and the notification can never disagree with the change that caused it;
+* domain events for the staff, raised by the routines and maintenance services
+  when something a member does in the app or a dispatcher does at the desk turns
+  into work for a named person. The audience is a panel account, so the employee
+  behind the assignment or the ticket is resolved to its ``app_users`` row here
+  and the notice is simply skipped when that employee has no active account;
 * the membership window, which has no scheduler to wake it up. It is materialised
   lazily when the member opens the inbox and is deduplicated by
   ``membership_expiring:<membership>:<window>``, so the same reminder is written
   at most once per threshold (7, then 3, then 1 day left).
 
-Members can only ever read and acknowledge their own rows; there is no update or
-delete path, and no staff-facing audience yet (see ``docs/deuda-tecnica.md``).
+Readers can only ever see and acknowledge their own rows; there is no update or
+delete path on either inbox.
 """
 
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from typing import TypeVar
 from uuid import UUID
 
 from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from app.modules.identity.models import AppUser
 from app.modules.memberships.models import Member, Membership
 from app.modules.notifications.models import (
     MAX_BODY_CHARS,
     MAX_DEDUPE_CHARS,
     MAX_TITLE_CHARS,
     NOTIFICATION_KINDS,
+    STAFF_NOTIFICATION_KINDS,
     MemberNotification,
+    StaffNotification,
     utc_now,
 )
 from app.timezone import to_club_timezone
@@ -69,6 +78,87 @@ class MemberNotificationPage:
     unread_total: int
 
 
+@dataclass(frozen=True)
+class StaffNotificationItem:
+    id: UUID
+    kind: str
+    title: str
+    body: str
+    ref_id: UUID | None
+    created_at: datetime
+    read_at: datetime | None
+
+
+@dataclass(frozen=True)
+class StaffNotificationPage:
+    items: list[StaffNotificationItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+    unread_total: int
+
+
+NotificationRow = TypeVar("NotificationRow", MemberNotification, StaffNotification)
+
+
+def _validated_message(
+    kind: str, title: str, body: str, allowed_kinds: tuple[str, ...]
+) -> tuple[str, str]:
+    if kind not in allowed_kinds:
+        raise NotificationError(f"El tipo de aviso '{kind}' no es válido")
+    clean_title = title.strip()
+    if not clean_title or len(clean_title) > MAX_TITLE_CHARS:
+        raise NotificationError(f"El título debe tener entre 1 y {MAX_TITLE_CHARS} caracteres")
+    clean_body = body.strip()
+    if not clean_body or len(clean_body) > MAX_BODY_CHARS:
+        raise NotificationError(f"El mensaje debe tener entre 1 y {MAX_BODY_CHARS} caracteres")
+    return clean_title, clean_body
+
+
+def _clean_dedupe_key(dedupe_key: str | None) -> str | None:
+    if dedupe_key is None:
+        return None
+    key = dedupe_key.strip()
+    if len(key) > MAX_DEDUPE_CHARS:
+        raise NotificationError("La clave de duplicidad es demasiado larga")
+    return key or None
+
+
+def _append(
+    session: Session, notification: NotificationRow, model: type[NotificationRow]
+) -> NotificationRow:
+    """Insert a row, honouring the dedupe key if it carries one.
+
+    With a ``dedupe_key`` an existing message with the same key is returned
+    untouched instead of being duplicated. A deduplicated row can lose the race
+    against an identical insert from another connection; the savepoint keeps the
+    caller's transaction usable either way.
+    """
+    dedupe_key = notification.dedupe_key
+    if dedupe_key is None:
+        session.add(notification)
+        return notification
+    existing = session.exec(select(model).where(model.dedupe_key == dedupe_key)).first()
+    if existing is not None:
+        return existing
+    # The caller's pending changes are written *before* the savepoint so a
+    # collision rolls back this row alone and never the domain change the
+    # emitters sit next to.
+    session.flush()
+    session.add(notification)
+    try:
+        with session.begin_nested():
+            session.flush()
+    except IntegrityError:
+        session.expunge(notification)
+        winner = session.exec(select(model).where(model.dedupe_key == dedupe_key)).first()
+        if winner is None:
+            raise
+        return winner
+    return notification
+
+
 def create_notification(
     session: Session,
     *,
@@ -80,61 +170,64 @@ def create_notification(
     dedupe_key: str | None = None,
     now: datetime | None = None,
 ) -> MemberNotification:
-    """Append a message for a member.
-
-    With a ``dedupe_key`` an existing message with the same key is returned
-    untouched instead of being duplicated.
-    """
-    if kind not in NOTIFICATION_KINDS:
-        raise NotificationError(f"El tipo de aviso '{kind}' no es válido")
-    clean_title = title.strip()
-    if not clean_title or len(clean_title) > MAX_TITLE_CHARS:
-        raise NotificationError(f"El título debe tener entre 1 y {MAX_TITLE_CHARS} caracteres")
-    clean_body = body.strip()
-    if not clean_body or len(clean_body) > MAX_BODY_CHARS:
-        raise NotificationError(f"El mensaje debe tener entre 1 y {MAX_BODY_CHARS} caracteres")
-    if dedupe_key is not None:
-        key = dedupe_key.strip()
-        if len(key) > MAX_DEDUPE_CHARS:
-            raise NotificationError("La clave de duplicidad es demasiado larga")
-        if key:
-            dedupe_key = key
-        else:
-            dedupe_key = None
-
-    occurred = _as_utc(now or utc_now())
-    if dedupe_key is not None:
-        existing = session.exec(
-            select(MemberNotification).where(MemberNotification.dedupe_key == dedupe_key)
-        ).first()
-        if existing is not None:
-            return existing
-
-    notification = MemberNotification(
-        member_id=member_id,
-        kind=kind,
-        title=clean_title,
-        body=clean_body,
-        ref_id=ref_id,
-        dedupe_key=dedupe_key,
-        created_at=occurred,
+    """Append a message for a member."""
+    clean_title, clean_body = _validated_message(kind, title, body, NOTIFICATION_KINDS)
+    return _append(
+        session,
+        MemberNotification(
+            member_id=member_id,
+            kind=kind,
+            title=clean_title,
+            body=clean_body,
+            ref_id=ref_id,
+            dedupe_key=_clean_dedupe_key(dedupe_key),
+            created_at=_as_utc(now or utc_now()),
+        ),
+        MemberNotification,
     )
-    session.add(notification)
-    if dedupe_key is None:
-        return notification
-    # A deduplicated row can lose the race against an identical insert from another
-    # connection; the savepoint keeps the caller's transaction usable either way.
-    try:
-        with session.begin_nested():
-            session.flush()
-    except IntegrityError:
-        winner = session.exec(
-            select(MemberNotification).where(MemberNotification.dedupe_key == dedupe_key)
-        ).first()
-        if winner is None:
-            raise
-        return winner
-    return notification
+
+
+def create_staff_notification(
+    session: Session,
+    *,
+    user_id: UUID,
+    kind: str,
+    title: str,
+    body: str,
+    ref_id: UUID | None = None,
+    dedupe_key: str | None = None,
+    now: datetime | None = None,
+) -> StaffNotification:
+    """Append a message for a panel account."""
+    clean_title, clean_body = _validated_message(kind, title, body, STAFF_NOTIFICATION_KINDS)
+    return _append(
+        session,
+        StaffNotification(
+            user_id=user_id,
+            kind=kind,
+            title=clean_title,
+            body=clean_body,
+            ref_id=ref_id,
+            dedupe_key=_clean_dedupe_key(dedupe_key),
+            created_at=_as_utc(now or utc_now()),
+        ),
+        StaffNotification,
+    )
+
+
+def staff_user_for_employee(session: Session, employee_id: UUID | None) -> UUID | None:
+    """The panel account that should receive a notice for this employee.
+
+    A notice addressed to an employee with no account, or whose account was
+    disabled, has nowhere to land: the caller is expected to skip it rather than
+    to guess another recipient.
+    """
+    if employee_id is None:
+        return None
+    user = session.exec(
+        select(AppUser).where(AppUser.employee_id == employee_id, AppUser.status == "active")
+    ).first()
+    return None if user is None else user.id
 
 
 def notify_workout_reviewed(
@@ -260,6 +353,120 @@ def notify_waitlist_promoted(
     )
 
 
+def notify_trainer_pending_workout(
+    session: Session,
+    *,
+    trainer_employee_id: UUID | None,
+    member_label: str,
+    workout_id: UUID,
+    performed_on: date,
+    routine_name: str | None,
+    now: datetime | None = None,
+) -> StaffNotification | None:
+    """Tell the trainer that a member logged a workout waiting to be reviewed.
+
+    Returns ``None`` when the assignment has no trainer or that trainer has no
+    active panel account: the workout is still logged, only the notice is lost.
+    """
+    user_id = staff_user_for_employee(session, trainer_employee_id)
+    if user_id is None:
+        return None
+    label = _clip(routine_name or "", 60)
+    who = _clip(member_label, 60) or "Un socio"
+    head = (
+        f"{who} registró la rutina {label} del {performed_on:%d/%m/%Y}"
+        if label
+        else f"{who} registró su entrenamiento del {performed_on:%d/%m/%Y}"
+    )
+    return create_staff_notification(
+        session,
+        user_id=user_id,
+        kind="workout_pending_review",
+        title="Entrenamiento pendiente de revisión",
+        body=f"{head} desde la app. Queda pendiente de tu revisión.",
+        ref_id=workout_id,
+        now=now,
+    )
+
+
+def notify_technician_ticket_assigned(
+    session: Session,
+    *,
+    technician_employee_id: UUID | None,
+    ticket_id: UUID,
+    ticket_code: str,
+    equipment_name: str,
+    ticket_title: str,
+    now: datetime | None = None,
+) -> StaffNotification | None:
+    """Tell a technician that a maintenance ticket is now theirs.
+
+    The dedupe key ties the notice to the ticket *and* the technician, so
+    re-saving the same assignee through a PATCH does not spam the inbox; the
+    trade-off is that reassigning a ticket back to the same person after handing
+    it to someone else is not announced a second time.
+    """
+    user_id = staff_user_for_employee(session, technician_employee_id)
+    if user_id is None:
+        return None
+    return create_staff_notification(
+        session,
+        user_id=user_id,
+        kind="maintenance_ticket_assigned",
+        title="Se te asignó un ticket",
+        body=(
+            f"El ticket {_clip(ticket_code, 20)} de {_clip(equipment_name, 60)} te fue asignado: "
+            f"{_clip(ticket_title, 160)}. Atiéndelo desde la vista de Mantenimiento."
+        ),
+        ref_id=ticket_id,
+        dedupe_key=f"maintenance_ticket_assigned:{ticket_id}:{technician_employee_id}",
+        now=now,
+    )
+
+
+def _clamp_page(page: int, page_size: int) -> tuple[int, int]:
+    return max(page, 1), min(max(page_size, 1), MAX_PAGE_SIZE)
+
+
+def _paginate_inbox(
+    session: Session,
+    model: type[NotificationRow],
+    owner_column,
+    owner_id: UUID,
+    *,
+    page: int,
+    page_size: int,
+) -> tuple[int, int, list[NotificationRow], int, int, int]:
+    """Count, unread-count and page one inbox.
+
+    Both inboxes have the same shape once the owner column is given, so the
+    paging rules stay in a single place and cannot drift apart.
+    """
+    page, page_size = _clamp_page(page, page_size)
+    total = int(
+        session.exec(select(func.count(model.id)).where(owner_column == owner_id)).one() or 0
+    )
+    unread_total = int(
+        session.exec(
+            select(func.count(model.id)).where(
+                owner_column == owner_id, model.read_at.is_(None)
+            )
+        ).one()
+        or 0
+    )
+    rows = list(
+        session.exec(
+            select(model)
+            .where(owner_column == owner_id)
+            .order_by(model.created_at.desc(), model.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    )
+    pages = (total + page_size - 1) // page_size if total > 0 else 0
+    return page, page_size, rows, total, pages, unread_total
+
+
 def list_member_notifications(
     session: Session,
     member_id: UUID,
@@ -273,34 +480,14 @@ def list_member_notifications(
         raise NotificationError("El socio no existe")
     _ensure_membership_expiring(session, member_id, now=now)
 
-    page = max(page, 1)
-    page_size = min(max(page_size, 1), MAX_PAGE_SIZE)
-
-    total = int(
-        session.exec(
-            select(func.count(MemberNotification.id)).where(
-                MemberNotification.member_id == member_id
-            )
-        ).one()
-        or 0
+    page, page_size, rows, total, pages, unread_total = _paginate_inbox(
+        session,
+        MemberNotification,
+        MemberNotification.member_id,
+        member_id,
+        page=page,
+        page_size=page_size,
     )
-    unread_total = int(
-        session.exec(
-            select(func.count(MemberNotification.id)).where(
-                MemberNotification.member_id == member_id,
-                MemberNotification.read_at.is_(None),
-            )
-        ).one()
-        or 0
-    )
-    rows = session.exec(
-        select(MemberNotification)
-        .where(MemberNotification.member_id == member_id)
-        .order_by(MemberNotification.created_at.desc(), MemberNotification.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    ).all()
-    pages = (total + page_size - 1) // page_size if total > 0 else 0
     return MemberNotificationPage(
         items=[_notification_item(row) for row in rows],
         total=total,
@@ -354,6 +541,81 @@ def mark_all_notifications_read(
         .where(
             MemberNotification.member_id == member_id,
             MemberNotification.read_at.is_(None),
+        )
+        .values(read_at=occurred)
+    )
+    session.commit()
+    return int(result.rowcount or 0)
+
+
+def list_staff_notifications(
+    session: Session,
+    user_id: UUID,
+    *,
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> StaffNotificationPage:
+    page, page_size, rows, total, pages, unread_total = _paginate_inbox(
+        session,
+        StaffNotification,
+        StaffNotification.user_id,
+        user_id,
+        page=page,
+        page_size=page_size,
+    )
+    return StaffNotificationPage(
+        items=[_staff_notification_item(row) for row in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=pages,
+        unread_total=unread_total,
+    )
+
+
+def unread_staff_notification_count(session: Session, user_id: UUID) -> int:
+    return int(
+        session.exec(
+            select(func.count(StaffNotification.id)).where(
+                StaffNotification.user_id == user_id,
+                StaffNotification.read_at.is_(None),
+            )
+        ).one()
+        or 0
+    )
+
+
+def mark_staff_notification_read(
+    session: Session,
+    user_id: UUID,
+    notification_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> StaffNotificationItem:
+    occurred = _as_utc(now or utc_now())
+    row = session.get(StaffNotification, notification_id)
+    if row is None or row.user_id != user_id:
+        raise NotificationNotFound("El aviso no existe")
+    if row.read_at is None:
+        row.read_at = occurred
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+    return _staff_notification_item(row)
+
+
+def mark_all_staff_notifications_read(
+    session: Session,
+    user_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> int:
+    occurred = _as_utc(now or utc_now())
+    result = session.exec(
+        update(StaffNotification)
+        .where(
+            StaffNotification.user_id == user_id,
+            StaffNotification.read_at.is_(None),
         )
         .values(read_at=occurred)
     )
@@ -417,6 +679,30 @@ def _notification_item(row: MemberNotification) -> MemberNotificationItem:
         created_at=_as_utc(row.created_at),
         read_at=_as_utc(row.read_at) if row.read_at is not None else None,
     )
+
+
+def _staff_notification_item(row: StaffNotification) -> StaffNotificationItem:
+    return StaffNotificationItem(
+        id=row.id,
+        kind=row.kind,
+        title=row.title,
+        body=row.body,
+        ref_id=row.ref_id,
+        created_at=_as_utc(row.created_at),
+        read_at=_as_utc(row.read_at) if row.read_at is not None else None,
+    )
+
+
+def _clip(value: str, limit: int) -> str:
+    """Shorten a volatile piece of an emitted message.
+
+    Names come from records the club edits freely, and an over-long one must not
+    make the domain operation fail on the message length check.
+    """
+    clean = (value or "").strip()
+    if len(clean) <= limit:
+        return clean
+    return f"{clean[: limit - 1].rstrip()}…"
 
 
 def _as_utc(moment: datetime) -> datetime:
