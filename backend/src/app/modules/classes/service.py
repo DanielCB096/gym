@@ -456,21 +456,31 @@ def _session_item_by_id(session: Session, session_id: UUID) -> ClassSessionItem:
     return _session_item(row, _session_metrics(session, [session_id]))
 
 
+def _filtered_count(statement):
+    # Las condiciones de búsqueda leen ClassType.name: sin el join el WHERE
+    # queda sin relacionar y produce un producto cartesiano con conteos inflados.
+    return statement.select_from(ClassSession).join(
+        ClassType, ClassType.id == ClassSession.class_type_id
+    )
+
+
 def _session_summary(session: Session, conditions: list, *, now: datetime | None = None) -> ClassSessionSummary:
     occurred = _as_utc(now or utc_now())
-    statement = select(
-        func.count(ClassSession.id),
-        func.coalesce(func.sum(case((ClassSession.status == "scheduled", 1), else_=0)), 0),
-        func.coalesce(func.sum(case((ClassSession.status == "cancelled", 1), else_=0)), 0),
-        func.coalesce(
-            func.sum(
-                case(
-                    (and_(ClassSession.status == "scheduled", ClassSession.starts_at >= occurred), 1),
-                    else_=0,
-                )
+    statement = _filtered_count(
+        select(
+            func.count(ClassSession.id),
+            func.coalesce(func.sum(case((ClassSession.status == "scheduled", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((ClassSession.status == "cancelled", 1), else_=0)), 0),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (and_(ClassSession.status == "scheduled", ClassSession.starts_at >= occurred), 1),
+                        else_=0,
+                    )
+                ),
+                0,
             ),
-            0,
-        ),
+        )
     )
     if conditions:
         statement = statement.where(*conditions)
@@ -699,7 +709,7 @@ def list_class_sessions(
         search=search,
     )
 
-    count_statement = select(func.count(ClassSession.id))
+    count_statement = _filtered_count(select(func.count(ClassSession.id)))
     if conditions:
         count_statement = count_statement.where(*conditions)
     total = int(session.exec(count_statement).one() or 0)

@@ -115,9 +115,10 @@ def _create_session(
     capacity: int = 2,
     starts_at: datetime = FUTURE,
     waitlist_enabled: bool = True,
+    title: str = "Spinning 6am",
 ):
     payload = {
-        "title": "Spinning 6am",
+        "title": title,
         "class_type_id": class_type_id,
         "starts_at": _iso(starts_at),
         "ends_at": _iso(starts_at + timedelta(hours=1)),
@@ -413,5 +414,101 @@ def test_waitlist_disabled_late_cancellation_and_session_cancel() -> None:
             assert client.post(
                 f"/admin/classes/sessions/{future_id}/cancel", headers=manager
             ).status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_summary_and_total_are_not_inflated_by_the_search_filter() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        members = [_add_member(session, first=name) for name in ("Ana", "Beto", "Caro")]
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            spinning, room_id = _create_catalog(client, manager)
+            yoga = client.post("/admin/classes/types", headers=manager, json={"name": "Yoga"})
+            assert yoga.status_code == 201, yoga.text
+            assert client.post(
+                "/admin/classes/types", headers=manager, json={"name": "Boxeo"}
+            ).status_code == 201
+
+            cardio_morning = _create_session(
+                client, manager, class_type_id=spinning, room_id=room_id, capacity=2
+            )
+            assert cardio_morning.status_code == 201, cardio_morning.text
+            cardio_later = _create_session(
+                client,
+                manager,
+                class_type_id=yoga.json()["id"],
+                room_id=room_id,
+                capacity=2,
+                starts_at=FUTURE + timedelta(days=1),
+                title="Cardio 7am",
+            )
+            boxing = _create_session(
+                client,
+                manager,
+                class_type_id=spinning,
+                room_id=room_id,
+                capacity=2,
+                starts_at=FUTURE + timedelta(days=2),
+                title="Boxeo 8am",
+            )
+            for created in (cardio_later, boxing):
+                assert created.status_code == 201, created.text
+
+            # Two seated reservations and one waitlist, all on the first class.
+            for member_id in members:
+                reserved = client.post(
+                    f"/admin/classes/sessions/{cardio_morning.json()['id']}/reservations",
+                    headers=manager,
+                    json={"member_id": str(member_id), "origin": "reception"},
+                )
+                assert reserved.status_code == 201, reserved.text
+
+            everything = client.get("/admin/classes/sessions", headers=manager).json()
+            assert everything["total"] == 3
+            assert everything["summary"] == {
+                "total": 3,
+                "scheduled": 3,
+                "cancelled": 0,
+                "upcoming": 3,
+                "reserved_total": 2,
+                "waitlist_total": 1,
+            }
+
+            # The search matches ClassType.name, so every aggregate over the
+            # filtered set must keep counting each session exactly once.
+            by_title = client.get(
+                "/admin/classes/sessions", headers=manager, params={"search": "spinning 6am"}
+            ).json()
+            assert by_title["total"] == 1
+            assert by_title["summary"] == {
+                "total": 1,
+                "scheduled": 1,
+                "cancelled": 0,
+                "upcoming": 1,
+                "reserved_total": 2,
+                "waitlist_total": 1,
+            }
+
+            by_type = client.get(
+                "/admin/classes/sessions", headers=manager, params={"search": "yoga"}
+            ).json()
+            assert [item["id"] for item in by_type["items"]] == [cardio_later.json()["id"]]
+            assert by_type["total"] == 1
+            assert by_type["summary"]["total"] == 1
+            assert by_type["summary"]["reserved_total"] == 0
+            assert by_type["summary"]["waitlist_total"] == 0
+
+            two_of_three = client.get(
+                "/admin/classes/sessions", headers=manager, params={"search": "sal"}
+            ).json()
+            assert two_of_three["total"] == 0
+            assert two_of_three["summary"]["total"] == 0
     finally:
         app.dependency_overrides.clear()

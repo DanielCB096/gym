@@ -194,6 +194,7 @@ Primer incremento implementado y probado (catálogo, agenda con cupo y lista de 
 
 ## 15. Historial de cambios
 
+- 2026-10-27: corrección en la agenda del panel —`GET /admin/classes/sessions` con `search` inflaba `total` y el `summary` porque la condición lee `ClassType.name` y los dos agregados (`_session_summary` y el conteo de `list_class_sessions`) no unían `class_types`, así que cada sesión se contaba una vez por tipo (39 en lugar de 5 en la vista previa, con 5 tipos sembrados). Ahora ambos se construyen sobre `class_sessions` unido a `class_types`; el listado de elementos y el bloque de asistencia ya unían correctamente y no cambiaron, no hay migración ni ruta nueva, y sin `search` los números son idénticos. Cubierto por `test_summary_and_total_are_not_inflated_by_the_search_filter`, que falla sin el arreglo.
 - 2026-10-27: segundo incremento (reserva y cancelación desde la app del socio sobre las mismas tablas, clases premium bloqueadas, `origin = "app"`), API `/member/classes*`, pantalla Clases en Expo y pruebas `test_member_classes_api.py`.
 - 2026-10-17: primer incremento de implementación (catálogo de clases y salones, agenda con cupo y lista de espera, reservas, asistencia y cancelaciones) con migración `20261017_0009`, API `/admin/classes/*`, panel web con vista Clases y pruebas de API.
 - 2026-10-15: documento ampliado con flujos, permiso, pantallas, reglas de negocio, entidades, KPIs y criterios de aceptación.
