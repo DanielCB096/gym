@@ -30,6 +30,7 @@ from sqlalchemy import case, func, select
 from sqlmodel import Session
 
 from app.modules.access.models import AccessEvent
+from app.modules.billing.service import PpdReceivableSummary, list_ppd_receivables
 from app.modules.classes.models import ClassReservation, ClassSession
 from app.modules.inventory.models import (
     OPEN_PURCHASE_ORDER_STATUSES,
@@ -361,6 +362,7 @@ class RevenueReport:
     cash_sessions_opened: int
     cash_sessions_closed: int
     cash_difference_cents: int
+    ppd_receivables: PpdReceivableSummary
 
 
 @dataclass(frozen=True)
@@ -1098,6 +1100,7 @@ def revenue(session: Session, period: ReportPeriod) -> RevenueReport:
         cash_sessions_opened=opened,
         cash_sessions_closed=closed,
         cash_difference_cents=difference,
+        ppd_receivables=list_ppd_receivables(session, page=1, page_size=1).summary,
     )
 
 

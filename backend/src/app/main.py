@@ -1939,6 +1939,29 @@ class ReportOverviewResponse(BaseModel):
     access_by_day: list[ReportAccessDayResponse]
 
 
+class ReportPpdAgingResponse(BaseModel):
+    current_cents: int
+    days_31_60_cents: int
+    days_61_90_cents: int
+    over_90_cents: int
+
+
+class ReportPpdReceivablesResponse(BaseModel):
+    as_of: date
+    invoices: int
+    total_cents: int
+    paid_cents: int
+    outstanding_cents: int
+    aging: ReportPpdAgingResponse
+    oldest_stamped_at: datetime | None
+    stamped_complements: int
+    stamped_complement_cents: int
+    requested_complements: int
+    requested_complement_cents: int
+    failed_complements: int
+    failed_complement_cents: int
+
+
 class RevenueReportResponse(BaseModel):
     period: ReportPeriodResponse
     pos_cents: int
@@ -1957,6 +1980,7 @@ class RevenueReportResponse(BaseModel):
     cash_sessions_opened: int
     cash_sessions_closed: int
     cash_difference_cents: int
+    ppd_receivables: ReportPpdReceivablesResponse
 
 
 class MembershipReportResponse(BaseModel):
@@ -6457,6 +6481,29 @@ def _report_overview_response(payload: OverviewReport) -> ReportOverviewResponse
     )
 
 
+def _report_ppd_receivables_response(summary) -> ReportPpdReceivablesResponse:
+    return ReportPpdReceivablesResponse(
+        as_of=summary.as_of,
+        invoices=summary.invoices,
+        total_cents=summary.total_cents,
+        paid_cents=summary.paid_cents,
+        outstanding_cents=summary.outstanding_cents,
+        aging=ReportPpdAgingResponse(
+            current_cents=summary.aging.current_cents,
+            days_31_60_cents=summary.aging.days_31_60_cents,
+            days_61_90_cents=summary.aging.days_61_90_cents,
+            over_90_cents=summary.aging.over_90_cents,
+        ),
+        oldest_stamped_at=summary.oldest_stamped_at,
+        stamped_complements=summary.stamped_complements,
+        stamped_complement_cents=summary.stamped_complement_cents,
+        requested_complements=summary.requested_complements,
+        requested_complement_cents=summary.requested_complement_cents,
+        failed_complements=summary.failed_complements,
+        failed_complement_cents=summary.failed_complement_cents,
+    )
+
+
 def _report_revenue_response(payload: RevenueReport) -> RevenueReportResponse:
     return RevenueReportResponse(
         period=_report_period_response(payload.period),
@@ -6476,6 +6523,7 @@ def _report_revenue_response(payload: RevenueReport) -> RevenueReportResponse:
         cash_sessions_opened=payload.cash_sessions_opened,
         cash_sessions_closed=payload.cash_sessions_closed,
         cash_difference_cents=payload.cash_difference_cents,
+        ppd_receivables=_report_ppd_receivables_response(payload.ppd_receivables),
     )
 
 
@@ -7470,6 +7518,7 @@ class BankMovementMatchRequest(BaseModel):
         "sale",
         "member_account_payment",
         "sale_return",
+        "invoice_payment",
     ]
     source_id: UUID
     note: str | None = Field(default=None, max_length=300)

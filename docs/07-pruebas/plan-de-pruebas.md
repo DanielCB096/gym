@@ -20,6 +20,7 @@ Probar que cada regla crítica del negocio funcione sin errores, especialmente a
 - facturación CFDI con XML validado
 - notas de crédito parciales y totales con control de saldo, cancelación y relación CFDI
 - complementos de pago PPD: parcialidades, saldo, relación 07 y cancelación de la última
+- cartera PPD en reportes y conciliación: corte independiente del periodo y complementos electrónicos timbrados como candidatos
 - conciliación bancaria: importación idempotente, vínculo uno a uno, diferencias con motivo y permisos
 - metas del socio: línea base congelada, una meta activa por medida, avance y cierre automático
 - fotos de progreso: validación por firma y tamaño, almacenamiento fuera de la base, descarga autenticada y eliminación explícita
@@ -39,7 +40,7 @@ Probar que cada regla crítica del negocio funcione sin errores, especialmente a
 
 ## Cobertura de conciliación bancaria
 
-`backend/tests/test_reconciliation_api.py` (5 pruebas) cubre:
+`backend/tests/test_reconciliation_api.py` (6 pruebas) cubre:
 
 - permisos: contador y dueño administran; gerente solo consulta; recepción recibe `403`; nombres duplicados e importes/last4 inválidos.
 - importación: duplicados dentro del lote y en la base, repetición exacta del archivo, lote atómico con fila inválida y cuenta inactiva.
@@ -48,6 +49,15 @@ Probar que cada regla crítica del negocio funcione sin errores, especialmente a
 - búsqueda manual: candidatos fuera de la ventana de ±7 días visibles a ±60 días.
 
 Verificación manual en vista previa (2026-10-25): alta de cuenta, activación/desactivación, importación CSV con duplicado, conciliación exacta y con diferencia, desvinculación, marcado y reapertura, filtros por estado/fecha/texto, búsqueda manual y restricciones por rol en el panel. La vista previa no prueba la carga de archivos binarios ni un banco real.
+
+## Cobertura de cartera PPD en reportes y conciliación
+
+La integración es de solo lectura y no cambia el esquema, así que la cobertura se reparte en dos pruebas nuevas:
+
+- `backend/tests/test_reports_api.py` (`test_revenue_reports_ppd_receivables_snapshot`) siembra una factura PPD abierta con complementos timbrado, solicitado y fallido, más una factura PPD totalmente liquidada. Comprueba que `ppd_receivables` reporta una sola factura abierta, el saldo pendiente, el tramo 31–60 días, la antigüedad máxima y los importes/conteos de complementos; la factura liquidada queda fuera y el corte no cambia al consultar otro periodo.
+- `backend/tests/test_reconciliation_api.py` (`test_ppd_complement_matching_uses_stamped_electronic_complements`) siembra una factura PPD con complementos timbrado (`03`), solicitado (`03`) y timbrado en efectivo (`01`). Verifica que solo el timbrado electrónico aparece como candidato `invoice_payment` de un depósito, que el folio y la factura se muestran en la etiqueta, que el vínculo queda `reconciled`, que un complemento solicitado o en efectivo responde `422`, y que un complemento no concilia un retiro.
+
+Verificación manual en vista previa (2026-10-26): en Reportes → Ingresos se comprobó la cartera con 4 facturas abiertas, $1,475.25 pendientes, $2,254.00 facturados, $778.75 cobrados con 4 complementos timbrados, $533.25 por timbrar, 0 con error y los tramos $861.00 (0–30), $26.25 (31–60), $74.25 (61–90) y $513.75 (+90), con la factura abierta más antigua del 18 jul 2026; cambiar el periodo no altera el corte. En Conciliación se importó un depósito de $574.00 del 25 oct 2026: la bandeja mostró «1 sugerencia · Complemento PPD P-000001» y el detalle ofreció solo ese candidato (Factura A-000006 · Carlos Ramirez · Transferencia), que se concilió sin diferencia con el origen «Complemento PPD». Al terminar se restauró la base de vista previa desde el respaldo y se revocó la sesión temporal.
 
 ## Cobertura de metas del socio
 
@@ -91,4 +101,4 @@ Verificación manual en vista previa (2026-10-26): en Rutinas → Seguimiento se
 
 ## Estado
 
-La suite automatizada del backend cierra en **137 pruebas** y el build de producción del panel pasa. La conciliación se verificó de extremo a extremo en vista previa; los complementos PPD cuentan con pruebas de API, un seed de vista previa y verificación en navegador (selector PUE/PPD con forma `99`, tabla de parcialidades, descargas XML/PDF y rechazo de un importe mayor al saldo). La cartera PPD cuenta con una prueba de API que backdatea facturas para cubrir los cuatro tramos, comprueba que los complementos solicitados no reducen el saldo, y valida filtros, paginación y liquidación; su pestaña se verificó en la vista previa. Las metas del socio se verificaron en navegador (activa, cancelada y cumplida; alta, edición y cancelación) y las fotos de progreso cuentan con una prueba de ciclo de vida que cubre permisos, validación por firma, límite de tamaño, almacenamiento, descarga autenticada y eliminación, además de verificación en navegador de la galería, el visor, la carga y la eliminación. La gráfica de evolución de medidas se verificó en navegador con las cuatro métricas, una serie plana, la meta activa de referencia y el estado con menos de dos mediciones, sin cambios de API. Pendiente de ejecución en proyecto real, con un estado de cuenta bancario real y con un PAC real (el timbrado sigue siendo simulado y sin validez fiscal).
+La suite automatizada del backend cierra en **139 pruebas** y el build de producción del panel pasa. La conciliación se verificó de extremo a extremo en vista previa; los complementos PPD cuentan con pruebas de API, un seed de vista previa y verificación en navegador (selector PUE/PPD con forma `99`, tabla de parcialidades, descargas XML/PDF y rechazo de un importe mayor al saldo). La cartera PPD cuenta con una prueba de API que backdatea facturas para cubrir los cuatro tramos, comprueba que los complementos solicitados no reducen el saldo, y valida filtros, paginación y liquidación; su pestaña se verificó en la vista previa. Las metas del socio se verificaron en navegador (activa, cancelada y cumplida; alta, edición y cancelación) y las fotos de progreso cuentan con una prueba de ciclo de vida que cubre permisos, validación por firma, límite de tamaño, almacenamiento, descarga autenticada y eliminación, además de verificación en navegador de la galería, el visor, la carga y la eliminación. La gráfica de evolución de medidas se verificó en navegador con las cuatro métricas, una serie plana, la meta activa de referencia y el estado con menos de dos mediciones, sin cambios de API. La cartera PPD se verificó en Reportes → Ingresos como corte independiente del periodo y un complemento PPD timbrado se concilió con una línea bancaria en vista previa. Pendiente de ejecución en proyecto real, con un estado de cuenta bancario real y con un PAC real (el timbrado sigue siendo simulado y sin validez fiscal).

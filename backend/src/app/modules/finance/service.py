@@ -28,6 +28,7 @@ from app.modules.finance.errors import (
     InvalidMatch,
     MatchCandidateNotFound,
 )
+from app.modules.billing.models import Invoice, InvoicePayment
 from app.modules.finance.models import (
     BANK_MOVEMENT_SOURCES,
     BANK_MOVEMENT_STATUSES,
@@ -43,6 +44,9 @@ from app.timezone import club_date, club_timezone, local_midnight
 
 BANK_METHODS = ("card", "transfer", "spei")
 ACCOUNT_METHODS = ("card", "transfer")
+# Only complements paid by an electronic tender can be traced to a bank line.
+# Cash ("01"), account ("99") and other SAT forms never hit the statement.
+PPD_BANK_FORMS = ("03", "04", "28")
 SUGGESTION_WINDOW_DAYS = 7
 MANUAL_SEARCH_WINDOW_DAYS = 60
 NEAR_AMOUNT_RATE = 0.02
@@ -57,6 +61,13 @@ SOURCE_LABELS = {
     "sale": "Venta",
     "member_account_payment": "Abono a cuenta",
     "sale_return": "Devolución",
+    "invoice_payment": "Complemento PPD",
+}
+
+PPD_FORM_LABELS = {
+    "03": "Transferencia",
+    "04": "Tarjeta de crédito",
+    "28": "Tarjeta de débito",
 }
 
 METHOD_LABELS = {
@@ -152,6 +163,30 @@ def _candidate_entry(
         "reference_score": reference_score,
         "date_distance_days": abs((occurred_on - movement.occurred_on).days),
     }
+
+
+def _ppd_payment_candidate(
+    movement: BankMovement, payment: InvoicePayment, invoice: Invoice
+) -> dict[str, object]:
+    folio = f"{payment.series}-{payment.folio:06d}"
+    invoice_folio = f"{invoice.series}-{invoice.folio:06d}"
+    form_label = PPD_FORM_LABELS.get(payment.payment_form, payment.payment_form)
+    return _candidate_entry(
+        movement,
+        source="invoice_payment",
+        source_id=payment.id,
+        label=f"Complemento PPD {folio}",
+        detail=f"Factura {invoice_folio} · {invoice.receptor_name} · {form_label}",
+        reference=folio,
+        occurred_on=payment.paid_on,
+        amount_cents=payment.amount_cents,
+        reference_score=_reference_score(
+            movement,
+            folio=folio,
+            names=(invoice.receptor_name,),
+            extra=invoice_folio,
+        ),
+    )
 
 
 def _sort_key(candidate: dict[str, object], *, searching: bool) -> tuple:
@@ -358,6 +393,36 @@ def _candidate_rows(
                     ),
                 )
             )
+
+        ppd_statement = (
+            select(InvoicePayment, Invoice)
+            .join(Invoice, Invoice.id == InvoicePayment.invoice_id)
+            .where(
+                Invoice.status == "stamped",
+                InvoicePayment.status == "stamped",
+                InvoicePayment.payment_form.in_(PPD_BANK_FORMS),
+                InvoicePayment.currency == movement.currency,
+                InvoicePayment.paid_on >= club_date(start_at),
+                InvoicePayment.paid_on < club_date(end_at),
+            )
+        )
+        if not searching:
+            ppd_statement = ppd_statement.where(
+                InvoicePayment.amount_cents >= low,
+                InvoicePayment.amount_cents <= high,
+            )
+        for payment, invoice in session.exec(
+            ppd_statement.order_by(InvoicePayment.paid_on.desc()).limit(200)
+        ).all():
+            if _is_matched(matched, "invoice_payment", payment.id):
+                continue
+            folio = f"{payment.series}-{payment.folio:06d}"
+            invoice_folio = f"{invoice.series}-{invoice.folio:06d}"
+            if searching and not matches_search(
+                folio, invoice_folio, invoice.receptor_name, invoice.receptor_rfc, payment.uuid
+            ):
+                continue
+            candidates.append(_ppd_payment_candidate(movement, payment, invoice))
     else:
         return_statement = (
             select(SaleReturn, Sale, Member)
@@ -507,6 +572,28 @@ def _load_candidate(
                 movement, names=(member.first_name, member.last_name)
             ),
         )
+
+    if source == "invoice_payment":
+        row = session.exec(
+            select(InvoicePayment, Invoice)
+            .join(Invoice, Invoice.id == InvoicePayment.invoice_id)
+            .where(InvoicePayment.id == source_id)
+        ).first()
+        if row is None:
+            return None
+        payment, invoice = row
+        if (
+            payment.status != "stamped"
+            or invoice.status != "stamped"
+            or payment.payment_form not in PPD_BANK_FORMS
+            or payment.currency != movement.currency
+        ):
+            raise InvalidMatch(
+                "El complemento PPD no es un cobro electrónico compatible con la cuenta."
+            )
+        if movement.amount_cents < 0:
+            raise InvalidMatch("Un complemento PPD no puede conciliar un retiro.")
+        return _ppd_payment_candidate(movement, payment, invoice)
 
     if source == "sale_return":
         row = session.exec(

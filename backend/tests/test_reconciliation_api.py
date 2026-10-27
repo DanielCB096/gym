@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.main import app, get_session
+from app.modules.billing.models import Invoice, InvoicePayment
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.inventory.models import (
     MemberAccountPayment,
@@ -161,6 +162,109 @@ def _seed_return(
     session.add(sale_return)
     session.commit()
     return sale_return.id
+
+
+def _seed_ppd(session: Session) -> dict[str, object]:
+    today = date.today()
+    invoice = Invoice(
+        series="A",
+        folio=205,
+        status="stamped",
+        origin_type="sale",
+        origin_id=uuid4(),
+        origin_reference="V-20260901-AB12",
+        receptor_rfc="XAXX010101000",
+        receptor_name="Ana López",
+        receptor_tax_regime="612",
+        receptor_postal_code="06600",
+        receptor_cfdi_use="G03",
+        currency="MXN",
+        subtotal_cents=100000,
+        tax_cents=16000,
+        total_cents=116000,
+        tax_rate_percent=16,
+        payment_form="99",
+        payment_method="PPD",
+        uuid=str(uuid4()),
+        stamped_at=datetime.now(timezone.utc) - timedelta(days=45),
+        idempotency_key="invoice-ppd-205",
+        request_fingerprint="f" * 64,
+    )
+    session.add(invoice)
+    session.flush()
+
+    def complement(
+        *,
+        folio: int,
+        partiality: int,
+        status: str,
+        payment_form: str,
+        amount_cents: int,
+        prior_balance_cents: int,
+        outstanding_balance_cents: int,
+        uuid_value: str | None = None,
+    ) -> UUID:
+        payment = InvoicePayment(
+            invoice_id=invoice.id,
+            series="P",
+            folio=folio,
+            status=status,
+            partiality_number=partiality,
+            amount_cents=amount_cents,
+            currency="MXN",
+            payment_form=payment_form,
+            paid_on=today,
+            prior_balance_cents=prior_balance_cents,
+            outstanding_balance_cents=outstanding_balance_cents,
+            uuid=uuid_value,
+            stamped_at=(
+                datetime.now(timezone.utc) - timedelta(days=2)
+                if status == "stamped"
+                else None
+            ),
+            idempotency_key=f"complement-{folio}",
+            request_fingerprint="f" * 64,
+        )
+        session.add(payment)
+        session.flush()
+        return payment.id
+
+    stamped_id = complement(
+        folio=2051,
+        partiality=1,
+        status="stamped",
+        payment_form="03",
+        amount_cents=60000,
+        prior_balance_cents=116000,
+        outstanding_balance_cents=56000,
+        uuid_value=str(uuid4()),
+    )
+    requested_id = complement(
+        folio=2052,
+        partiality=2,
+        status="requested",
+        payment_form="03",
+        amount_cents=20000,
+        prior_balance_cents=56000,
+        outstanding_balance_cents=36000,
+    )
+    cash_id = complement(
+        folio=2053,
+        partiality=3,
+        status="stamped",
+        payment_form="01",
+        amount_cents=1000,
+        prior_balance_cents=56000,
+        outstanding_balance_cents=55000,
+        uuid_value=str(uuid4()),
+    )
+    session.commit()
+    return {
+        "stamped_id": stamped_id,
+        "requested_id": requested_id,
+        "cash_id": cash_id,
+        "folio": "P-002051",
+    }
 
 
 def _prepare():
@@ -564,6 +668,136 @@ def test_sale_and_return_matching_uses_direction_and_reference() -> None:
             )
             assert invalid.status_code == 422
             assert "retiro" in invalid.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()
+
+
+def test_ppd_complement_matching_uses_stamped_electronic_complements() -> None:
+    engine, _ = _prepare()
+    try:
+        with Session(engine) as session:
+            ppd = _seed_ppd(session)
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            account = _create_account(client, accountant)
+            today = date.today().isoformat()
+            _import(
+                client,
+                accountant,
+                account["id"],
+                [
+                    {
+                        "occurred_on": today,
+                        "amount_cents": 60000,
+                        "reference": f"SPEI {ppd['folio']}",
+                    }
+                ],
+            )
+            movement = client.get(
+                "/admin/finance/bank-movements", headers=accountant
+            ).json()["items"][0]
+            detail = client.get(
+                f"/admin/finance/bank-movements/{movement['id']}", headers=accountant
+            ).json()
+            sources = [candidate["source"] for candidate in detail["candidates"]]
+            assert sources == ["invoice_payment"]
+            candidate = detail["candidates"][0]
+            assert candidate["source_id"] == str(ppd["stamped_id"])
+            assert candidate["label"] == "Complemento PPD P-002051"
+            assert "Factura A-000205" in candidate["detail"]
+            assert candidate["amount_match"] is True
+
+            matched = client.post(
+                f"/admin/finance/bank-movements/{movement['id']}/match",
+                headers=accountant,
+                json={"source": "invoice_payment", "source_id": str(ppd["stamped_id"])},
+            )
+            assert matched.status_code == 200, matched.text
+            assert matched.json()["status"] == "reconciled"
+            assert matched.json()["matched_source"] == "invoice_payment"
+            assert matched.json()["matched_id"] == str(ppd["stamped_id"])
+
+            # A requested complement has not been stamped yet, so it is neither
+            # suggested nor accepted as a source.
+            _import(
+                client,
+                accountant,
+                account["id"],
+                [
+                    {
+                        "occurred_on": today,
+                        "amount_cents": 20000,
+                        "reference": "SPEI P-002052",
+                    }
+                ],
+            )
+            requested = client.get(
+                "/admin/finance/bank-movements?search=002052", headers=accountant
+            ).json()["items"][0]
+            requested_detail = client.get(
+                f"/admin/finance/bank-movements/{requested['id']}", headers=accountant
+            ).json()
+            assert requested_detail["candidates"] == []
+            rejected_status = client.post(
+                f"/admin/finance/bank-movements/{requested['id']}/match",
+                headers=accountant,
+                json={"source": "invoice_payment", "source_id": str(ppd["requested_id"])},
+            )
+            assert rejected_status.status_code == 422
+            assert "complemento PPD" in rejected_status.json()["detail"]
+
+            # Cash complements ("01") never reach a bank statement.
+            _import(
+                client,
+                accountant,
+                account["id"],
+                [
+                    {
+                        "occurred_on": today,
+                        "amount_cents": 1000,
+                        "reference": "SPEI P-002053",
+                    }
+                ],
+            )
+            cash = client.get(
+                "/admin/finance/bank-movements?search=002053", headers=accountant
+            ).json()["items"][0]
+            cash_rejected = client.post(
+                f"/admin/finance/bank-movements/{cash['id']}/match",
+                headers=accountant,
+                json={"source": "invoice_payment", "source_id": str(ppd["cash_id"])},
+            )
+            assert cash_rejected.status_code == 422
+            assert "complemento PPD" in cash_rejected.json()["detail"]
+
+            # A complement collects money, so it cannot justify a withdrawal.
+            _import(
+                client,
+                accountant,
+                account["id"],
+                [
+                    {
+                        "occurred_on": today,
+                        "amount_cents": -60000,
+                        "reference": "RETIRO P-002051",
+                    }
+                ],
+            )
+            outflow = next(
+                item
+                for item in client.get(
+                    "/admin/finance/bank-movements", headers=accountant
+                ).json()["items"]
+                if item["amount_cents"] == -60000
+            )
+            outflow_rejected = client.post(
+                f"/admin/finance/bank-movements/{outflow['id']}/match",
+                headers=accountant,
+                json={"source": "invoice_payment", "source_id": str(ppd["stamped_id"])},
+            )
+            assert outflow_rejected.status_code == 422
+            assert "retiro" in outflow_rejected.json()["detail"]
     finally:
         app.dependency_overrides.clear()
         engine.dispose()

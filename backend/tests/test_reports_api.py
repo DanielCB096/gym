@@ -17,6 +17,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.main import app, get_session
 from app.modules.access.models import AccessEvent
+from app.modules.billing.models import Invoice, InvoicePayment
 from app.modules.classes.models import ClassReservation, ClassSession, ClassType
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.inventory.models import (
@@ -48,6 +49,7 @@ from app.modules.routines.models import (
     WorkoutLog,
 )
 from app.modules.reports.service import resolve_period
+from app.timezone import club_date
 
 TODAY = date.today()
 PERIOD_FROM = TODAY - timedelta(days=14)
@@ -516,6 +518,170 @@ def test_overview_and_revenue_aggregate_the_period() -> None:
             assert wide["maintenance_cost_cents"] == 15000
     finally:
         app.dependency_overrides.clear()
+
+
+def _seed_ppd_receivables(session: Session) -> None:
+    def invoice(*, folio: int, total_cents: int, stamped_at: datetime) -> Invoice:
+        return Invoice(
+            series="A",
+            folio=folio,
+            status="stamped",
+            origin_type="sale",
+            origin_id=uuid4(),
+            origin_reference=f"V-20260901-{folio}",
+            receptor_rfc="XAXX010101000",
+            receptor_name="Ana López",
+            receptor_tax_regime="612",
+            receptor_postal_code="06600",
+            receptor_cfdi_use="G03",
+            currency="MXN",
+            subtotal_cents=total_cents,
+            tax_cents=0,
+            total_cents=total_cents,
+            tax_rate_percent=0,
+            payment_form="99",
+            payment_method="PPD",
+            uuid=str(uuid4()),
+            stamped_at=stamped_at,
+            idempotency_key=f"invoice-{folio}",
+            request_fingerprint="f" * 64,
+        )
+
+    open_invoice = invoice(
+        folio=301, total_cents=116000, stamped_at=_at(TODAY - timedelta(days=45))
+    )
+    paid_invoice = invoice(
+        folio=302, total_cents=50000, stamped_at=_at(TODAY - timedelta(days=120))
+    )
+    session.add_all([open_invoice, paid_invoice])
+    session.flush()
+
+    def complement(
+        invoice_row: Invoice,
+        *,
+        folio: int,
+        partiality: int,
+        status: str,
+        payment_form: str,
+        amount_cents: int,
+        prior_balance_cents: int,
+        outstanding_balance_cents: int,
+        uuid_value: str | None = None,
+    ) -> None:
+        session.add(
+            InvoicePayment(
+                invoice_id=invoice_row.id,
+                series="P",
+                folio=folio,
+                status=status,
+                partiality_number=partiality,
+                amount_cents=amount_cents,
+                currency="MXN",
+                payment_form=payment_form,
+                paid_on=TODAY,
+                prior_balance_cents=prior_balance_cents,
+                outstanding_balance_cents=outstanding_balance_cents,
+                uuid=uuid_value,
+                stamped_at=_at(TODAY) if status == "stamped" else None,
+                idempotency_key=f"complement-{folio}",
+                request_fingerprint="f" * 64,
+            )
+        )
+
+    complement(
+        open_invoice,
+        folio=3011,
+        partiality=1,
+        status="stamped",
+        payment_form="03",
+        amount_cents=60000,
+        prior_balance_cents=116000,
+        outstanding_balance_cents=56000,
+        uuid_value=str(uuid4()),
+    )
+    complement(
+        open_invoice,
+        folio=3012,
+        partiality=2,
+        status="requested",
+        payment_form="03",
+        amount_cents=20000,
+        prior_balance_cents=56000,
+        outstanding_balance_cents=36000,
+    )
+    complement(
+        open_invoice,
+        folio=3013,
+        partiality=3,
+        status="failed",
+        payment_form="04",
+        amount_cents=10000,
+        prior_balance_cents=56000,
+        outstanding_balance_cents=46000,
+    )
+    complement(
+        paid_invoice,
+        folio=3021,
+        partiality=1,
+        status="stamped",
+        payment_form="03",
+        amount_cents=50000,
+        prior_balance_cents=50000,
+        outstanding_balance_cents=0,
+        uuid_value=str(uuid4()),
+    )
+    session.commit()
+
+
+def test_revenue_reports_ppd_receivables_snapshot() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        _seed_ppd_receivables(session)
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            revenue = client.get(
+                "/admin/reports/revenue", headers=manager, params=PERIOD_PARAMS
+            ).json()
+            ppd = revenue["ppd_receivables"]
+            assert ppd["as_of"] == club_date(datetime.now(timezone.utc)).isoformat()
+            # Only the invoice with a remaining balance belongs to the cartera;
+            # the fully collected one is excluded even though it was stamped.
+            assert ppd["invoices"] == 1
+            assert ppd["total_cents"] == 116000
+            assert ppd["paid_cents"] == 60000
+            assert ppd["outstanding_cents"] == 56000
+            assert ppd["aging"] == {
+                "current_cents": 0,
+                "days_31_60_cents": 56000,
+                "days_61_90_cents": 0,
+                "over_90_cents": 0,
+            }
+            assert ppd["oldest_stamped_at"].startswith(
+                (TODAY - timedelta(days=45)).isoformat()
+            )
+            assert ppd["stamped_complements"] == 1
+            assert ppd["stamped_complement_cents"] == 60000
+            assert ppd["requested_complements"] == 1
+            assert ppd["requested_complement_cents"] == 20000
+            assert ppd["failed_complements"] == 1
+            assert ppd["failed_complement_cents"] == 10000
+
+            # The cartera is a snapshot at the current cut-off, so changing the
+            # report period must not change it.
+            other = client.get(
+                "/admin/reports/revenue",
+                headers=manager,
+                params={"date_from": OUTSIDE.isoformat(), "date_to": OUTSIDE.isoformat()},
+            ).json()
+            assert other["ppd_receivables"] == ppd
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()
 
 
 def test_revenue_nets_refunds_by_period() -> None:

@@ -45,6 +45,7 @@ BANK_MOVEMENT_SOURCES = (
     "sale",
     "member_account_payment",
     "sale_return",
+    "invoice_payment",
 )
 
 BANK_MOVEMENT_EVENT_TYPES = ("imported", "matched", "unmatched", "flagged", "reopened")

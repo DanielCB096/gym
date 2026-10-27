@@ -696,7 +696,7 @@ type BillingGlobalEligibility = {
 
 type BankAccountStatus = "active" | "inactive";
 type BankMovementStatus = "pending" | "reconciled" | "difference" | "reviewing";
-type BankMovementSource = "membership_payment" | "sale" | "member_account_payment" | "sale_return";
+type BankMovementSource = "membership_payment" | "sale" | "member_account_payment" | "sale_return" | "invoice_payment";
 
 type BankAccount = {
   id: string;
@@ -818,6 +818,7 @@ const bankSourceLabels: Record<BankMovementSource, string> = {
   sale: "Venta en mostrador",
   member_account_payment: "Pago a cuenta",
   sale_return: "Devolución de venta",
+  invoice_payment: "Complemento PPD",
 };
 
 const BILLING_PAGE_SIZE = 10;
@@ -2111,6 +2112,29 @@ type ReportOverview = {
   access_by_day: ReportAccessDay[];
 };
 
+type ReportPpdAging = {
+  current_cents: number;
+  days_31_60_cents: number;
+  days_61_90_cents: number;
+  over_90_cents: number;
+};
+
+type ReportPpdReceivables = {
+  as_of: string;
+  invoices: number;
+  total_cents: number;
+  paid_cents: number;
+  outstanding_cents: number;
+  aging: ReportPpdAging;
+  oldest_stamped_at: string | null;
+  stamped_complements: number;
+  stamped_complement_cents: number;
+  requested_complements: number;
+  requested_complement_cents: number;
+  failed_complements: number;
+  failed_complement_cents: number;
+};
+
 type RevenueReport = {
   period: ReportPeriod;
   pos_cents: number;
@@ -2129,6 +2153,7 @@ type RevenueReport = {
   cash_sessions_opened: number;
   cash_sessions_closed: number;
   cash_difference_cents: number;
+  ppd_receivables: ReportPpdReceivables;
 };
 
 type MembershipReport = {
@@ -8212,6 +8237,51 @@ function ReportList({ title, rows }: { title: string; rows: { label: string; val
   );
 }
 
+function ReportPpdPanel({ data }: { data: ReportPpdReceivables }) {
+  const aging = [
+    { label: "Corriente (0-30 días)", value: data.aging.current_cents },
+    { label: "31-60 días", value: data.aging.days_31_60_cents },
+    { label: "61-90 días", value: data.aging.days_61_90_cents },
+    { label: "Más de 90 días", value: data.aging.over_90_cents },
+  ];
+  return (
+    <section className="panel full-panel">
+      <div className="panel-header access-list-heading">
+        <div><p className="section-kicker">CARTERA PPD</p><h2>Saldos por cobrar</h2></div>
+        <span className="table-hint">Corte al {formatDateOnly(data.as_of)} · no depende del periodo seleccionado</span>
+      </div>
+      <div className="report-stat-grid">
+        <ReportStat label="Saldo pendiente" value={formatMoney(data.outstanding_cents)} hint={`${data.invoices} ${data.invoices === 1 ? "factura abierta" : "facturas abiertas"}`} />
+        <ReportStat label="Total facturado" value={formatMoney(data.total_cents)} hint="Importe original de las facturas abiertas" />
+        <ReportStat label="Cobrado con complementos" value={formatMoney(data.paid_cents)} hint={`${data.stamped_complements} ${data.stamped_complements === 1 ? "complemento timbrado" : "complementos timbrados"}`} />
+        <ReportStat label="Por timbrar" value={formatMoney(data.requested_complement_cents)} hint={`${data.requested_complements} ${data.requested_complements === 1 ? "complemento solicitado" : "complementos solicitados"}`} />
+        <ReportStat label="Con error de timbrado" value={formatMoney(data.failed_complement_cents)} hint={`${data.failed_complements} ${data.failed_complements === 1 ? "complemento fallido" : "complementos fallidos"}`} />
+      </div>
+      <div className="table-scroll">
+        <table className="data-table">
+          <thead><tr><th>ANTIGÜEDAD DESDE EL TIMBRADO</th><th>IMPORTE</th></tr></thead>
+          <tbody>
+            {aging.map((bucket) => (
+              <tr key={bucket.label}>
+                <td>{bucket.label}</td>
+                <td>{formatMoney(bucket.value)}</td>
+              </tr>
+            ))}
+            <tr>
+              <td><strong>Total</strong></td>
+              <td><strong>{formatMoney(data.outstanding_cents)}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      {data.invoices === 0 && <p className="empty-row">No hay facturas PPD timbradas con saldo pendiente.</p>}
+      {data.oldest_stamped_at && (
+        <p className="table-hint">Factura abierta más antigua timbrada el {formatDateOnly(data.oldest_stamped_at)}.</p>
+      )}
+    </section>
+  );
+}
+
 function ReportFallback({ loading, error }: { loading: boolean; error: string }) {
   return (
     <section className="panel full-panel">
@@ -8475,6 +8545,8 @@ function ReportsView({ permissions, onUnauthorized, onToast }: { permissions: st
               </table>
             </div>
           </section>
+
+          <ReportPpdPanel data={revenue.ppd_receivables} />
         </>
       ) : <ReportFallback loading={loading} error={error} />)}
 
