@@ -23,7 +23,7 @@ from datetime import date, datetime, timedelta, timezone  # noqa: E402
 
 from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
-from app.modules import access, classes, identity, inventory, memberships, routines, staffing  # noqa: E402,F401
+from app.modules import access, classes, identity, inventory, maintenance, memberships, routines, staffing  # noqa: E402,F401
 from app.modules.identity.models import Employee  # noqa: E402
 from app.modules.identity.service import ensure_default_access_control  # noqa: E402
 from app.modules.memberships.models import Member  # noqa: E402
