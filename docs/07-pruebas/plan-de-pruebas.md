@@ -254,13 +254,21 @@ Verificación en navegador (2026-10-28) sobre una copia desechable de la base de
 
 ## Cobertura del adaptador de Finkok
 
-`backend/tests/test_finkok_pac.py` (10 pruebas) cubre el primer PAC real **sin tocar la red**: `FinkokPac` recibe un `httpx.MockTransport` inyectado, así que cada caso inspecciona la petición SOAP y decide la respuesta. La suite completa queda en **180 pruebas**.
+`backend/tests/test_finkok_pac.py` (10 pruebas) cubre el primer PAC real **sin tocar la red**: `FinkokPac` recibe un `httpx.MockTransport` inyectado, así que cada caso inspecciona la petición SOAP y decide la respuesta. La suite completa queda en **184 pruebas**.
 
 - timbrado: el sobre va a `/servicios/soap/stamp` con `SOAPAction: "sign_stamp"`, el XML viaja en base64 con `NoCertificado=""` y sin los veinte ceros del marcador, y el `UUID`, el XML timbrado y la `Fecha` de la respuesta llenan el resultado; la fecha `2026-10-28T10:15:30` del club se guarda como `16:15:30Z`.
 - rechazo e indisponibilidad: una `Incidencia` (`CodigoError 301`, RFC inválido) produce `PacRejected` con su mensaje y su código; un `ConnectError` y un SOAP fault (`faultstring`) producen `PacUnavailable`.
 - cancelación: el sobre va a `/servicios/soap/cancel` con `SOAPAction: "cancel"`, `taxpayer_id`, `store_pending=0`, el `Motivo` y el UUID sustituto en el atributo, y `cer`/`key` en base64 idénticos a los PEM; `201` se acepta, `202` no (mensaje de «en proceso»), un `CodEstatus` sin `Folios` se propaga y sin `PAC_CERT_PATH` responde `503`.
 - gateway: con `PAC_PROVIDER=finkok` y credenciales devuelve `FinkokPac`; sin `PAC_USER` responde `503` sin caer a simulación. `prepare_prestamp` conserva un `NoCertificado` explícito.
 - sin credenciales reales: el adaptador **no se ha probado contra Finkok demo ni producción**, así que este incremento no sustituye la validación con el PAC y el contador.
+
+## Prueba manual contra el demo de Finkok
+
+`backend/finkok_demo.py` prepara la corrida real sin tocar la base ni consumir folios. `--dry-run` arma el CFDI de ejemplo y lo guarda en `finkok_demo_out/` para revisarlo; sin el flag timbra contra `https://demo-facturacion.finkok.com` y valida el sello, el certificado, el UUID, el emisor y los totales del XML devuelto; `--cancel` añade la cancelación con el CSD y el motivo `02` por defecto.
+
+Verificado en esta máquina (2026-10-28): el dry run genera un CFDI 4.0 de $116.00 (base $100.00 + IVA $16.00) con `NoCertificado=""`, serie `DEMO`, autofactura y `resultado.json`; las guardas responden con código 1 y un mensaje claro cuando faltan `PAC_USER`/`PAC_PASSWORD`, cuando el entorno apunta a producción sin `--production --confirm-production` o cuando `--cancel` no tiene el CSD. **No se ejecutó contra el demo** porque no hay credenciales ni CSD: esa corrida es el paso pendiente.
+
+`backend/tests/test_finkok_demo_script.py` (4 pruebas, la suite pasa a **184**) cubre la parte offline: el comprobante de prueba cuadra base/IVA/total, sale con el `NoCertificado` vacío y los datos del emisor, el validador acepta un timbre completo y detecta la falta de `TimbreFiscalDigital` o un UUID distinto del que devolvió el PAC, y un emisor con los marcadores de ejemplo se reporta antes de timbrar.
 
 ## Cobertura del resumen de la agenda filtrado por búsqueda
 

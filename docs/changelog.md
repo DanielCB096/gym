@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-28 · Una prueba de humo contra el ambiente demo de Finkok
+
+- **Script**: `backend/finkok_demo.py` arma un CFDI 4.0 con `cfdi.build_cfdi_xml` y los datos del emisor, lo timbra con `FinkokPac` y valida el XML devuelto (sello, `NoCertificado`, `UUID`, RFC del emisor, totales y `TimbreFiscalDigital`). No toca la base ni consume folios; guarda `comprobante_enviado.xml`, `comprobante_timbrado.xml` y `resultado.json` en `finkok_demo_out/`.
+- **Guardas**: apunta al demo aunque `PREVIEW_MODE=true`; exige `--production --confirm-production` para salir de él, rechaza `PAC_PROVIDER=simulated`, revisa emisor y receptor antes de enviar y, con `--cancel`, exige el CSD **antes** de timbrar para no dejar un comprobante vivo. Códigos de salida `0`/`1`/`2`/`3`.
+- **Pruebas**: 4 nuevas en `tests/test_finkok_demo_script.py` (comprobante de ejemplo, validador del timbre y marcadores del emisor); la suite queda en 184. Sin migración: no cambia el esquema.
+- **Verificación**: dry run local con un emisor de prueba; el timbrado y la cancelación contra el demo **no se ejecutaron** por falta de credenciales y CSD.
+- **Documentación**: `docs/04-integraciones/facturacion-cfdi.md`, plan de pruebas, deuda técnica, README del backend, `.env.example` (faltaban `PAC_BASE_URL`, `PAC_TAXPAYER_ID`, `PAC_CERT_PATH`, `PAC_KEY_PATH` y `PAC_TIMEOUT_SECONDS`) y este changelog.
+
 ## 2026-10-28 · El PAC real deja de responder 503
 
 - **Adaptador**: `billing/finkok.py` agrega `FinkokPac` y `FinkokSettings`; `pac_gateway()` devuelve el adaptador con `PAC_PROVIDER=finkok` y mantiene el `503` cuando faltan credenciales. El timbrado usa `sign_stamp` —Finkok sella con el CSD cargado en el perfil del emisor— y la cancelación usa `cancel` con el CSD en PEM de `PAC_CERT_PATH`/`PAC_KEY_PATH`.

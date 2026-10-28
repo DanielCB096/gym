@@ -45,7 +45,27 @@ Errores: una incidencia de timbrado (`Incidencias` con `CodigoError`/`MensajeInc
 
 Variables: `PAC_USER` y `PAC_PASSWORD` (obligatorias), `PAC_PRODUCTION` (`true` usa producción; sin ella se usa demo), `PAC_BASE_URL` (anula el host), `PAC_TAXPAYER_ID` (o `GYM_RFC`), `PAC_CERT_PATH`, `PAC_KEY_PATH` y `PAC_TIMEOUT_SECONDS` (30 por defecto). Las credenciales nunca se registran en eventos ni en los mensajes de error. **Sin credenciales, `PAC_PROVIDER=finkok` responde `503`** y no cae a simulación.
 
-⚠️ El adaptador está probado con respuestas simuladas (`tests/test_finkok_pac.py`), **no con una cuenta real de Finkok**: falta validar credenciales, CSD, RFC del emisor y la respuesta del SAT con el contador antes de producción.
+### Prueba contra el ambiente demo
+
+`backend/finkok_demo.py` es una prueba de humo del PAC real que **no toca la base ni consume folios del club**: arma un CFDI 4.0 con el mismo constructor que usa facturación, lo timbra con `FinkokPac` y valida el sello, el certificado, el UUID, el emisor y los totales del XML que devuelve el PAC. Los archivos quedan en `finkok_demo_out/<fecha>-<sufijo>/` (`comprobante_enviado.xml`, `comprobante_timbrado.xml` y `resultado.json`).
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe finkok_demo.py --dry-run   # solo arma el XML, sin credenciales
+.\.venv\Scripts\python.exe finkok_demo.py             # timbra contra el demo
+.\.venv\Scripts\python.exe finkok_demo.py --cancel    # además cancela (exige el CSD)
+```
+
+- exige el emisor real en `GYM_RFC`, `GYM_LEGAL_NAME`, `GYM_TAX_REGIME` y `GYM_POSTAL_CODE`, y las credenciales en `PAC_USER`/`PAC_PASSWORD`; el `--dry-run` solo pide los datos del emisor.
+- el receptor por defecto es el emisor (autofactura de prueba) con uso `G03`; se cambia con `--receptor-rfc`, `--receptor-name`, `--receptor-regime`, `--receptor-zip` y `--receptor-use`. El público en general se rechaza porque la factura global mensual exige `InformacionGlobal`, que el script no arma.
+- `--cancel` exige `PAC_CERT_PATH` y `PAC_KEY_PATH` (CSD en PEM, llave cifrada en 3DES) y usa el motivo `02` salvo que se pase `--reason`; el motivo `01` exige `--replacement-uuid`.
+- apunta al demo incluso con `PREVIEW_MODE=true`: es una prueba del PAC real. Para producción hace falta `--production --confirm-production`, y el script avisa que un reintento tras un timeout puede duplicar el CFDI.
+- códigos de salida: `0` correcto, `1` configuración o validación del XML, `2` rechazo del PAC, `3` PAC inalcanzable.
+- **límites**: no recorre la API HTTP ni escribe `invoice_events`, no consulta el estatus en el SAT ni el portal y no valida la aceptación del receptor; no sustituye la revisión del contador. La corrida real contra el demo sigue pendiente de credenciales y CSD.
+
+`backend/tests/test_finkok_demo_script.py` (4 pruebas) cubre la mitad offline: el comprobante de prueba cuadra base/IVA/total y sale con `NoCertificado=""`, el validador acepta un timbre completo y detecta la falta de `TimbreFiscalDigital` o un UUID distinto, y un emisor con marcadores se reporta antes de timbrar.
+
+⚠️ El adaptador está probado con respuestas simuladas (`tests/test_finkok_pac.py`) y con la validación offline del script, **no con una cuenta real de Finkok**: falta validar credenciales, CSD, RFC del emisor y la respuesta del SAT con el contador antes de producción.
 
 ## Consideraciones
 - el XML se almacena con seguridad; el PDF se genera al momento y se entrega con control de acceso

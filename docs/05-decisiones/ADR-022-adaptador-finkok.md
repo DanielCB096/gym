@@ -25,19 +25,20 @@ Finkok ofrece dos caminos: `sign_stamp`, que sella el XML con el CSD cargado en 
 
 - El club ya puede timbrar y cancelar CFDIs reales en cuanto configure credenciales y CSD; la vista previa y las pruebas conservan `SimulatedPac`.
 - **No hay custodia local de la llave para timbrar**: el CSD vive en Finkok. La cancelación sí necesita los archivos en el servidor y su preparación es manual.
-- **No se validó contra Finkok demo ni producción**: el adaptador solo se probó con respuestas simuladas. Faltan credenciales, CSD, RFC del emisor y la revisión del contador.
+- **La validación contra Finkok demo tiene script pero no se ejecutó**: `backend/finkok_demo.py` arma un CFDI de prueba con el constructor real, lo timbra, valida el XML y, con `--cancel`, lo cancela con el CSD; no toca la base ni consume folios y las pruebas cubren su mitad offline. La corrida real sigue pendiente porque faltan credenciales, CSD, RFC del emisor y la revisión del contador.
 - **Una respuesta perdida puede duplicar el timbrado.** Si Finkok timbra y la respuesta no llega, la factura queda `requested`; reintentar puede emitir un segundo CFDI. No hay clave de idempotencia ante el PAC ni consulta previa del resultado.
 - **Las cancelaciones pendientes no se siguen.** Un `202` deja la factura `stamped` para siempre salvo que el operador consulte el portal; no hay tarea que llame a `query_pending_cancellation` ni a `get_sat_status`.
 - **La aceptación del receptor no se modela**, aunque el SAT puede exigirla para ciertos motivos.
 - **Con varios CSD en la cuenta**, el `NoCertificado` vacío hace que Finkok use el último cargado; no hay selección explícita.
 - **La zona de la `Fecha`** se asume igual a la del club: si el emisor está en otra zona, `issued_at` queda desplazado aunque el XML timbrado conserve su fecha original.
 - Sin reintento, cola ni circuit breaker: un timeout llega al operador como `503`.
-- Antes de producción: correr el flujo completo en el ambiente demo de Finkok con el CSD real, decidir la política de cancelaciones pendientes, documentar la preparación del CSD y revisar la retención del XML.
+- Antes de producción: correr `backend/finkok_demo.py` contra el ambiente demo con el CSD real, decidir la política de cancelaciones pendientes, documentar la preparación del CSD y revisar la retención del XML.
 
 ## Referencias
 
 - `backend/src/app/modules/billing/finkok.py` (`FinkokPac`, `FinkokSettings`, `prepare_prestamp`)
 - `backend/src/app/modules/billing/pac.py`, `service.py` (`stamp_invoice`, `cancel_invoice`, `stamp_payment_complement`, `cancel_payment_complement`), `errors.py`
-- `backend/tests/test_finkok_pac.py`
+- `backend/tests/test_finkok_pac.py`, `backend/tests/test_finkok_demo_script.py`
+- `backend/finkok_demo.py` (prueba de humo contra el demo)
 - `docs/04-integraciones/facturacion-cfdi.md` (contrato y operación)
 - ADR-003 (pasarela de pago: mismo límite entre simulación y proveedor real)

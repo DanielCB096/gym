@@ -8,6 +8,7 @@ venv/
 .env
 .env.*
 !.env.example
+finkok_demo_out/
 
 # Node / frontend
 node_modules/
