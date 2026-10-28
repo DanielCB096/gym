@@ -27,6 +27,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
+import importlib
+import importlib.abc
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -37,6 +40,44 @@ import xml.etree.ElementTree as ET
 
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR / "src"))
+
+
+class _PurePythonExtension(importlib.abc.MetaPathFinder):
+    """Carga el gemelo ``.py`` cuando el sistema bloquea el ``.pyd``.
+
+    SQLAlchemy publica cada extensión ``*_cy`` como DLL y como módulo Python
+    equivalente. En equipos con Control de aplicaciones de Windows (WDAC) la
+    DLL no carga y el import falla con ``ImportError`` antes de llegar al
+    gemelo. El script es una herramienta de operación, así que cae a Python
+    puro en vez de exigir un cambio de política en la máquina.
+    """
+
+    @classmethod
+    def _find(cls, fullname, path):
+        if not fullname.endswith("_cy") or not path:
+            return None
+        leaf = fullname.rsplit(".", 1)[-1]
+        for entry in path:
+            candidate = os.path.join(entry, leaf + ".py")
+            if os.path.isfile(candidate):
+                return importlib.util.spec_from_file_location(fullname, candidate)
+        return None
+
+    def find_spec(self, fullname, path=None, target=None):
+        return self._find(fullname, path)
+
+
+def _import_database_layer() -> None:
+    try:
+        import sqlalchemy  # noqa: F401
+    except ImportError as error:
+        if "_cy" not in str(error):
+            raise
+        sys.meta_path.insert(0, _PurePythonExtension())
+        import sqlalchemy  # noqa: F401
+
+
+_import_database_layer()
 
 from dotenv import load_dotenv  # noqa: E402
 

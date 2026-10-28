@@ -61,6 +61,7 @@ cd backend
 - `--cancel` exige `PAC_CERT_PATH` y `PAC_KEY_PATH` (CSD en PEM, llave cifrada en 3DES) y usa el motivo `02` salvo que se pase `--reason`; el motivo `01` exige `--replacement-uuid`.
 - apunta al demo incluso con `PREVIEW_MODE=true`: es una prueba del PAC real. Para producción hace falta `--production --confirm-production`, y el script avisa que un reintento tras un timeout puede duplicar el CFDI.
 - códigos de salida: `0` correcto, `1` configuración o validación del XML, `2` rechazo del PAC, `3` PAC inalcanzable.
+- en equipos Windows con Control de aplicaciones (WDAC) que bloquean las DLL de SQLAlchemy, el script cae a los módulos `*_cy.py` que trae el paquete y corre igual; solo afecta a esta prueba, no al servidor.
 - **límites**: no recorre la API HTTP ni escribe `invoice_events`, no consulta el estatus en el SAT ni el portal y no valida la aceptación del receptor; no sustituye la revisión del contador. La corrida real contra el demo sigue pendiente de credenciales y CSD.
 
 `backend/tests/test_finkok_demo_script.py` (4 pruebas) cubre la mitad offline: el comprobante de prueba cuadra base/IVA/total y sale con `NoCertificado=""`, el validador acepta un timbre completo y detecta la falta de `TimbreFiscalDigital` o un UUID distinto, y un emisor con marcadores se reporta antes de timbrar.
