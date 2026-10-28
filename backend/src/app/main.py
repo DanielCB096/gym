@@ -379,6 +379,13 @@ from app.modules.portal.routines import (
     log_member_workout,
     record_member_measurement,
 )
+from app.modules.portal.invoices import (
+    InvalidDownloadLink,
+    MemberInvoiceItem,
+    download_member_invoice,
+    list_member_invoices,
+    verify_download_link,
+)
 from app.modules.portal.payments import (
     MemberPaymentItem,
     get_member_account,
@@ -1797,6 +1804,38 @@ class MemberAccountResponse(BaseModel):
     entries_total: int
 
 
+class MemberInvoiceResponse(BaseModel):
+    id: UUID
+    series: str
+    folio: int
+    folio_label: str
+    status: str
+    origin_type: str
+    origin_reference: str
+    currency: str
+    subtotal_cents: int
+    tax_cents: int
+    total_cents: int
+    payment_form: str
+    payment_method: str
+    uuid: str | None
+    is_simulated: bool
+    issued_at: datetime | None
+    stamped_at: datetime | None
+    cancelled_at: datetime | None
+    created_at: datetime
+    pdf_path: str | None
+    xml_path: str | None
+
+
+class MemberInvoicePageResponse(BaseModel):
+    items: list[MemberInvoiceResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
 class MemberNotificationResponse(BaseModel):
     id: UUID
     kind: str
@@ -3049,6 +3088,88 @@ def member_account(
         as_of=account.as_of,
         entries=[_member_account_entry_response(entry) for entry in account.entries],
         entries_total=account.entries_total,
+    )
+
+
+@app.get(
+    "/member/invoices",
+    response_model=MemberInvoicePageResponse,
+    tags=["member self-service"],
+)
+def member_invoices(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> MemberInvoicePageResponse:
+    try:
+        listing = list_member_invoices(
+            session, member.member_id, page=page, page_size=page_size
+        )
+    except MemberPortalError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+        ) from error
+    return MemberInvoicePageResponse(
+        items=[_member_invoice_response(item) for item in listing.items],
+        total=listing.total,
+        page=listing.page,
+        page_size=listing.page_size,
+        pages=listing.pages,
+    )
+
+
+@app.get("/member/invoices/{invoice_id}/pdf", tags=["member self-service"])
+def member_invoice_pdf(
+    invoice_id: UUID,
+    session: SessionDependency,
+    exp: Annotated[int, Query(ge=0)],
+    sig: Annotated[str, Query(min_length=64, max_length=64)],
+) -> Response:
+    try:
+        verify_download_link(invoice_id, "pdf", exp, sig)
+    except InvalidDownloadLink as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(error)
+        ) from error
+    try:
+        filename, content = download_member_invoice(session, invoice_id, "pdf")
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get("/member/invoices/{invoice_id}/xml", tags=["member self-service"])
+def member_invoice_xml(
+    invoice_id: UUID,
+    session: SessionDependency,
+    exp: Annotated[int, Query(ge=0)],
+    sig: Annotated[str, Query(min_length=64, max_length=64)],
+) -> Response:
+    try:
+        verify_download_link(invoice_id, "xml", exp, sig)
+    except InvalidDownloadLink as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(error)
+        ) from error
+    try:
+        filename, content = download_member_invoice(session, invoice_id, "xml")
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+    return Response(
+        content=content,
+        media_type="application/xml; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -7296,6 +7417,32 @@ def _member_payment_response(item: MemberPaymentItem) -> MemberPaymentResponse:
         period_ends_at=item.period_ends_at,
         plan_name=item.plan_name,
         note=item.note,
+    )
+
+
+def _member_invoice_response(item: MemberInvoiceItem) -> MemberInvoiceResponse:
+    return MemberInvoiceResponse(
+        id=item.id,
+        series=item.series,
+        folio=item.folio,
+        folio_label=item.folio_label,
+        status=item.status,
+        origin_type=item.origin_type,
+        origin_reference=item.origin_reference,
+        currency=item.currency,
+        subtotal_cents=item.subtotal_cents,
+        tax_cents=item.tax_cents,
+        total_cents=item.total_cents,
+        payment_form=item.payment_form,
+        payment_method=item.payment_method,
+        uuid=item.uuid,
+        is_simulated=item.is_simulated,
+        issued_at=item.issued_at,
+        stamped_at=item.stamped_at,
+        cancelled_at=item.cancelled_at,
+        created_at=item.created_at,
+        pdf_path=item.pdf_path,
+        xml_path=item.xml_path,
     )
 
 

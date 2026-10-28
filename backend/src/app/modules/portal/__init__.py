@@ -8,6 +8,14 @@ from app.modules.portal.classes import (
     reserve_member_class,
 )
 from app.modules.portal.models import MemberAuthEvent, MemberLoginCode, MemberSession
+from app.modules.portal.invoices import (
+    InvalidDownloadLink,
+    MemberInvoiceItem,
+    MemberInvoicePage,
+    download_member_invoice,
+    list_member_invoices,
+    verify_download_link,
+)
 from app.modules.portal.payments import (
     MemberAccountView,
     MemberPaymentItem,
@@ -46,6 +54,7 @@ from app.modules.portal.service import (
 
 __all__ = [
     "AuthenticatedMember",
+    "InvalidDownloadLink",
     "InvalidMemberCode",
     "InvalidMemberSession",
     "MemberAssignmentSummary",
@@ -56,6 +65,8 @@ __all__ = [
     "MemberClassNotAllowed",
     "MemberClassPage",
     "MemberDeliveryFailed",
+    "MemberInvoiceItem",
+    "MemberInvoicePage",
     "MemberLoginCode",
     "MemberLoginResult",
     "MemberMembershipSummary",
@@ -71,10 +82,12 @@ __all__ = [
     "RequestCodeResult",
     "authenticate_member_session",
     "cancel_member_reservation",
+    "download_member_invoice",
     "get_member_account",
     "get_member_progress",
     "get_member_routine",
     "list_member_classes",
+    "list_member_invoices",
     "list_member_payments",
     "list_member_routines",
     "log_member_workout",
@@ -83,5 +96,6 @@ __all__ = [
     "request_login_code",
     "reserve_member_class",
     "revoke_member_session",
+    "verify_download_link",
     "verify_login_code",
 ]

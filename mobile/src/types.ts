@@ -270,6 +270,38 @@ export type MemberNotificationPage = {
   unread_total: number;
 };
 
+export type MemberInvoice = {
+  id: string;
+  series: string;
+  folio: number;
+  folio_label: string;
+  status: string;
+  origin_type: string;
+  origin_reference: string;
+  currency: string;
+  subtotal_cents: number;
+  tax_cents: number;
+  total_cents: number;
+  payment_form: string;
+  payment_method: string;
+  uuid: string | null;
+  is_simulated: boolean;
+  issued_at: string | null;
+  stamped_at: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+  pdf_path: string | null;
+  xml_path: string | null;
+};
+
+export type MemberInvoicePage = {
+  items: MemberInvoice[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+};
+
 export type MemberAccountEntry = {
   kind: string;
   occurred_at: string;

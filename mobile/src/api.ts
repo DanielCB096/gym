@@ -6,6 +6,7 @@ import type {
   MemberClassReservation,
   MemberGoal,
   MemberGoalInput,
+  MemberInvoicePage,
   MemberLoginResult,
   MemberPaymentPage,
   MemberProfile,
@@ -209,6 +210,12 @@ export function getMemberPayments(token: string, pageSize = 20): Promise<MemberP
 
 export function getMemberAccount(token: string): Promise<MemberAccount> {
   return request<MemberAccount>("/member/account", { token });
+}
+
+export function getMemberInvoices(token: string, pageSize = 20): Promise<MemberInvoicePage> {
+  return request<MemberInvoicePage>(`/member/invoices?page=1&page_size=${pageSize}`, {
+    token,
+  });
 }
 
 export function getMemberNotifications(

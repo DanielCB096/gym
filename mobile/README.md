@@ -1,6 +1,6 @@
 # App móvil del socio
 
-Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, los **pagos y el estado de cuenta** (solo lectura) y la **bandeja de avisos del gimnasio**; no incluye todavía pago en línea ni facturas.
+Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, los **pagos y el estado de cuenta** (solo lectura), las **facturas del socio** con descarga de PDF y XML, y la **bandeja de avisos del gimnasio**; no incluye todavía pago en línea ni solicitud de facturas.
 
 ## Alcance implementado
 
@@ -13,6 +13,7 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
   - saldo de la cuenta del socio;
   - fecha de alta y estado del socio;
   - tarjeta «Avisos del gimnasio» con la insignia de avisos sin leer (tope visible `99+`);
+  - tarjeta «Facturas» para consultar y descargar los comprobantes fiscales;
   - actualización manual y cierre de sesión.
 - Pantalla de clases con:
   - cartelera de los próximos 14 días (fecha, tipo, salón, instructor y lugares disponibles);
@@ -37,6 +38,11 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
   - movimientos de cuenta en orden descendente, con importe con signo, saldo después del movimiento, referencia y método;
   - aviso cuando el historial supera los 100 movimientos que devuelve el backend;
   - estados vacíos, mensajes de error y actualización manual con deslizamiento.
+- Pantalla de facturas con:
+  - lista de los comprobantes emitidos a nombre del socio, del más reciente al más antiguo, con folio, estado, total, origen, fecha, IVA, método y forma de pago y folio fiscal;
+  - botones «Descargar PDF» y «Descargar XML» que abren el documento en el navegador del sistema mediante un enlace firmado de 10 minutos, sin guardar archivos en el dispositivo;
+  - aviso para facturas solicitadas o con error de timbrado («El comprobante estará disponible cuando el timbrado se complete») y para comprobantes simulados sin validez fiscal;
+  - fecha de cancelación cuando aplica, estados vacíos, mensajes de error y actualización manual con deslizamiento para regenerar los enlaces.
 - Pantalla de avisos con:
   - contador «Tienes N avisos sin leer.» o «Estás al día.»;
   - lista del más reciente al más antiguo con etiqueta de tipo (Membresía, Clase, Meta cumplida, Meta ajustada, Meta cancelada, Entrenamiento, Equipo), título, cuerpo y fecha con hora;
@@ -122,6 +128,14 @@ En los formularios se valida en el cliente el formato de fecha, que no sea futur
 
 El saldo puede ser negativo (saldo a favor); el aviso que lo acompaña indica que la liquidación se hace en recepción, igual que los cobros y abonos.
 
+## Flujo de facturas
+
+1. `GET /member/invoices?page=1&page_size=20` devuelve las facturas del socio —ventas, cobros de membresía y notas de crédito— con su estado y dos rutas de descarga ya firmadas.
+2. La app no reenvía el token en las descargas: cada `pdf_path`/`xml_path` lleva `exp` y `sig` (HMAC-SHA256 con el `SECRET_KEY` del backend) y vence a los **10 minutos**. Al abrir el documento se usa `Linking.openURL(API_URL + path)`, así que el navegador del sistema lo descarga sin sesión.
+3. Si un enlace vence, el botón responde con un error de enlace inválido; deslizar hacia abajo regenera los enlaces. No se guardan copias en el dispositivo ni se comparten archivos.
+
+Las facturas solo se entregan si están timbradas o canceladas; las solicitadas o con error de timbrado no muestran botones. El socio **no** solicita facturas nuevas desde la app: eso sigue en recepción o en el panel.
+
 ## Flujo de avisos
 
 1. `GET /member/notifications?page=1&page_size=30` devuelve la bandeja del socio con `total`, `pages` y `unread_total`; los avisos los generan los eventos del club (revisión de un entrenamiento, meta cumplida, meta ajustada o cancelada por el personal, lugar liberado en lista de espera, vencimiento próximo de la membresía y equipo de la rutina que queda fuera de servicio).
@@ -137,7 +151,7 @@ Límites del backend: 5 solicitudes por correo cada 15 minutos, 5 intentos por c
 
 ```text
 mobile/
-├── App.tsx                 # máquina de estados restoring → email → code → home → classes → routines → routineDetail → payments → notifications
+├── App.tsx                 # máquina de estados restoring → email → code → home → classes → routines → routineDetail → payments → invoices → notifications
 ├── index.ts                # registro de Expo
 ├── app.json                # nombre, slug, tema y plugin de SecureStore
 └── src/
@@ -151,11 +165,12 @@ mobile/
     └── screens/
         ├── LoginScreen.tsx # captura del correo
         ├── CodeScreen.tsx  # código de 6 dígitos, reenvío y código de vista previa
-        ├── HomeScreen.tsx  # perfil, acceso, membresía, saldo y accesos a avisos, clases, rutinas y pagos
+        ├── HomeScreen.tsx  # perfil, acceso, membresía, saldo y accesos a avisos, clases, rutinas, pagos y facturas
         ├── ClassesScreen.tsx # cartelera, reserva, lista de espera y cancelación
         ├── RoutinesScreen.tsx # resumen de progreso, metas (con alta y cancelación), medidas (con alta) y rutinas asignadas
         ├── RoutineDetailScreen.tsx # plan, editor de series, historial y registro de entrenamientos
         ├── PaymentsScreen.tsx # pagos de membresía y estado de cuenta (solo lectura)
+        ├── InvoicesScreen.tsx # facturas del socio con descarga PDF/XML por enlace firmado
         └── NotificationsScreen.tsx # bandeja de avisos del club, marcar leído individual o masivo
 ```
 
@@ -166,7 +181,7 @@ mobile/
 - Cerrar el pendiente de revisión desde la app del entrenador: hoy el entrenador **sí recibe** `workout_pending_review` en la campana del panel (ADR-017), pero el aviso no se cierra al revisar y la app del socio no tiene vista de entrenador.
 - Fotos de progreso en la app, con consentimiento y política de acceso.
 - El aviso de equipo fuera de servicio **no enlaza con lo afectado**: la app no tiene pantalla de equipos y el detalle del plan todavía no renderiza `equipment_status`, así que el socio lee el aviso sin ver marcado el ejercicio cuya máquina se paró. Tampoco hay aviso cuando el equipo vuelve a estar operativo.
-- Pagos en línea, descarga de facturas y detalle de la venta detrás de cada cargo (hoy solo se consulta el movimiento).
+- Pagos en línea, solicitud de facturas nuevas y detalle de la venta detrás de cada cargo (hoy se consulta el movimiento). La descarga de facturas ya existe, pero solo de la primera página (20) y sin historial de descargas.
 - Cobro del precio extra de las clases premium desde la app.
 - Notificaciones push y recordatorios programados (renovación, clase, cobranza): la bandeja ya existe, pero el aviso solo se ve cuando el socio abre la app.
 - Rotación de tokens, cierre de sesiones por inactividad y MFA opcional.
@@ -176,5 +191,5 @@ mobile/
 ## Notas de seguridad
 
 - No commitear `.env`, credenciales SMTP ni tokens. `EXPO_PUBLIC_*` es público por diseño.
-- En producción el backend debe tener `SECRET_KEY` propio (se usa para el HMAC de los códigos) y `PREVIEW_MODE` desactivado; sin `SECRET_KEY` válido el portal responde `503`.
+- En producción el backend debe tener `SECRET_KEY` propio (se usa para el HMAC de los códigos y de los enlaces de descarga de facturas) y `PREVIEW_MODE` desactivado; sin `SECRET_KEY` válido el portal responde `503`. Los enlaces de factura vencen a los 10 minutos y solo sirven para un documento y un tipo (PDF o XML); si se filtra uno, deja de funcionar al vencer y rotar `SECRET_KEY` los invalida antes.
 - La app no revela si un correo pertenece a un socio: el mensaje de la pantalla de código lo dice explícitamente.

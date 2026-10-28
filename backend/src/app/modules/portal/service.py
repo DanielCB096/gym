@@ -407,6 +407,11 @@ def _code_hash(code: str, code_id: UUID, member_id: UUID) -> str:
     return hmac.new(_signing_secret(), message, sha256).hexdigest()
 
 
+def signing_secret() -> bytes:
+    """Key shared by the member login codes and the signed download links."""
+    return _signing_secret()
+
+
 def _signing_secret() -> bytes:
     configured = os.getenv("SECRET_KEY", "").strip()
     if configured and configured not in {"change-me", "replace-me"}:

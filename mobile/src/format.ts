@@ -85,6 +85,29 @@ const PAYMENT_METHOD_LABELS: Record<string, string> = {
   account: "Cuenta",
 };
 
+const INVOICE_STATUS_LABELS: Record<string, string> = {
+  requested: "Solicitada",
+  failed: "Error de timbrado",
+  stamped: "Timbrada",
+  cancelled: "Cancelada",
+};
+
+const INVOICE_ORIGIN_LABELS: Record<string, string> = {
+  sale: "Venta en mostrador",
+  membership_payment: "Cobro de membresía",
+  global: "Factura global",
+  credit_note: "Nota de crédito",
+};
+
+const PAYMENT_FORM_LABELS: Record<string, string> = {
+  "01": "Efectivo",
+  "02": "Cheque nominativo",
+  "03": "Transferencia electrónica",
+  "04": "Tarjeta de crédito",
+  "28": "Tarjeta de débito",
+  "99": "Por definir",
+};
+
 const NOTIFICATION_KIND_LABELS: Record<string, string> = {
   workout_reviewed: "Entrenamiento",
   goal_achieved: "Meta cumplida",
@@ -186,6 +209,24 @@ export function paymentMethodLabel(method: string | null): string {
 
 export function notificationKindLabel(kind: string): string {
   return NOTIFICATION_KIND_LABELS[kind] ?? "Aviso";
+}
+
+export function invoiceStatusLabel(status: string): string {
+  return INVOICE_STATUS_LABELS[status] ?? status;
+}
+
+export function invoiceOriginLabel(origin: string): string {
+  return INVOICE_ORIGIN_LABELS[origin] ?? origin;
+}
+
+export function paymentFormLabel(form: string): string {
+  return PAYMENT_FORM_LABELS[form] ?? form;
+}
+
+export function cfdiPaymentMethodLabel(method: string): string {
+  return method === "PPD"
+    ? "Pago en parcialidades o diferido"
+    : "Pago en una sola exhibición";
 }
 
 export function formatSignedMoney(cents: number): string {

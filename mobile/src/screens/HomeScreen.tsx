@@ -28,6 +28,7 @@ type Props = {
   onOpenClasses: () => void;
   onOpenRoutines: () => void;
   onOpenPayments: () => void;
+  onOpenInvoices: () => void;
   onOpenNotifications: () => void;
 };
 
@@ -42,6 +43,7 @@ export function HomeScreen({
   onOpenClasses,
   onOpenRoutines,
   onOpenPayments,
+  onOpenInvoices,
   onOpenNotifications,
 }: Props) {
   return (
@@ -201,6 +203,25 @@ export function HomeScreen({
               <Text style={styles.navTitle}>Pagos y estado de cuenta</Text>
               <Text style={sharedStyles.body}>
                 Revisa tus pagos y los movimientos de tu cuenta.
+              </Text>
+            </View>
+            <Text style={styles.navChevron}>→</Text>
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Ver facturas y comprobantes fiscales"
+            onPress={onOpenInvoices}
+            style={({ pressed }) => [
+              sharedStyles.card,
+              styles.navCard,
+              pressed && styles.navCardPressed,
+            ]}
+          >
+            <View style={styles.navText}>
+              <Text style={styles.navTitle}>Facturas</Text>
+              <Text style={sharedStyles.body}>
+                Descarga tus comprobantes fiscales en PDF y XML.
               </Text>
             </View>
             <Text style={styles.navChevron}>→</Text>
