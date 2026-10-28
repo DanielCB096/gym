@@ -33,10 +33,10 @@ El riesgo no está en crear la factura, sino en **quién** la pide. `create_invo
 - **La lista duplica la regla de elegibilidad** (venta completada, no a cuenta, no devuelta, fuera de global viva, sin factura activa). Si facturación cambia esa regla y la lista no, el socio verá una operación que el POST rechaza con `409`; la fuente de verdad sigue siendo `create_invoice`, no el listado.
 - **El perfil se guarda antes de facturar.** Una solicitud rechazada por `409` deja los datos fiscales persistidos: es intencional para no perder la captura, pero implica que el perfil puede cambiar sin que exista una factura nueva.
 - **La app no ofrece PPD.** No expone `payment_form` ni `payment_method`, así que toda solicitud sale como PUE con la forma derivada del método de cobro. El API acepta ambos campos y las pruebas cubren PPD (`99`/`PPD`), pero un cobro que deba documentarse como PPD hoy se solicita desde el panel.
-- **Sin comprobante inmediato.** La pantalla no descarga el PDF/XML de la solicitud recién creada: `requested` no tiene enlaces y el socio debe volver cuando esté timbrada. No hay aviso al socio cuando cambia el estado de la factura.
+- **Sin comprobante inmediato.** La pantalla no descarga el PDF/XML de la solicitud recién creada: `requested` no tiene enlaces y el socio debe volver cuando esté timbrada. El aviso de cambio de estado se agregó en el ADR-021.
 - **Sin límite de tasa propio.** La ruta usa la sesión de 30 días y la idempotencia evita duplicados de una misma solicitud, pero no hay un tope de solicitudes por socio ni por IP; un cliente malicioso con sesión válida podría crear muchas facturas en `requested`.
 - **El perfil fiscal son datos personales** sin política de retención o borrado asociada al socio (igual que antes de este incremento). La app no permite consultarlos ni borrarlos fuera de la pantalla de solicitud.
-- Antes de producción: definir la traza del actor socio, el límite de solicitudes, el aviso de cambio de estado, la retención del perfil fiscal y la elección de PPD cuando el cobro lo requiera.
+- Antes de producción: definir la traza del actor socio, el límite de solicitudes, la retención del perfil fiscal y la elección de PPD cuando el cobro lo requiera. El aviso de cambio de estado ya está cubierto por el ADR-021.
 
 ## Referencias
 

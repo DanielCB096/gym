@@ -308,6 +308,7 @@ export default function App() {
             onBack={() => setStage("home")}
             onSessionExpired={() => void handleSessionExpired()}
             onUnreadChange={setUnreadNotifications}
+            onOpenInvoices={() => setStage("invoices")}
           />
         ) : null}
       </SafeAreaView>

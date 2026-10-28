@@ -105,6 +105,13 @@ jobs:
               ).fetchone()[0]
           if "equipment_out_of_service" not in definition:
               raise SystemExit(f"ck_member_notifications_kind sin el tipo de equipo: {definition}")
+          missing = [
+              kind
+              for kind in ("invoice_stamped", "invoice_failed", "invoice_cancelled")
+              if kind not in definition
+          ]
+          if missing:
+              raise SystemExit(f"ck_member_notifications_kind sin tipos de factura {missing}: {definition}")
           print(definition)
           PY
 

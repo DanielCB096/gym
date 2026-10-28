@@ -397,6 +397,84 @@ def notify_equipment_out_of_service(
     return len(member_ids)
 
 
+def notify_invoice_stamped(
+    session: Session,
+    *,
+    member_id: UUID,
+    invoice_id: UUID,
+    folio_label: str,
+    total_cents: int,
+    simulated: bool,
+    now: datetime | None = None,
+) -> MemberNotification:
+    suffix = (
+        " Es un comprobante de prueba sin validez fiscal."
+        if simulated
+        else ""
+    )
+    return create_notification(
+        session,
+        member_id=member_id,
+        kind="invoice_stamped",
+        title="Factura timbrada",
+        body=(
+            f"Tu factura {folio_label} por {_money_label(total_cents)} ya está lista. "
+            f"Descarga el PDF o el XML desde Facturas.{suffix}"
+        ),
+        ref_id=invoice_id,
+        dedupe_key=f"invoice_stamped:{invoice_id}",
+        now=now,
+    )
+
+
+def notify_invoice_failed(
+    session: Session,
+    *,
+    member_id: UUID,
+    invoice_id: UUID,
+    folio_label: str,
+    total_cents: int,
+    now: datetime | None = None,
+) -> MemberNotification:
+    return create_notification(
+        session,
+        member_id=member_id,
+        kind="invoice_failed",
+        title="No pudimos timbrar tu factura",
+        body=(
+            f"La factura {folio_label} por {_money_label(total_cents)} no se pudo "
+            "timbrar. Revisa tus datos fiscales en Facturas o acércate a recepción."
+        ),
+        ref_id=invoice_id,
+        dedupe_key=f"invoice_failed:{invoice_id}",
+        now=now,
+    )
+
+
+def notify_invoice_cancelled(
+    session: Session,
+    *,
+    member_id: UUID,
+    invoice_id: UUID,
+    folio_label: str,
+    total_cents: int,
+    now: datetime | None = None,
+) -> MemberNotification:
+    return create_notification(
+        session,
+        member_id=member_id,
+        kind="invoice_cancelled",
+        title="Factura cancelada",
+        body=(
+            f"La factura {folio_label} por {_money_label(total_cents)} fue cancelada. "
+            "Si tienes dudas, acércate a recepción."
+        ),
+        ref_id=invoice_id,
+        dedupe_key=f"invoice_cancelled:{invoice_id}",
+        now=now,
+    )
+
+
 def notify_trainer_pending_workout(
     session: Session,
     *,
@@ -747,6 +825,10 @@ def _clip(value: str, limit: int) -> str:
     if len(clean) <= limit:
         return clean
     return f"{clean[: limit - 1].rstrip()}…"
+
+
+def _money_label(cents: int) -> str:
+    return f"${abs(cents) / 100:,.2f} MXN"
 
 
 def _as_utc(moment: datetime) -> datetime:

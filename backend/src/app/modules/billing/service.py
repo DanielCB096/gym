@@ -71,6 +71,11 @@ from app.modules.billing.models import (
     utc_now,
 )
 from app.modules.billing.pac import pac_gateway
+from app.modules.notifications import (
+    notify_invoice_cancelled,
+    notify_invoice_failed,
+    notify_invoice_stamped,
+)
 from app.modules.inventory.models import Sale, SaleItem, SaleReturn
 from app.modules.memberships.models import Member, Membership, Payment, Plan
 from app.timezone import club_date, club_timezone, local_midnight
@@ -758,6 +763,50 @@ def _record_event(
             detail=detail,
         )
     )
+
+
+def _notify_invoice_status(
+    session: Session,
+    invoice: Invoice,
+    status: str,
+    *,
+    simulated: bool = False,
+) -> None:
+    """Tell the member their invoice changed state, if the invoice has one.
+
+    Global invoices have no ``member_id`` and walk-in sales have no member, so
+    the notice simply has no recipient. Nothing is emitted on ``requested``:
+    the requester already knows.
+    """
+
+    if invoice.member_id is None:
+        return
+    folio_label = f"{invoice.series}-{invoice.folio:06d}"
+    if status == "stamped":
+        notify_invoice_stamped(
+            session,
+            member_id=invoice.member_id,
+            invoice_id=invoice.id,
+            folio_label=folio_label,
+            total_cents=invoice.total_cents,
+            simulated=simulated,
+        )
+    elif status == "failed":
+        notify_invoice_failed(
+            session,
+            member_id=invoice.member_id,
+            invoice_id=invoice.id,
+            folio_label=folio_label,
+            total_cents=invoice.total_cents,
+        )
+    elif status == "cancelled":
+        notify_invoice_cancelled(
+            session,
+            member_id=invoice.member_id,
+            invoice_id=invoice.id,
+            folio_label=folio_label,
+            total_cents=invoice.total_cents,
+        )
 
 
 def _active_global_invoice_for_sale(session: Session, sale_id: UUID) -> Invoice | None:
@@ -1725,6 +1774,7 @@ def stamp_invoice(
                     ),
                 },
             )
+            _notify_invoice_status(session, invoice, "failed")
             session.commit()
             raise CreditNoteNotAllowed(
                 "La factura relacionada ya no está timbrada; la nota de crédito "
@@ -1750,6 +1800,7 @@ def stamp_invoice(
                     ),
                 },
             )
+            _notify_invoice_status(session, invoice, "failed")
             session.commit()
             raise CreditNoteBalanceExceeded(
                 "El importe de la nota de crédito excede el saldo acreditable "
@@ -1774,6 +1825,7 @@ def stamp_invoice(
             actor_id=actor_id,
             detail={"error": str(error), "code": error.code},
         )
+        _notify_invoice_status(session, invoice, "failed")
         session.commit()
         raise
 
@@ -1800,6 +1852,9 @@ def stamp_invoice(
             "simulated": outcome.simulated,
             "uuid": outcome.uuid,
         },
+    )
+    _notify_invoice_status(
+        session, invoice, "stamped", simulated=outcome.simulated
     )
     session.commit()
     session.refresh(invoice)
@@ -1901,6 +1956,7 @@ def cancel_invoice(
             "simulated": outcome.simulated,
         },
     )
+    _notify_invoice_status(session, invoice, "cancelled")
     session.commit()
     session.refresh(invoice)
     return _invoice_view(session, invoice, full=True)

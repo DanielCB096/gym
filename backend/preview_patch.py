@@ -113,6 +113,17 @@ CHECK_UPGRADES = {
             "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
             "'equipment_out_of_service'))",
         ),
+        (
+            "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
+            "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
+            "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
+            "'equipment_out_of_service'))",
+            "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
+            "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
+            "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
+            "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
+            "'invoice_cancelled'))",
+        ),
     ),
 }
 
@@ -203,23 +214,28 @@ def upgrade_checks(
     if row is None or row[0] is None:
         return
     sql = row[0]
-    pending = [
-        (old, new)
-        for old, new in replacements
-        if new not in sql and old in sql
-    ]
-    missing = [
-        (old, new)
-        for old, new in replacements
-        if new not in sql and old not in sql
-    ]
-    if missing:
+    # Walk the replacements in order so a database that stopped at an earlier
+    # revision still reaches the latest CHECK (e.g. six kinds → seven → ten).
+    create_sql = sql
+    applied = 0
+    satisfied = 0
+    unmatched = 0
+    for old, new in replacements:
+        if new in create_sql:
+            satisfied += 1
+            continue
+        if old not in create_sql:
+            unmatched += 1
+            continue
+        create_sql = create_sql.replace(old, new)
+        applied += 1
+    if unmatched and not applied and not satisfied:
         print(f"{table}: expected CHECK not found, leaving it untouched")
         return
     pending_additions = [
         (marker, clause) for marker, clause in additions if marker not in sql
     ]
-    if not pending and not pending_additions:
+    if not applied and not pending_additions:
         print(f"{table}: CHECKs already up to date")
         return
 
@@ -231,13 +247,12 @@ def upgrade_checks(
         ).fetchall()
     ]
     temporary = f"{table}__upgrade"
-    create_sql = sql
-    for old, new in pending:
-        create_sql = create_sql.replace(old, new)
     for _, clause in pending_additions:
         closing = create_sql.rfind(")")
         create_sql = create_sql[:closing] + f",\n\t{clause}\n)" + create_sql[closing + 1 :]
-    create_sql = create_sql.replace(f"CREATE TABLE {table} ", f"CREATE TABLE {temporary} ", 1)
+    create_sql = create_sql.replace(f'CREATE TABLE "{table}" ', f'CREATE TABLE "{temporary}" ', 1)
+    if table in create_sql:
+        create_sql = create_sql.replace(f"CREATE TABLE {table} ", f"CREATE TABLE {temporary} ", 1)
     connection.execute(create_sql)
     connection.execute(f"INSERT INTO {temporary} SELECT * FROM {table}")
     connection.execute(f"DROP TABLE {table}")

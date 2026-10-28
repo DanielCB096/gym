@@ -26,7 +26,7 @@ Esta carpeta contiene la memoria del proyecto: contexto de negocio, arquitectura
 - [facturacion-y-reportes.md](02-modulos/facturacion-y-reportes.md)
 - [mantenimiento-equipo.md](02-modulos/mantenimiento-equipo.md)
 - [servicios-extra.md](02-modulos/servicios-extra.md)
-- [notificaciones-del-socio.md](02-modulos/notificaciones-del-socio.md) — cubre también la bandeja del personal y el aviso de equipo fuera de servicio
+- [notificaciones-del-socio.md](02-modulos/notificaciones-del-socio.md) — cubre también la bandeja del personal, el aviso de equipo fuera de servicio y los avisos de estado de factura
 
 ### 03-procesos
 
@@ -77,6 +77,7 @@ Pendientes de documentar:
 - ADR-018-aviso-equipo-fuera-de-servicio.md
 - ADR-019-facturas-del-socio-en-la-app.md
 - ADR-020-solicitud-de-facturas-del-socio.md
+- ADR-021-avisos-de-estado-de-factura.md
 
 ### 06-operacion
 - despliegue.md

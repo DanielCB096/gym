@@ -116,6 +116,9 @@ const NOTIFICATION_KIND_LABELS: Record<string, string> = {
   class_waitlist_promoted: "Clase",
   membership_expiring: "Membresía",
   equipment_out_of_service: "Equipo",
+  invoice_stamped: "Factura",
+  invoice_failed: "Factura",
+  invoice_cancelled: "Factura",
 };
 
 export function formatDate(value: string): string {

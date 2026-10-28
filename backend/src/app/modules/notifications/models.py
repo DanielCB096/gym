@@ -49,6 +49,9 @@ NOTIFICATION_KINDS = (
     "class_waitlist_promoted",
     "membership_expiring",
     "equipment_out_of_service",
+    "invoice_stamped",
+    "invoice_failed",
+    "invoice_cancelled",
 )
 MAX_TITLE_CHARS = 140
 MAX_BODY_CHARS = 500
@@ -61,7 +64,8 @@ class MemberNotification(SQLModel, table=True):
         CheckConstraint(
             "kind IN ('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
             "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
-            "'equipment_out_of_service')",
+            "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
+            "'invoice_cancelled')",
             name="ck_member_notifications_kind",
         ),
         CheckConstraint(

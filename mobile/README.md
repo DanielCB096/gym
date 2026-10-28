@@ -148,8 +148,8 @@ La app no ofrece PPD: envía siempre la forma derivada del cobro con método PUE
 
 ## Flujo de avisos
 
-1. `GET /member/notifications?page=1&page_size=30` devuelve la bandeja del socio con `total`, `pages` y `unread_total`; los avisos los generan los eventos del club (revisión de un entrenamiento, meta cumplida, meta ajustada o cancelada por el personal, lugar liberado en lista de espera, vencimiento próximo de la membresía y equipo de la rutina que queda fuera de servicio).
-2. `POST /member/notifications/{id}/read` marca uno (idempotente) y `POST /member/notifications/read-all` marca todos devolviendo `{"updated": n}`.
+1. `GET /member/notifications?page=1&page_size=30` devuelve la bandeja del socio con `total`, `pages` y `unread_total`; los avisos los generan los eventos del club (revisión de un entrenamiento, meta cumplida, meta ajustada o cancelada por el personal, lugar liberado en lista de espera, vencimiento próximo de la membresía, equipo de la rutina que queda fuera de servicio y estado de una factura: timbrada, fallida o cancelada).
+2. `POST /member/notifications/{id}/read` marca uno (idempotente) y `POST /member/notifications/read-all` marca todos devolviendo `{"updated": n}`. Los avisos `invoice_stamped`/`invoice_failed`/`invoice_cancelled` se etiquetan «Factura» y, al tocarlos, la app los marca leídos y abre la pantalla de Facturas; el resto solo cambia el estado de lectura.
 3. `GET /member/notifications/unread-count` alimenta la insignia de la pantalla de inicio; se consulta al restaurar la sesión, al iniciar sesión, al actualizar el perfil y al salir de la bandeja.
 4. Al abrir la bandeja el backend evalúa el vencimiento de la membresía y crea el recordatorio si falta ≤ 7, ≤ 3 o ≤ 1 días (una sola vez por ventana).
 

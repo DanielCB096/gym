@@ -25,6 +25,7 @@ type Props = {
   onBack: () => void;
   onSessionExpired: () => void;
   onUnreadChange: (count: number) => void;
+  onOpenInvoices: () => void;
 };
 
 export function NotificationsScreen({
@@ -32,6 +33,7 @@ export function NotificationsScreen({
   onBack,
   onSessionExpired,
   onUnreadChange,
+  onOpenInvoices,
 }: Props) {
   const [inbox, setInbox] = useState<MemberNotificationPage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -68,33 +70,39 @@ export function NotificationsScreen({
   }, [load]);
 
   async function handleOpen(item: MemberNotification) {
-    if (item.read_at || busy) {
+    if (busy) {
       return;
     }
-    setBusy(true);
-    try {
-      const marked = await markMemberNotificationRead(token, item.id);
-      setInbox((current) => {
-        if (!current) {
-          return current;
+    if (!item.read_at) {
+      setBusy(true);
+      try {
+        const marked = await markMemberNotificationRead(token, item.id);
+        setInbox((current) => {
+          if (!current) {
+            return current;
+          }
+          const unread = Math.max(0, current.unread_total - 1);
+          onUnreadChange(unread);
+          return {
+            ...current,
+            unread_total: unread,
+            items: current.items.map((row) => (row.id === marked.id ? marked : row)),
+          };
+        });
+        setError(null);
+      } catch (markError) {
+        if (markError instanceof ApiError && markError.status === 401) {
+          onSessionExpired();
+          return;
         }
-        const unread = Math.max(0, current.unread_total - 1);
-        onUnreadChange(unread);
-        return {
-          ...current,
-          unread_total: unread,
-          items: current.items.map((row) => (row.id === marked.id ? marked : row)),
-        };
-      });
-      setError(null);
-    } catch (markError) {
-      if (markError instanceof ApiError && markError.status === 401) {
-        onSessionExpired();
+        setError(describeError(markError));
         return;
+      } finally {
+        setBusy(false);
       }
-      setError(describeError(markError));
-    } finally {
-      setBusy(false);
+    }
+    if (item.kind.startsWith("invoice_")) {
+      onOpenInvoices();
     }
   }
 
@@ -220,9 +228,11 @@ export function NotificationsScreen({
                 key={item.id}
                 accessibilityRole="button"
                 accessibilityLabel={
-                  item.read_at
-                    ? `Aviso leído: ${item.title}`
-                    : `Marcar como leído: ${item.title}`
+                  item.kind.startsWith("invoice_")
+                    ? `Abrir facturas: ${item.title}`
+                    : item.read_at
+                      ? `Aviso leído: ${item.title}`
+                      : `Marcar como leído: ${item.title}`
                 }
                 onPress={() => void handleOpen(item)}
                 style={({ pressed }) => [
