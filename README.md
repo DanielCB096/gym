@@ -99,7 +99,7 @@ git commit -m "feat: agrega alta de socio con consentimientos"
 
 ## Verificación
 
-Se ejecutan pruebas y lint en CI para cada cambio (backend, panel web y typecheck de la app móvil). La documentación se mantiene en este repositorio como contexto del proyecto. La app móvil del socio se inicia desde `mobile/` con `npm install` y `npm start`; apunta al backend con `EXPO_PUBLIC_API_URL` y el portal usa `SECRET_KEY` para firmar los códigos OTP. Ver `mobile/README.md`.
+Se ejecutan pruebas y lint en CI para cada cambio (backend, panel web, typecheck de la app móvil y la cadena de migraciones Alembic contra PostgreSQL 16). La documentación se mantiene en este repositorio como contexto del proyecto. La app móvil del socio se inicia desde `mobile/` con `npm install` y `npm start`; apunta al backend con `EXPO_PUBLIC_API_URL` y el portal usa `SECRET_KEY` para firmar los códigos OTP. Ver `mobile/README.md`.
 
 ## Importante
 

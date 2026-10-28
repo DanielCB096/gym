@@ -21,6 +21,8 @@ Definir la ruta inicial para desplegar la aplicación con infraestructura simple
 4. despliegue controlado a entorno de prueba
 5. despliegue a producción con aprobaciones
 
+La validación del paso 2 incluye el job `migrations`: aplica la cadena Alembic completa sobre PostgreSQL 16 y revierte/reaplica la revisión más reciente, así que una migración que no funciona en el motor de producción rompe el push en lugar del despliegue. **Aplicar las migraciones al desplegar sigue siendo un paso manual** (`alembic upgrade head` con respaldo previo): el CI demuestra que la cadena es correcta, no la ejecuta contra la base real.
+
 ## Riesgos
 
 - integraciones con pagos y PAC

@@ -58,6 +58,17 @@ alembic downgrade base
 
 `downgrade base` elimina las tablas creadas por estas migraciones y solo debe usarse en una base desechable o después de respaldar y verificar los datos. Revisa `alembic upgrade head --sql` para inspeccionar SQL sin conectarte a PostgreSQL.
 
+**La cadena solo corre sobre PostgreSQL.** La vista previa usa SQLite y construye el esquema con `create_all` más `preview_patch.py`, así que las migraciones nunca se ejecutan en ese camino. Para que una migración rotosa no se descubra al desplegar, el job `migrations` de `.github/workflows/ci.yml` levanta PostgreSQL 16 y en cada push hace `alembic upgrade head` (0001 → actual), luego `downgrade -1` seguido de `upgrade head` para verificar el revertido de la más reciente, y finalmente lee `pg_get_constraintdef` de `ck_member_notifications_kind` para confirmar que el `CHECK` ensanchado de verdad quedó aplicado. Para reproducirlo local con Docker:
+
+```bash
+docker run -d --name gym-migrate-pg -e POSTGRES_USER=gym -e POSTGRES_PASSWORD=gym \
+  -e POSTGRES_DB=gym_migrate -p 5432:5432 postgres:16-alpine
+DATABASE_URL="postgresql+psycopg://gym:gym@localhost:5432/gym_migrate" python -m alembic upgrade head
+docker rm -f gym-migrate-pg
+```
+
+`psycopg` (el driver real) no acepta el prefijo de dialecto de SQLAlchemy: si ejecutas SQL suelto contra esa base, usa `postgresql://` en lugar de `postgresql+psycopg://`.
+
 Después de migrar una base nueva, crea el primer usuario dueño desde una consola local segura. Desde PowerShell en `backend/`:
 
 ```powershell
