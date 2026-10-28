@@ -1,3 +1,5 @@
+import { Platform } from "react-native";
+
 import { API_URL, REQUEST_TIMEOUT_MS } from "./config";
 import type {
   CodeRequestResult,
@@ -19,6 +21,9 @@ import type {
   MemberNotification,
   MemberNotificationPage,
   MemberProgress,
+  MemberProgressPhoto,
+  MemberProgressPhotoInput,
+  MemberProgressPhotoList,
   MemberRoutineDetail,
   MemberRoutineList,
   MemberWorkout,
@@ -36,8 +41,9 @@ export class ApiError extends Error {
 }
 
 type RequestOptions = {
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "DELETE";
   body?: unknown;
+  form?: FormData;
   token?: string;
 };
 
@@ -45,7 +51,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (options.body !== undefined) {
+  if (options.form === undefined && options.body !== undefined) {
     headers["Content-Type"] = "application/json";
   }
   if (options.token) {
@@ -57,7 +63,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     response = await fetch(`${API_URL}${path}`, {
       method: options.method ?? "GET",
       headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      body:
+        options.form ??
+        (options.body === undefined ? undefined : JSON.stringify(options.body)),
       signal: controller.signal,
     });
   } catch (error) {
@@ -202,6 +210,58 @@ export function createMemberGoal(
 export function cancelMemberGoal(token: string, goalId: string): Promise<MemberGoal> {
   return request<MemberGoal>(`/member/progress/goals/${goalId}/cancel`, {
     method: "POST",
+    token,
+  });
+}
+
+export function getMemberProgressPhotos(token: string): Promise<MemberProgressPhotoList> {
+  return request<MemberProgressPhotoList>("/member/progress/photos", { token });
+}
+
+export type PhotoUploadAsset = {
+  uri: string;
+  name: string;
+  type: string;
+};
+
+export function memberProgressPhotoUri(filePath: string): string {
+  return `${API_URL}${filePath}`;
+}
+
+export async function uploadMemberProgressPhoto(
+  token: string,
+  asset: PhotoUploadAsset,
+  input: MemberProgressPhotoInput,
+): Promise<MemberProgressPhoto> {
+  const form = new FormData();
+  if (Platform.OS === "web") {
+    const blob = await (await fetch(asset.uri)).blob();
+    form.append("photo", blob, asset.name);
+  } else {
+    form.append("photo", {
+      uri: asset.uri,
+      name: asset.name,
+      type: asset.type,
+    } as unknown as Blob);
+  }
+  form.append("angle", input.angle);
+  if (input.captured_at) {
+    form.append("captured_at", input.captured_at);
+  }
+  if (input.notes) {
+    form.append("notes", input.notes);
+  }
+  form.append("consent", input.consent ? "true" : "false");
+  return request<MemberProgressPhoto>("/member/progress/photos", {
+    method: "POST",
+    token,
+    form,
+  });
+}
+
+export function deleteMemberProgressPhoto(token: string, photoId: string): Promise<void> {
+  return request<void>(`/member/progress/photos/${photoId}`, {
+    method: "DELETE",
     token,
   });
 }

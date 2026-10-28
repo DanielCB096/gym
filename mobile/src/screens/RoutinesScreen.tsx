@@ -35,6 +35,7 @@ type Props = {
   token: string;
   onBack: () => void;
   onOpenRoutine: (assignmentId: string) => void;
+  onOpenPhotos: () => void;
   onSessionExpired: () => void;
 };
 
@@ -94,7 +95,13 @@ function parseMeasurement(
   return { value, error: null };
 }
 
-export function RoutinesScreen({ token, onBack, onOpenRoutine, onSessionExpired }: Props) {
+export function RoutinesScreen({
+  token,
+  onBack,
+  onOpenRoutine,
+  onOpenPhotos,
+  onSessionExpired,
+}: Props) {
   const [routines, setRoutines] = useState<MemberRoutineList | null>(null);
   const [progress, setProgress] = useState<MemberProgress | null>(null);
   const [loading, setLoading] = useState(true);
@@ -342,6 +349,21 @@ export function RoutinesScreen({ token, onBack, onOpenRoutine, onSessionExpired 
           </Text>
         </View>
       ) : null}
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Abrir fotos de progreso"
+        onPress={onOpenPhotos}
+        style={({ pressed }) => [sharedStyles.card, styles.linkCard, pressed && styles.linkCardPressed]}
+      >
+        <View style={styles.linkCardText}>
+          <Text style={styles.sectionTitle}>Fotos de progreso</Text>
+          <Text style={sharedStyles.hint}>
+            Toma o elige fotos de frente, perfil y espalda para comparar tu avance.
+          </Text>
+        </View>
+        <Text style={styles.linkCardArrow}>→</Text>
+      </Pressable>
 
       <View style={sharedStyles.card}>
         <Text style={styles.sectionTitle}>Registrar medidas</Text>
@@ -736,6 +758,23 @@ const styles = StyleSheet.create({
   sectionTitle: {
     color: colors.text,
     fontSize: 18,
+    fontWeight: "800",
+  },
+  linkCard: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: spacing.md,
+  },
+  linkCardPressed: {
+    backgroundColor: colors.surfaceMuted,
+  },
+  linkCardText: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  linkCardArrow: {
+    color: colors.accent,
+    fontSize: 22,
     fontWeight: "800",
   },
   fieldLabel: {

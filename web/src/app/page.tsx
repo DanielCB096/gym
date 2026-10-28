@@ -1808,6 +1808,7 @@ type BackendProgressPhoto = {
   notes: string | null;
   content_type: string;
   byte_size: number;
+  origin: "staff" | "app";
   created_at: string;
 };
 
@@ -8142,7 +8143,7 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
                 <button type="submit" className="button button-primary" disabled={busy || !photoFile}><Upload size={16} />Subir foto</button>
               </form>
             )}
-            <p className="panel-hint photo-hint">JPEG, PNG o WebP · máximo 8 MB. Solo el personal con acceso a Rutinas puede verlas.</p>
+            <p className="panel-hint photo-hint">JPEG, PNG o WebP · máximo 8 MB. Las ve el personal con acceso a Rutinas y el propio socio en su app.</p>
             {photos.length === 0 ? <p className="panel-hint">Sin fotos de progreso.</p> : (
               <ul className="photo-grid">
                 {photos.map((photo) => (
@@ -8151,7 +8152,7 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
                       <img src={`/api/admin/routines/photos/${photo.id}/file`} alt={`Foto ${photoAngleLabels[photo.angle]} del ${formatDateOnly(photo.captured_at)}`} loading="lazy" decoding="async" />
                     </button>
                     <div className="photo-info">
-                      <span className="photo-meta"><strong>{photoAngleLabels[photo.angle]}</strong><small>{formatDateOnly(photo.captured_at)} · {formatFileSize(photo.byte_size)}</small></span>
+                      <span className="photo-meta"><strong>{photoAngleLabels[photo.angle]}</strong><small>{formatDateOnly(photo.captured_at)} · {formatFileSize(photo.byte_size)} · {recordOriginLabels[photo.origin]}</small></span>
                       {canManage && <button type="button" className="icon-button photo-delete" aria-label="Eliminar foto" onClick={() => deletePhoto(photo)}><Trash2 size={15} /></button>}
                     </div>
                     {photo.notes && <p className="photo-note">{photo.notes}</p>}
@@ -8166,7 +8167,7 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
                   <img src={`/api/admin/routines/photos/${viewingPhoto.id}/file`} alt={`Foto ${photoAngleLabels[viewingPhoto.angle]} del ${formatDateOnly(viewingPhoto.captured_at)}`} />
                   <div className="photo-viewer-meta">
                     <strong>{photoAngleLabels[viewingPhoto.angle]} · {formatDateOnly(viewingPhoto.captured_at)}</strong>
-                    <span>{formatFileSize(viewingPhoto.byte_size)}</span>
+                    <span>{formatFileSize(viewingPhoto.byte_size)} · {recordOriginLabels[viewingPhoto.origin]}</span>
                     {viewingPhoto.notes && <p>{viewingPhoto.notes}</p>}
                     {canManage && <button type="button" className="text-button" onClick={() => deletePhoto(viewingPhoto)}>Eliminar foto</button>}
                   </div>

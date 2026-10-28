@@ -156,6 +156,27 @@ export function formatMoney(cents: number): string {
   return `${sign}$${(Math.abs(cents) / 100).toFixed(2)} MXN`;
 }
 
+const PHOTO_ANGLE_LABELS: Record<string, string> = {
+  front: "Frente",
+  side: "Perfil",
+  back: "Espalda",
+  other: "Otra",
+};
+
+export function photoAngleLabel(angle: string): string {
+  return PHOTO_ANGLE_LABELS[angle] ?? "Foto";
+}
+
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function membershipStatusLabel(status: string): string {
   return MEMBERSHIP_LABELS[status] ?? status;
 }

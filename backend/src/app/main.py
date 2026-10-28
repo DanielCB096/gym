@@ -367,17 +367,25 @@ from app.modules.portal.classes import (
     reserve_member_class,
 )
 from app.modules.portal.routines import (
+    InvalidProgressPhotoLink,
     MemberAssignmentSummary,
+    MemberProgressPhotos,
     MemberProgressView,
     MemberRoutineDetail,
     MemberRoutineList,
+    ProgressPhotoConsentRequired,
     cancel_member_goal_from_app,
     create_member_goal_from_app,
+    delete_member_progress_photo,
     get_member_progress,
     get_member_routine,
+    list_member_progress_photos,
     list_member_routines,
     log_member_workout,
+    progress_photo_link,
     record_member_measurement,
+    record_member_progress_photo,
+    verify_progress_photo_link,
 )
 from app.modules.portal.invoices import (
     BillableOriginItem,
@@ -1723,7 +1731,16 @@ class ProgressPhotoResponse(BaseModel):
     notes: str | None
     content_type: str
     byte_size: int
+    origin: str
     created_at: datetime
+    # Signed, short-lived path for the member app; the panel streams the file
+    # through its own authenticated route instead.
+    file_path: str | None = None
+
+
+class MemberProgressPhotosResponse(BaseModel):
+    items: list[ProgressPhotoResponse]
+    consent_recorded: bool
 
 
 class RoutinesOverviewResponse(BaseModel):
@@ -3098,6 +3115,116 @@ def member_cancel_goal(
     except RoutinesError as error:
         raise _routines_http_error(error) from error
     return _goal_response(item)
+
+
+@app.get(
+    "/member/progress/photos",
+    response_model=MemberProgressPhotosResponse,
+    tags=["member self-service"],
+)
+def member_progress_photos(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberProgressPhotosResponse:
+    try:
+        photos = list_member_progress_photos(session, member.member_id)
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return _member_progress_photos_response(photos)
+
+
+@app.post(
+    "/member/progress/photos",
+    response_model=ProgressPhotoResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["member self-service"],
+)
+async def member_upload_progress_photo(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+    photo: Annotated[UploadFile, File(description="Imagen JPEG, PNG o WebP de hasta 8 MB")],
+    angle: Annotated[str, Form()],
+    captured_at: Annotated[datetime | None, Form()] = None,
+    notes: Annotated[str | None, Form()] = None,
+    consent: Annotated[bool, Form()] = False,
+) -> ProgressPhotoResponse:
+    content_type = photo.content_type
+    data = await photo.read(MAX_PROGRESS_PHOTO_BYTES + 1)
+    await photo.close()
+    try:
+        item = record_member_progress_photo(
+            session,
+            member.member_id,
+            data=data,
+            content_type=content_type,
+            angle=angle,
+            captured_at=captured_at,
+            notes=notes,
+            consent=consent,
+        )
+    except ProgressPhotoConsentRequired as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return _progress_photo_response(
+        item, file_path=progress_photo_link(item.id)
+    )
+
+
+@app.get("/member/progress/photos/{photo_id}/file", tags=["member self-service"])
+def member_progress_photo_file_endpoint(
+    photo_id: UUID,
+    session: SessionDependency,
+    exp: Annotated[int, Query(ge=0)],
+    sig: Annotated[str, Query(min_length=64, max_length=64)],
+) -> FileResponse:
+    try:
+        verify_progress_photo_link(photo_id, exp, sig)
+    except InvalidProgressPhotoLink as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(error)
+        ) from error
+    try:
+        stored = progress_photo_file(session, photo_id)
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    filename = (
+        f"foto-progreso-{stored.photo.captured_at.date().isoformat()}-"
+        f"{stored.photo.angle}{stored.path.suffix}"
+    )
+    return FileResponse(
+        stored.path,
+        media_type=stored.photo.content_type,
+        filename=filename,
+        content_disposition_type="inline",
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.delete(
+    "/member/progress/photos/{photo_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["member self-service"],
+)
+def member_delete_progress_photo(
+    photo_id: UUID,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> Response:
+    try:
+        delete_member_progress_photo(session, member.member_id, photo_id)
+    except RoutinesError as error:
+        raise _routines_http_error(error) from error
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get(
@@ -5854,7 +5981,9 @@ def _measurement_response(item: MeasurementItem) -> MeasurementResponse:
     )
 
 
-def _progress_photo_response(item: ProgressPhotoItem) -> ProgressPhotoResponse:
+def _progress_photo_response(
+    item: ProgressPhotoItem, *, file_path: str | None = None
+) -> ProgressPhotoResponse:
     return ProgressPhotoResponse(
         id=item.id,
         member_id=item.member_id,
@@ -5863,7 +5992,21 @@ def _progress_photo_response(item: ProgressPhotoItem) -> ProgressPhotoResponse:
         notes=item.notes,
         content_type=item.content_type,
         byte_size=item.byte_size,
+        origin=item.origin,
         created_at=item.created_at,
+        file_path=file_path,
+    )
+
+
+def _member_progress_photos_response(
+    photos: MemberProgressPhotos,
+) -> MemberProgressPhotosResponse:
+    return MemberProgressPhotosResponse(
+        items=[
+            _progress_photo_response(item, file_path=progress_photo_link(item.id))
+            for item in photos.items
+        ],
+        consent_recorded=photos.consent_recorded,
     )
 
 

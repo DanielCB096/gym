@@ -230,6 +230,33 @@ export type MemberProgress = {
   goals: MemberGoal[];
 };
 
+export type ProgressPhotoAngle = "front" | "side" | "back" | "other";
+
+export type MemberProgressPhoto = {
+  id: string;
+  member_id: string;
+  angle: ProgressPhotoAngle;
+  captured_at: string;
+  notes: string | null;
+  content_type: string;
+  byte_size: number;
+  origin: "staff" | "app";
+  created_at: string;
+  file_path: string | null;
+};
+
+export type MemberProgressPhotoList = {
+  items: MemberProgressPhoto[];
+  consent_recorded: boolean;
+};
+
+export type MemberProgressPhotoInput = {
+  angle: ProgressPhotoAngle;
+  captured_at?: string | null;
+  notes?: string | null;
+  consent: boolean;
+};
+
 export type MemberPayment = {
   id: string;
   amount_cents: number;

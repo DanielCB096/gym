@@ -40,6 +40,7 @@ ADDED_COLUMNS = {
         "collected_by": "CHAR(32)",
         "note": "VARCHAR(200)",
     },
+    "progress_photos": {"origin": "VARCHAR(8) NOT NULL DEFAULT 'staff'"},
     "invoices": {
         "global_year": "INTEGER",
         "global_month": "INTEGER",

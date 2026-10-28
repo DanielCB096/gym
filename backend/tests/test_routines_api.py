@@ -774,6 +774,7 @@ def test_progress_photos_lifecycle(tmp_path, monkeypatch) -> None:
             assert older_photo["notes"] == "Primera foto"
             assert older_photo["content_type"] == "image/png"
             assert older_photo["byte_size"] == len(png)
+            assert older_photo["origin"] == "staff"
             assert older_photo["captured_at"].startswith("2026-10-18T15:30:00")
             older_file = (set(directory.iterdir()) - before).pop()
             assert older_file.name.endswith(".png")

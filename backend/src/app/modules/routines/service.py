@@ -421,6 +421,7 @@ class ProgressPhotoItem:
     notes: str | None
     content_type: str
     byte_size: int
+    origin: str
     created_at: datetime
 
 
@@ -2098,6 +2099,7 @@ def _progress_photo_item(photo: ProgressPhoto) -> ProgressPhotoItem:
         notes=photo.notes,
         content_type=photo.content_type,
         byte_size=photo.byte_size,
+        origin=photo.origin,
         created_at=_as_utc(photo.created_at),
     )
 
@@ -2118,6 +2120,16 @@ def _require_progress_photo(session: Session, photo_id: UUID) -> ProgressPhoto:
     return photo
 
 
+def _require_owned_progress_photo(
+    session: Session, photo_id: UUID, member_id: UUID | None
+) -> ProgressPhoto:
+    photo = _require_progress_photo(session, photo_id)
+    if member_id is not None and photo.member_id != member_id:
+        # Another member's photo must look missing, not forbidden.
+        raise ProgressPhotoNotFound("La foto no existe")
+    return photo
+
+
 def record_progress_photo(
     session: Session,
     member_id: UUID,
@@ -2127,6 +2139,7 @@ def record_progress_photo(
     angle: str,
     captured_at: datetime | None = None,
     notes: str | None = None,
+    origin: str = "staff",
     actor_id: UUID | None = None,
     now: datetime | None = None,
 ) -> ProgressPhotoItem:
@@ -2159,6 +2172,7 @@ def record_progress_photo(
         byte_size=stored.byte_size,
         storage_key=stored.key,
         uploaded_by=actor_id,
+        origin=origin,
         created_at=occurred,
     )
     session.add(photo)
@@ -2183,8 +2197,10 @@ def list_progress_photos(session: Session, member_id: UUID) -> list[ProgressPhot
     return [_progress_photo_item(photo) for photo in photos]
 
 
-def progress_photo_file(session: Session, photo_id: UUID) -> ProgressPhotoFile:
-    photo = _require_progress_photo(session, photo_id)
+def progress_photo_file(
+    session: Session, photo_id: UUID, *, member_id: UUID | None = None
+) -> ProgressPhotoFile:
+    photo = _require_owned_progress_photo(session, photo_id, member_id)
     try:
         path = photo_path(photo.storage_key)
     except ValueError as error:
@@ -2194,8 +2210,10 @@ def progress_photo_file(session: Session, photo_id: UUID) -> ProgressPhotoFile:
     return ProgressPhotoFile(photo=_progress_photo_item(photo), path=path)
 
 
-def delete_progress_photo(session: Session, photo_id: UUID) -> None:
-    photo = _require_progress_photo(session, photo_id)
+def delete_progress_photo(
+    session: Session, photo_id: UUID, *, member_id: UUID | None = None
+) -> None:
+    photo = _require_owned_progress_photo(session, photo_id, member_id)
     storage_key = photo.storage_key
     session.delete(photo)
     session.commit()

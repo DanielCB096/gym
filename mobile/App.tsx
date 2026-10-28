@@ -12,6 +12,7 @@ import { InvoicesScreen } from "./src/screens/InvoicesScreen";
 import { LoginScreen } from "./src/screens/LoginScreen";
 import { NotificationsScreen } from "./src/screens/NotificationsScreen";
 import { PaymentsScreen } from "./src/screens/PaymentsScreen";
+import { ProgressPhotosScreen } from "./src/screens/ProgressPhotosScreen";
 import { RoutineDetailScreen } from "./src/screens/RoutineDetailScreen";
 import { RoutinesScreen } from "./src/screens/RoutinesScreen";
 import { clearToken, loadToken, saveToken } from "./src/storage";
@@ -26,6 +27,7 @@ type Stage =
   | "classes"
   | "routines"
   | "routineDetail"
+  | "progressPhotos"
   | "payments"
   | "invoices"
   | "invoiceRequest"
@@ -188,6 +190,10 @@ export default function App() {
     setStage("routineDetail");
   }
 
+  function handleOpenProgressPhotos() {
+    setStage("progressPhotos");
+  }
+
   function handleOpenPayments() {
     setStage("payments");
   }
@@ -269,6 +275,14 @@ export default function App() {
             token={token}
             onBack={() => setStage("home")}
             onOpenRoutine={handleOpenRoutine}
+            onOpenPhotos={handleOpenProgressPhotos}
+            onSessionExpired={() => void handleSessionExpired()}
+          />
+        ) : null}
+        {stage === "progressPhotos" && token ? (
+          <ProgressPhotosScreen
+            token={token}
+            onBack={() => setStage("routines")}
             onSessionExpired={() => void handleSessionExpired()}
           />
         ) : null}

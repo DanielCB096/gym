@@ -1,6 +1,6 @@
 # App móvil del socio
 
-Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, los **pagos y el estado de cuenta** (solo lectura), las **facturas del socio** con descarga de PDF y XML y **solicitud de factura** de sus propias compras y cobros, y la **bandeja de avisos del gimnasio**; no incluye todavía pago en línea.
+Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, la **carga y consulta de fotos de progreso con consentimiento**, los **pagos y el estado de cuenta** (solo lectura), las **facturas del socio** con descarga de PDF y XML y **solicitud de factura** de sus propias compras y cobros, y la **bandeja de avisos del gimnasio**; no incluye todavía pago en línea.
 
 ## Alcance implementado
 
@@ -32,6 +32,13 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
   - historial de entrenamientos agrupado por ejercicio («8 × 24 kg · 8 × 26 kg») con su origen y estado;
   - «Cancelar meta» (en dos pasos) solo aparece en las metas activas creadas desde la app; las del entrenador se leen con la etiqueta «Creada por el personal» y se cancelan en recepción;
   - actualización manual con deslizamiento.
+- Pantalla de fotos de progreso (se abre desde la tarjeta «Fotos de progreso» de Rutinas) con:
+  - tarjeta de consentimiento con su casilla mientras el socio no haya autorizado el uso de sus fotos; después muestra «Consentimiento registrado.»;
+  - botones «Tomar foto» y «Elegir de la galería» (`expo-image-picker`), selección de ángulo (frente, perfil, espalda u otra), fecha de la captura y nota opcional de hasta 300 caracteres;
+  - validación del tamaño en el cliente (8 MB) y subida multipart con el enlace firmado de la foto recién creada;
+  - galería de las fotos propias, de la más reciente a la más antigua, con la etiqueta «Recepción» en las que subió el personal;
+  - visor ampliado con ángulo, fecha, tamaño, origen («Subida desde tu app»/«Subida en recepción») y nota, y eliminación en dos pasos con la aclaración de que solo el socio y el personal de Rutinas pueden verla;
+  - estados vacío, de error y de sesión expirada, y actualización manual con deslizamiento (regenera los enlaces firmados).
 - Pantalla de pagos y estado de cuenta con:
   - saldo de la cuenta, con aviso para saldo a favor o deuda, conteo de cargos y abonos, importe pagado en membresías y fecha de corte;
   - pagos de membresía con importe, plan, periodo, método y nota;
@@ -116,9 +123,19 @@ Las reservas usan el origen `app`; el backend reutiliza las reglas del módulo d
 6. `POST /member/progress/measurements` registra peso, cintura, pecho y grasa (al menos uno) con notas; es append-only y actualiza las metas al momento.
 7. `POST /member/progress/goals` crea una meta propia (`weight_kg`/`waist_cm`/`chest_cm`/`body_fat_percent`, dirección `decrease`/`increase`, objetivo, fecha opcional y nota) con `origin="app"` y la línea base de la última medición; `POST /member/progress/goals/{goal_id}/cancel` cierra una meta propia como `cancelled`.
 
-El socio **no** edita ni borra registros, no edita metas ni captura fotos desde la app: eso sigue siendo exclusivo del panel del personal (`routines.manage`). Las metas que creó el personal tampoco las cancela desde la app (`409`); se gestionan en recepción. Editar la plantilla de una rutina no cambia el plan que el socio ya tiene asignado.
+El socio **no** edita ni borra entrenamientos ni medidas, y no edita metas: eso sigue siendo exclusivo del panel del personal (`routines.manage`). Las metas que creó el personal tampoco las cancela desde la app (`409`); se gestionan en recepción. Las fotos de progreso sí las captura y las elimina él mismo, con consentimiento (sección «Flujo de fotos de progreso»). Editar la plantilla de una rutina no cambia el plan que el socio ya tiene asignado.
 
 En los formularios se valida en el cliente el formato de fecha, que no sea futura, la duración (0–600 min), el esfuerzo (1–10), los decimales con coma y al menos una medida. El campo de notas limita a 2000 caracteres en el entrenamiento y 300 en la medida y en la meta; el objetivo de la meta se acota a 100 como máximo para la grasa corporal y 1000 para las demás medidas, y la fecha objetivo no puede ser anterior a hoy. El detalle rotula cada registro como «Desde tu app» o «Desde recepción», con el estado «Por revisar» o «Revisado», y cada meta como «Creada desde tu app» o «Creada por el personal».
+
+## Flujo de fotos de progreso
+
+1. `GET /member/progress/photos` devuelve las fotos propias (máximo 100, más recientes primero) con su `origin` y un `file_path` firmado, más `consent_recorded`.
+2. Si `consent_recorded` es `false`, la app muestra la tarjeta de consentimiento y exige marcarla antes de subir. El primer envío incluye `consent=true` y el backend guarda una sola fila en `member_consents` con el tipo `progress_photos` y la versión `fotos-progreso-v1`; si la imagen se rechaza, el consentimiento no queda registrado.
+3. `POST /member/progress/photos` recibe `photo`, `angle`, `captured_at` opcional, `notes` y `consent` como multipart; la app lo envía con `FormData` sin fijar `Content-Type`, valida el tamaño (8 MB) y muestra el error del backend (tipo no admitido, firma binaria inválida, ángulo inválido o consentimiento faltante).
+4. Las imágenes se cargan con el `file_path` firmado (`exp` + `sig`, HMAC-SHA256 de `photo:{id}:{exp}` con `SECRET_KEY`, **10 minutos**), porque un `<Image>` no envía el Bearer. Deslizar para actualizar regenera los enlaces.
+5. `DELETE /member/progress/photos/{photo_id}` borra una foto propia en dos pasos en la app; también puede borrar las que subió el personal. La operación es irreversible y elimina la fila y el archivo.
+
+El socio **no** edita el ángulo, la fecha ni la nota de una foto ya subida, no sube varias a la vez y no revoca el consentimiento desde la app: revocarlo hoy es un procedimiento manual en la base. La descarga de la foto no se audita y el enlace vale como credencial temporal de esa imagen durante sus 10 minutos (ADR-023).
 
 ## Flujo de pagos y estado de cuenta
 
@@ -161,7 +178,7 @@ Límites del backend: 5 solicitudes por correo cada 15 minutos, 5 intentos por c
 
 ```text
 mobile/
-├── App.tsx                 # máquina de estados restoring → email → code → home → classes → routines → routineDetail → payments → invoices → invoiceRequest → notifications
+├── App.tsx                 # máquina de estados restoring → email → code → home → classes → routines → routineDetail → progressPhotos → payments → invoices → invoiceRequest → notifications
 ├── index.ts                # registro de Expo
 ├── app.json                # nombre, slug, tema y plugin de SecureStore
 └── src/
@@ -179,6 +196,7 @@ mobile/
         ├── ClassesScreen.tsx # cartelera, reserva, lista de espera y cancelación
         ├── RoutinesScreen.tsx # resumen de progreso, metas (con alta y cancelación), medidas (con alta) y rutinas asignadas
         ├── RoutineDetailScreen.tsx # plan, editor de series, historial y registro de entrenamientos
+        ├── ProgressPhotosScreen.tsx # consentimiento, carga con cámara o galería, galería con visor y eliminación en dos pasos
         ├── PaymentsScreen.tsx # pagos de membresía y estado de cuenta (solo lectura)
         ├── InvoicesScreen.tsx # facturas del socio con descarga PDF/XML por enlace firmado y acceso a solicitar
         ├── InvoiceRequestScreen.tsx # operaciones por facturar, formulario fiscal y solicitud con idempotencia
@@ -190,7 +208,7 @@ mobile/
 - Edición de metas y edición/borrado de registros desde la app (hoy el socio captura entrenamientos con sus series, medidas y metas propias, y cancela estas últimas; su corrección se hace en recepción). Falta que el entrenador apruebe una meta creada desde la app.
 - Series objetivo por sesión, series por tiempo o distancia y métricas de volumen por ejercicio.
 - Cerrar el pendiente de revisión desde la app del entrenador: hoy el entrenador **sí recibe** `workout_pending_review` en la campana del panel (ADR-017), pero el aviso no se cierra al revisar y la app del socio no tiene vista de entrenador.
-- Fotos de progreso en la app, con consentimiento y política de acceso.
+- Fotos de progreso: edición de ángulo, fecha o nota (corregir exige borrar y volver a subir), carga múltiple, revocación del consentimiento desde la app, compresión/miniaturas y almacenamiento de objetos con respaldo. Los permisos nativos de cámara y fotos todavía no se declaran en `app.json` con el config plugin de `expo-image-picker`, así que hay que agregarlo antes de una compilación de tienda.
 - El aviso de equipo fuera de servicio **no enlaza con lo afectado**: la app no tiene pantalla de equipos y el detalle del plan todavía no renderiza `equipment_status`, así que el socio lee el aviso sin ver marcado el ejercicio cuya máquina se paró. Tampoco hay aviso cuando el equipo vuelve a estar operativo.
 - Pago en línea y detalle de la venta detrás de cada cargo (hoy se consulta el movimiento). Las facturas se descargan y se solicitan desde la app, pero la lista pide solo la primera página (20), no hay historial de descargas, la solicitud no se timbra desde la app, no se puede elegir PPD ni se avisa cuando cambia el estado de la factura.
 - Cobro del precio extra de las clases premium desde la app.
@@ -202,5 +220,5 @@ mobile/
 ## Notas de seguridad
 
 - No commitear `.env`, credenciales SMTP ni tokens. `EXPO_PUBLIC_*` es público por diseño.
-- En producción el backend debe tener `SECRET_KEY` propio (se usa para el HMAC de los códigos y de los enlaces de descarga de facturas) y `PREVIEW_MODE` desactivado; sin `SECRET_KEY` válido el portal responde `503`. Los enlaces de factura vencen a los 10 minutos y solo sirven para un documento y un tipo (PDF o XML); si se filtra uno, deja de funcionar al vencer y rotar `SECRET_KEY` los invalida antes.
+- En producción el backend debe tener `SECRET_KEY` propio (se usa para el HMAC de los códigos, de los enlaces de descarga de facturas y de las fotos de progreso) y `PREVIEW_MODE` desactivado; sin `SECRET_KEY` válido el portal responde `503`. Los enlaces de factura vencen a los 10 minutos y solo sirven para un documento y un tipo (PDF o XML); si se filtra uno, deja de funcionar al vencer y rotar `SECRET_KEY` los invalida antes. Los enlaces de foto vencen también a los 10 minutos y solo sirven para una foto; la descarga no se audita y el consentimiento del socio es la base para guardarlas.
 - La app no revela si un correo pertenece a un socio: el mensaje de la pantalla de código lo dice explícitamente.

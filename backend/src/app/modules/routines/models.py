@@ -486,6 +486,7 @@ class ProgressPhoto(SQLModel, table=True):
             name="ck_progress_photos_content_type",
         ),
         CheckConstraint("byte_size > 0", name="ck_progress_photos_byte_size"),
+        CheckConstraint("origin IN ('staff', 'app')", name="ck_progress_photos_origin"),
         Index("ix_progress_photos_member_date", "member_id", "captured_at"),
         Index("uq_progress_photos_storage_key", "storage_key", unique=True),
     )
@@ -505,6 +506,10 @@ class ProgressPhoto(SQLModel, table=True):
     uploaded_by: UUID | None = Field(
         default=None,
         sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="RESTRICT")),
+    )
+    origin: str = Field(
+        default="staff",
+        sa_column=Column(String(8), nullable=False, server_default=text("'staff'")),
     )
     created_at: datetime = Field(
         default_factory=utc_now,

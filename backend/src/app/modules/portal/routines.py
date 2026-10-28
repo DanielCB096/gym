@@ -7,21 +7,24 @@ only expose what belongs to the authenticated member:
 * the workouts and measurements of that member;
 * the member's progress and goals.
 
-Members may log their own workouts, record their own measurements and create
-or cancel the goals they created themselves from the app. All of it is marked
-with ``origin = "app"`` and goes through the same rules as the staff panel; a
-member workout stays ``logged`` until a trainer reviews it. Everything else
-(editing goals, uploading photos, closing assignments) stays with the staff.
+Members may log their own workouts, record their own measurements, create or
+cancel the goals they created themselves and upload or delete their own
+progress photos. All of it is marked with ``origin = "app"`` and goes through
+the same rules as the staff panel; a member workout stays ``logged`` until a
+trainer reviews it. Everything else (editing goals, closing assignments) stays
+with the staff.
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
+import hmac
+from hashlib import sha256
 from uuid import UUID
 
 from sqlmodel import Session, func, select
 
-from app.modules.memberships.models import Member
-from app.modules.portal.service import MemberPortalError
+from app.modules.memberships.models import Member, MemberConsent
+from app.modules.portal.service import MemberPortalError, signing_secret
 from app.modules.routines import (
     AssignmentItem,
     AssignmentNotFound,
@@ -30,6 +33,7 @@ from app.modules.routines import (
     MeasurementItem,
     MemberGoal,
     MemberGoalItem,
+    ProgressPhotoItem,
     Routine,
     RoutineAssignment,
     RoutineLine,
@@ -37,17 +41,32 @@ from app.modules.routines import (
     WorkoutSetInput,
     cancel_member_goal,
     create_member_goal,
+    delete_progress_photo,
     get_assignment,
     list_assignments,
     list_member_goals,
+    list_progress_photos,
     list_workouts,
     log_workout,
     member_progress,
     record_measurement,
+    record_progress_photo,
 )
 
 MAX_MEMBER_ASSIGNMENTS = 100
 MAX_MEMBER_WORKOUTS = 10
+
+PROGRESS_PHOTO_CONSENT_TYPE = "progress_photos"
+PROGRESS_PHOTO_CONSENT_VERSION = "fotos-progreso-v1"
+PHOTO_LINK_LIFETIME = timedelta(minutes=10)
+
+
+class ProgressPhotoConsentRequired(MemberPortalError):
+    """The member has not authorised storing their progress photos yet."""
+
+
+class InvalidProgressPhotoLink(MemberPortalError):
+    """The signed photo link is malformed, forged or expired."""
 
 
 @dataclass(frozen=True)
@@ -93,6 +112,12 @@ class MemberProgressView:
     latest_measurement: MeasurementItem | None
     measurements: list[MeasurementItem]
     goals: list[MemberGoalItem]
+
+
+@dataclass(frozen=True)
+class MemberProgressPhotos:
+    items: list[ProgressPhotoItem]
+    consent_recorded: bool
 
 
 def list_member_routines(session: Session, member_id: UUID) -> MemberRoutineList:
@@ -249,6 +274,106 @@ def cancel_member_goal_from_app(
     if goal.origin != "app":
         raise InvalidGoalState("La meta la creó el personal; cancélala en recepción")
     return cancel_member_goal(session, goal_id, now=now)
+
+
+def list_member_progress_photos(session: Session, member_id: UUID) -> MemberProgressPhotos:
+    _require_member(session, member_id)
+    return MemberProgressPhotos(
+        items=list_progress_photos(session, member_id),
+        consent_recorded=_has_progress_photo_consent(session, member_id),
+    )
+
+
+def record_member_progress_photo(
+    session: Session,
+    member_id: UUID,
+    *,
+    data: bytes,
+    content_type: str | None,
+    angle: str,
+    captured_at: datetime | None = None,
+    notes: str | None = None,
+    consent: bool = False,
+    now: datetime | None = None,
+) -> ProgressPhotoItem:
+    _require_member(session, member_id)
+    if not _has_progress_photo_consent(session, member_id):
+        if not consent:
+            raise ProgressPhotoConsentRequired(
+                "Autoriza el uso de tus fotos de progreso antes de subirlas."
+            )
+        session.add(
+            MemberConsent(
+                member_id=member_id,
+                consent_type=PROGRESS_PHOTO_CONSENT_TYPE,
+                document_version=PROGRESS_PHOTO_CONSENT_VERSION,
+                accepted_at=now or datetime.now(timezone.utc),
+            )
+        )
+    try:
+        return record_progress_photo(
+            session,
+            member_id,
+            data=data,
+            content_type=content_type,
+            angle=angle,
+            captured_at=captured_at,
+            notes=notes,
+            origin="app",
+            now=now,
+        )
+    except Exception:
+        # Do not keep a consent for a photo that was never stored.
+        session.rollback()
+        raise
+
+
+def progress_photo_link(photo_id: UUID, *, now: datetime | None = None) -> str:
+    expires_at_epoch = int(
+        ((now or datetime.now(timezone.utc)) + PHOTO_LINK_LIFETIME).timestamp()
+    )
+    signature = _sign_progress_photo(photo_id, expires_at_epoch)
+    return (
+        f"/member/progress/photos/{photo_id}/file"
+        f"?exp={expires_at_epoch}&sig={signature}"
+    )
+
+
+def verify_progress_photo_link(
+    photo_id: UUID,
+    expires_at_epoch: int,
+    signature: str,
+    *,
+    now: datetime | None = None,
+) -> None:
+    occurred_at = now or datetime.now(timezone.utc)
+    if expires_at_epoch < int(occurred_at.timestamp()):
+        raise InvalidProgressPhotoLink("El enlace de la foto no es válido o expiró")
+    expected = _sign_progress_photo(photo_id, expires_at_epoch)
+    if not hmac.compare_digest(expected, signature):
+        raise InvalidProgressPhotoLink("El enlace de la foto no es válido o expiró")
+
+
+def _sign_progress_photo(photo_id: UUID, expires_at_epoch: int) -> str:
+    message = f"photo:{photo_id}:{expires_at_epoch}".encode("utf-8")
+    return hmac.new(signing_secret(), message, sha256).hexdigest()
+
+
+def delete_member_progress_photo(session: Session, member_id: UUID, photo_id: UUID) -> None:
+    delete_progress_photo(session, photo_id, member_id=member_id)
+
+
+def _has_progress_photo_consent(session: Session, member_id: UUID) -> bool:
+    statement = (
+        select(MemberConsent.id)
+        .where(
+            MemberConsent.member_id == member_id,
+            MemberConsent.consent_type == PROGRESS_PHOTO_CONSENT_TYPE,
+            MemberConsent.revoked_at.is_(None),
+        )
+        .limit(1)
+    )
+    return session.exec(statement).first() is not None
 
 
 def _assignment_counts(session: Session, member_id: UUID) -> dict[str, int]:
