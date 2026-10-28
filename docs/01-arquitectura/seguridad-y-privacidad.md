@@ -42,7 +42,7 @@
 - el PDF y el correo contienen datos fiscales personales (RFC, razón social, domicilio y correo): se aplican las mismas reglas de acceso que el XML y falta definir con asesoría legal su retención y el procedimiento ARCO.
 - las credenciales del PAC y del emisor viven solo en variables de entorno; nunca se guardan en la base, en la factura ni en la bitácora.
 - `invoice_events` es append-only: solicitudes, intentos de timbrado, notas de crédito y cancelaciones conservan actor, fecha, estado anterior/nuevo y detalle sin secretos. Una factura o nota no se borra; cancelar conserva folio, motivo y UUID sustituto.
-- en vista previa el timbrado es **simulado**: `SimulatedPac` no contacta al SAT, no produce UUID ni `TimbreFiscalDigital` y la UI lo marca como SIMULACIÓN. Nunca debe presentarse como comprobante fiscal válido. Con un PAC real configurado sin adaptador, el timbrado falla con `503` en vez de simular.
+- en vista previa el timbrado es **simulado**: `SimulatedPac` no contacta al SAT, no produce UUID ni `TimbreFiscalDigital` y la UI lo marca como SIMULACIÓN. Nunca debe presentarse como comprobante fiscal válido. Con `PAC_PROVIDER=finkok` el timbrado y la cancelación son reales (ADR-022); sin credenciales o con otro proveedor responde `503` en vez de simular.
 
 ## Auditoría
 

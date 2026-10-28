@@ -252,6 +252,16 @@ Verificación manual en vista previa (2026-10-27), con una cuenta de mantenimien
 
 Verificación en navegador (2026-10-28) sobre una copia desechable de la base de vista previa, con el socio `ana.lopez@example.com` en Expo web: el inicio mostró la insignia «1 sin leer», la bandeja listó el aviso «Factura timbrada» con folio e importe y el botón accesible «Abrir facturas: Factura timbrada»; tocarlo respondió `200` en `POST /member/notifications/{id}/read` y abrió Facturas, donde `A-000003` apareció como «Timbrada» con sus botones de descarga; `GET /member/invoices` respondió `200` y la consola quedó sin errores.
 
+## Cobertura del adaptador de Finkok
+
+`backend/tests/test_finkok_pac.py` (10 pruebas) cubre el primer PAC real **sin tocar la red**: `FinkokPac` recibe un `httpx.MockTransport` inyectado, así que cada caso inspecciona la petición SOAP y decide la respuesta. La suite completa queda en **180 pruebas**.
+
+- timbrado: el sobre va a `/servicios/soap/stamp` con `SOAPAction: "sign_stamp"`, el XML viaja en base64 con `NoCertificado=""` y sin los veinte ceros del marcador, y el `UUID`, el XML timbrado y la `Fecha` de la respuesta llenan el resultado; la fecha `2026-10-28T10:15:30` del club se guarda como `16:15:30Z`.
+- rechazo e indisponibilidad: una `Incidencia` (`CodigoError 301`, RFC inválido) produce `PacRejected` con su mensaje y su código; un `ConnectError` y un SOAP fault (`faultstring`) producen `PacUnavailable`.
+- cancelación: el sobre va a `/servicios/soap/cancel` con `SOAPAction: "cancel"`, `taxpayer_id`, `store_pending=0`, el `Motivo` y el UUID sustituto en el atributo, y `cer`/`key` en base64 idénticos a los PEM; `201` se acepta, `202` no (mensaje de «en proceso»), un `CodEstatus` sin `Folios` se propaga y sin `PAC_CERT_PATH` responde `503`.
+- gateway: con `PAC_PROVIDER=finkok` y credenciales devuelve `FinkokPac`; sin `PAC_USER` responde `503` sin caer a simulación. `prepare_prestamp` conserva un `NoCertificado` explícito.
+- sin credenciales reales: el adaptador **no se ha probado contra Finkok demo ni producción**, así que este incremento no sustituye la validación con el PAC y el contador.
+
 ## Cobertura del resumen de la agenda filtrado por búsqueda
 
 `backend/tests/test_classes_api.py` (`test_summary_and_total_are_not_inflated_by_the_search_filter`, 1 prueba) cubre la corrección del 2026-10-27 en la que el filtro de texto inflamaba los conteos de `GET /admin/classes/sessions`:

@@ -7,17 +7,16 @@ stamp it, so this module exposes a tiny protocol and two implementations:
   same pre-timbre XML with an explicit "SIMULACIÓN" comment, a simulated
   reference and **no** SAT UUID/seal. The invoice is stored with
   ``is_simulated = True``.
-* the real provider — **not implemented yet**. Requesting it raises
-  ``PacUnavailable`` (HTTP 503) instead of silently simulating a fiscal
-  document. ``docs/04-integraciones/facturacion-cfdi.md`` records the pending
-  validation with the accountant and the PAC.
+* ``FinkokPac`` — the real provider, in ``app.modules.billing.finkok``. It
+  needs credentials; without them ``PacUnavailable`` (HTTP 503) is raised
+  instead of silently simulating a fiscal document.
 
 Configuration is read per call (like the SMTP transport) so preview and tests can
 switch without re-importing the app:
 
 * ``PREVIEW_MODE=true`` or ``PAC_PROVIDER=simulated`` → simulated PAC.
-* ``PAC_PROVIDER=finkok`` (or another real name) → ``PacUnavailable`` until the
-  adapter and credentials are implemented.
+* ``PAC_PROVIDER=finkok`` → Finkok; missing credentials still answer 503.
+* any other provider → ``PacUnavailable``.
 """
 
 from dataclasses import dataclass
@@ -110,12 +109,17 @@ def pac_gateway() -> PacGateway:
 
     if _simulated_mode():
         return SimulatedPac()
-    provider = os.getenv("PAC_PROVIDER", "").strip() or "sin configurar"
+    provider = os.getenv("PAC_PROVIDER", "").strip().lower()
+    if provider == "finkok":
+        # Imported here because the adapter imports this module's outcomes.
+        from app.modules.billing.finkok import FinkokPac, FinkokSettings
+
+        return FinkokPac(FinkokSettings.from_env())
+    configured = provider or "sin configurar"
     raise PacUnavailable(
-        "El timbrado real no está disponible todavía "
-        f"(PAC_PROVIDER={provider}). Usa PAC_PROVIDER=simulated o PREVIEW_MODE=true "
-        "para probar el flujo, o integra el adaptador del PAC antes de facturar "
-        "en producción."
+        f"El PAC '{configured}' no está disponible. Configura PAC_PROVIDER=finkok "
+        "con sus credenciales, o PAC_PROVIDER=simulated (o PREVIEW_MODE=true) para "
+        "probar el flujo sin validez fiscal."
     )
 
 

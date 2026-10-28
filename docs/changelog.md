@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-28 · El PAC real deja de responder 503
+
+- **Adaptador**: `billing/finkok.py` agrega `FinkokPac` y `FinkokSettings`; `pac_gateway()` devuelve el adaptador con `PAC_PROVIDER=finkok` y mantiene el `503` cuando faltan credenciales. El timbrado usa `sign_stamp` —Finkok sella con el CSD cargado en el perfil del emisor— y la cancelación usa `cancel` con el CSD en PEM de `PAC_CERT_PATH`/`PAC_KEY_PATH`.
+- **Pre-timbre**: antes de enviar, el `NoCertificado` marcador (`00000000000000000000`) se vacía para que Finkok elija el certificado del RFC; la `Fecha` del PAC se interpreta en `APP_TIMEZONE` y se guarda en UTC.
+- **Estados**: solo `201` y `205` cuentan como canceladas; `202` (el SAT dejó la solicitud en proceso) responde `502` con el mensaje del PAC y deja la factura `stamped`. Una incidencia de timbrado es `502` y deja el comprobante `failed`; transporte, timeout, SOAP fault, HTTP de error o éxito sin XML es `503` sin cambiar el estado (este último para no inventar un comprobante que pudo haberse timbrado).
+- **Operación**: variables nuevas `PAC_BASE_URL`, `PAC_TAXPAYER_ID`, `PAC_CERT_PATH`, `PAC_KEY_PATH` y `PAC_TIMEOUT_SECONDS`; las credenciales no se registran en eventos ni en mensajes. Sin credenciales no se cae a simulación.
+- **Pruebas**: 10 nuevas en `tests/test_finkok_pac.py` con `httpx.MockTransport`; la suite queda en 180. Sin migración: el esquema no cambia.
+- **Documentación**: ADR-022, el contrato y los pendientes en `docs/04-integraciones/facturacion-cfdi.md`, los límites en deuda técnica (validación real pendiente, CSD manual, cancelaciones pendientes y riesgo de duplicado si se pierde la respuesta), y el README del backend y del módulo de facturación.
+
 ## 2026-10-28 · El socio se entera del estado de su factura
 
 - **Backend**: `member_notifications` gana los tipos `invoice_stamped`, `invoice_failed` e `invoice_cancelled` (migración `20261028_0039_invoice_status_notifications.py`, que suelta y recrea `ck_member_notifications_kind` con el mismo nombre y se niega a revertir si existen filas de los tipos nuevos). `preview_patch.py` encadena la lista de seis a siete y de siete a diez para que una base de vista previa atrasada también quede al día. No hay tabla ni columna nueva.

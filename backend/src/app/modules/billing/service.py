@@ -1933,7 +1933,10 @@ def cancel_invoice(
         replacement_uuid=replacement,
     )
     if not outcome.accepted:
-        raise PacRejected("El PAC rechazó la cancelación del comprobante.")
+        raise PacRejected(
+            outcome.detail.get("message")
+            or "El PAC rechazó la cancelación del comprobante."
+        )
 
     invoice.status = "cancelled"
     invoice.cancelled_at = utc_now()
@@ -2469,7 +2472,10 @@ def cancel_payment_complement(
         replacement_uuid=replacement,
     )
     if not outcome.accepted:
-        raise PacRejected("El PAC rechazó la cancelación del complemento de pago.")
+        raise PacRejected(
+            outcome.detail.get("message")
+            or "El PAC rechazó la cancelación del complemento de pago."
+        )
 
     payment.status = "cancelled"
     payment.cancelled_at = utc_now()
