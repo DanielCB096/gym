@@ -462,6 +462,7 @@ from app.modules.billing import (
     list_ppd_receivables,
     payment_complement_pdf,
     payment_complement_xml,
+    refresh_cancellation_status,
     save_fiscal_profile,
     send_invoice_email,
     stamp_invoice,
@@ -8404,6 +8405,7 @@ def get_billing_summary(
         "credit_notes": summary.credit_notes,
         "credit_note_cents": summary.credit_note_cents,
         "net_stamped_cents": summary.net_stamped_cents,
+        "pending_cancellations": summary.pending_cancellations,
     }
 
 
@@ -8485,6 +8487,7 @@ def get_invoices(
         Query(),
     ] = None,
     search: Annotated[str | None, Query(max_length=120)] = None,
+    cancellation_pending: Annotated[bool | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ):
@@ -8494,6 +8497,7 @@ def get_invoices(
             status_filter=status_filter,
             origin_type=origin_type,
             search=search,
+            cancellation_pending=cancellation_pending,
             page=page,
             page_size=page_size,
         )
@@ -8585,15 +8589,34 @@ def cancel_invoice_detail(
     payload: InvoiceCancelRequest,
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.manage"))],
+    response: Response,
 ):
     try:
-        return cancel_invoice(
+        view = cancel_invoice(
             session,
             invoice_id,
             reason_code=payload.reason_code,
             replacement_uuid=payload.replacement_uuid,
             note=payload.note,
             actor_id=principal.user_id,
+        )
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+    if view.cancellation_pending:
+        # 202: the SAT accepted the request and is still processing it.
+        response.status_code = status.HTTP_202_ACCEPTED
+    return view
+
+
+@app.post("/admin/billing/invoices/{invoice_id}/cancellation-check", tags=["billing"])
+def check_invoice_cancellation(
+    invoice_id: UUID,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.manage"))],
+):
+    try:
+        return refresh_cancellation_status(
+            session, invoice_id, actor_id=principal.user_id
         )
     except CfdiError as error:
         _raise_cfdi_error(error)

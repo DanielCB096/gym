@@ -249,6 +249,15 @@ class Invoice(SQLModel, table=True):
     cancellation_replacement_uuid: str | None = Field(default=None, max_length=36)
     cancellation_note: str | None = Field(default=None, max_length=300)
     cancelled_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    # A 202 from the PAC leaves the request in process at the SAT: the invoice
+    # stays ``stamped`` and these columns hold the request until it resolves,
+    # so the operator can query it again instead of sending a blind retry.
+    cancellation_requested_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    cancellation_checked_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
 
     idempotency_key: str = Field(max_length=128)
     request_fingerprint: str = Field(max_length=64)

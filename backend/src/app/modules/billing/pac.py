@@ -47,11 +47,35 @@ class CancellationOutcome:
     simulated: bool
 
 
+@dataclass(frozen=True)
+class SatStatusOutcome:
+    """What the SAT reports for a stamped comprobante.
+
+    ``estado`` is the life cycle of the CFDI (``Vigente``/``Cancelado``) while
+    ``estatus_cancelacion`` is the progress of a cancellation request
+    (``En proceso``/``Cancelado``/``No cancelado``). The pair is what tells a
+    pending ``202`` apart from a rejection.
+    """
+
+    provider: str
+    estado: str
+    es_cancelable: str
+    estatus_cancelacion: str
+    codigo_estatus: str
+    simulated: bool
+    message: str | None = None
+
+
 class PacGateway(Protocol):
     def stamp(self, xml: str) -> StampOutcome:
         ...
 
     def cancel(self, *, uuid: str | None, reason_code: str, replacement_uuid: str | None) -> CancellationOutcome:
+        ...
+
+    def sat_status(
+        self, *, uuid: str, receptor_rfc: str, total_cents: int
+    ) -> SatStatusOutcome:
         ...
 
 
@@ -103,6 +127,22 @@ class SimulatedPac:
             simulated=True,
         )
 
+    def sat_status(
+        self, *, uuid: str, receptor_rfc: str, total_cents: int
+    ) -> SatStatusOutcome:
+        del uuid, receptor_rfc, total_cents
+        # A simulated cancellation is accepted on the spot, so a simulated
+        # status only exists to keep the protocol complete in preview.
+        return SatStatusOutcome(
+            provider=self.provider,
+            estado="Vigente",
+            es_cancelable="Cancelable sin aceptación",
+            estatus_cancelacion="",
+            codigo_estatus="",
+            simulated=True,
+            message="Estado simulado: no se consultó al SAT.",
+        )
+
 
 def pac_gateway() -> PacGateway:
     """Resolve the configured PAC or raise a clear 503."""
@@ -126,6 +166,7 @@ def pac_gateway() -> PacGateway:
 __all__ = [
     "CancellationOutcome",
     "PacGateway",
+    "SatStatusOutcome",
     "SimulatedPac",
     "StampOutcome",
     "pac_gateway",

@@ -46,6 +46,8 @@ ADDED_COLUMNS = {
         "related_invoice_id": "CHAR(32)",
         "credit_note_reason": "VARCHAR(24)",
         "credit_note_note": "VARCHAR(300)",
+        "cancellation_requested_at": "DATETIME",
+        "cancellation_checked_at": "DATETIME",
     },
 }
 

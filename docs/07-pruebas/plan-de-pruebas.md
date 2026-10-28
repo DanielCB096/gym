@@ -20,6 +20,7 @@ Probar que cada regla crítica del negocio funcione sin errores, especialmente a
 - facturación CFDI con XML validado
 - notas de crédito parciales y totales con control de saldo, cancelación y relación CFDI
 - complementos de pago PPD: parcialidades, saldo, relación 07 y cancelación de la última
+- cancelación en proceso (`202`): seguimiento manual contra el SAT, confirmación, limpieza y aviso al socio
 - cartera PPD en reportes y conciliación: corte independiente del periodo y complementos electrónicos timbrados como candidatos
 - conciliación bancaria: importación idempotente, vínculo uno a uno, diferencias con motivo y permisos
 - metas del socio: línea base congelada, una meta activa por medida, avance y cierre automático; alta y cancelación de metas propias desde la app con origen `app`
@@ -252,13 +253,24 @@ Verificación manual en vista previa (2026-10-27), con una cuenta de mantenimien
 
 Verificación en navegador (2026-10-28) sobre una copia desechable de la base de vista previa, con el socio `ana.lopez@example.com` en Expo web: el inicio mostró la insignia «1 sin leer», la bandeja listó el aviso «Factura timbrada» con folio e importe y el botón accesible «Abrir facturas: Factura timbrada»; tocarlo respondió `200` en `POST /member/notifications/{id}/read` y abrió Facturas, donde `A-000003` apareció como «Timbrada» con sus botones de descarga; `GET /member/invoices` respondió `200` y la consola quedó sin errores.
 
+## Cobertura del seguimiento de cancelaciones en proceso
+
+`backend/tests/test_billing_api.py` (3 pruebas) cubre el flujo de una cancelación que el SAT deja en proceso, con un `_StubPac` que responde `cancel` y `sat_status` y deja el timbrado al PAC simulado:
+
+- `202` pendiente: la cancelación responde `202 Accepted`, la factura sigue `stamped` con `cancellation_pending`, `cancellation_requested_at`, motivo y nota, y el último evento es `invoice_cancellation_pending`; el filtro `cancellation_pending=true` la devuelve, `false` no, y el resumen cuenta `pending_cancellations = 1`. Una consulta con `Vigente`/«En proceso» conserva la solicitud y actualiza `cancellation_checked_at`; con `Cancelado` pasa a `cancelled`, limpia la solicitud, registra `invoice_cancellation_confirmed` y deja un aviso `invoice_cancelled` al socio.
+- limpieza: un `No Encontrado` del SAT responde `502` sin tocar la factura; un `Vigente`/«No cancelado» borra motivo, nota y fechas y registra `invoice_cancellation_cleared` con el motivo anterior en `detail.previous`.
+- guardas: recepción (`billing.read`/`billing.request`) recibe `403`, una factura simulada sin UUID `409` sin llamar al PAC y un id inexistente `404`.
+
+**Verificación en navegador pendiente (2026-10-28)**: el panel ya muestra la sección «CANCELACIÓN EN PROCESO», la insignia «Cancelación en proceso» en el listado, una insignia de `pending_cancellations` en el resumen y el botón «Consultar estado en el SAT», y oculta «Cancelar factura» mientras la solicitud está pendiente. `tsc --noEmit` pasa, pero el flujo no se recorrió en un navegador ni contra Finkok demo; queda como paso siguiente al retomar el incremento. La vista previa local necesita `backend/preview_patch.py` para agregar las dos columnas nuevas a `gym_preview.db`.
+
 ## Cobertura del adaptador de Finkok
 
-`backend/tests/test_finkok_pac.py` (10 pruebas) cubre el primer PAC real **sin tocar la red**: `FinkokPac` recibe un `httpx.MockTransport` inyectado, así que cada caso inspecciona la petición SOAP y decide la respuesta. La suite completa queda en **184 pruebas**.
+`backend/tests/test_finkok_pac.py` (14 pruebas) cubre el primer PAC real **sin tocar la red**: `FinkokPac` recibe un `httpx.MockTransport` inyectado, así que cada caso inspecciona la petición SOAP y decide la respuesta. La suite completa queda en **191 pruebas**.
 
 - timbrado: el sobre va a `/servicios/soap/stamp` con `SOAPAction: "sign_stamp"`, el XML viaja en base64 con `NoCertificado=""` y sin los veinte ceros del marcador, y el `UUID`, el XML timbrado y la `Fecha` de la respuesta llenan el resultado; la fecha `2026-10-28T10:15:30` del club se guarda como `16:15:30Z`.
 - rechazo e indisponibilidad: una `Incidencia` (`CodigoError 301`, RFC inválido) produce `PacRejected` con su mensaje y su código; un `ConnectError` y un SOAP fault (`faultstring`) producen `PacUnavailable`.
 - cancelación: el sobre va a `/servicios/soap/cancel` con `SOAPAction: "cancel"`, `taxpayer_id`, `store_pending=0`, el `Motivo` y el UUID sustituto en el atributo, y `cer`/`key` en base64 idénticos a los PEM; `201` se acepta, `202` no (mensaje de «en proceso»), un `CodEstatus` sin `Folios` se propaga y sin `PAC_CERT_PATH` responde `503`.
+- consulta del estado: `sat_status` va a `/servicios/soap/cancel` con `SOAPAction: "get_sat_status"` y envía `username`, `password`, `taxpayer_id`, `rtaxpayer_id`, `uuid` y `total` (`116.00`); la respuesta llena `SatStatusOutcome` con `Estado`, `EsCancelable`, `EstatusCancelacion` y `CodigoEstatus`; un `error` del PAC es `502`, una respuesta sin `sat.Estado` es `503` y el gateway simulado informa un estado marcado como simulado.
 - gateway: con `PAC_PROVIDER=finkok` y credenciales devuelve `FinkokPac`; sin `PAC_USER` responde `503` sin caer a simulación. `prepare_prestamp` conserva un `NoCertificado` explícito.
 - sin credenciales reales: el adaptador **no se ha probado contra Finkok demo ni producción**, así que este incremento no sustituye la validación con el PAC y el contador.
 
@@ -268,7 +280,7 @@ Verificación en navegador (2026-10-28) sobre una copia desechable de la base de
 
 Verificado en esta máquina (2026-10-28): el dry run genera un CFDI 4.0 de $116.00 (base $100.00 + IVA $16.00) con `NoCertificado=""`, serie `DEMO`, autofactura y `resultado.json`; las guardas responden con código 1 y un mensaje claro cuando faltan `PAC_USER`/`PAC_PASSWORD`, cuando el entorno apunta a producción sin `--production --confirm-production` o cuando `--cancel` no tiene el CSD. **No se ejecutó contra el demo** porque no hay credenciales ni CSD: esa corrida es el paso pendiente.
 
-`backend/tests/test_finkok_demo_script.py` (4 pruebas, la suite pasa a **184**) cubre la parte offline: el comprobante de prueba cuadra base/IVA/total, sale con el `NoCertificado` vacío y los datos del emisor, el validador acepta un timbre completo y detecta la falta de `TimbreFiscalDigital` o un UUID distinto del que devolvió el PAC, y un emisor con los marcadores de ejemplo se reporta antes de timbrar.
+`backend/tests/test_finkok_demo_script.py` (4 pruebas, la suite pasa a **191**) cubre la parte offline: el comprobante de prueba cuadra base/IVA/total, sale con el `NoCertificado` vacío y los datos del emisor, el validador acepta un timbre completo y detecta la falta de `TimbreFiscalDigital` o un UUID distinto del que devolvió el PAC, y un emisor con los marcadores de ejemplo se reporta antes de timbrar.
 
 ## Cobertura del resumen de la agenda filtrado por búsqueda
 

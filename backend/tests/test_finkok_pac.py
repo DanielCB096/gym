@@ -337,3 +337,113 @@ def test_prepare_prestamp_keeps_an_explicit_certificate() -> None:
 
     assert prepare_prestamp(explicit) == explicit
     assert 'NoCertificado=""' in prepare_prestamp(PRESTAMP_XML)
+
+
+def _status_response(
+    *,
+    estado: str = "Vigente",
+    estatus: str = "En proceso",
+    error: str | None = None,
+) -> httpx.Response:
+    error_node = (
+        f"<can:error>{error}</can:error>"
+        if error
+        else '<can:error xsi:nil="true"/>'
+    )
+    return _envelope(
+        "<can:get_sat_statusResponse><can:get_sat_statusResult>"
+        f"{error_node}"
+        "<can:sat>"
+        "<can:DetallesValidacionEFOS/>"
+        "<can:EsCancelable>Cancelable con aceptación</can:EsCancelable>"
+        "<can:ValidacionEFOS/>"
+        "<can:CodigoEstatus>S - Comprobante obtenido satisfactoriamente</can:CodigoEstatus>"
+        f"<can:Estado>{estado}</can:Estado>"
+        f"<can:EstatusCancelacion>{estatus}</can:EstatusCancelacion>"
+        "</can:sat></can:get_sat_statusResult></can:get_sat_statusResponse>"
+    )
+
+
+def test_sat_status_identifies_the_comprobante_by_issuer_receptor_uuid_and_total() -> None:
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return _status_response()
+
+    pac = FinkokPac(_settings(), transport=httpx.MockTransport(handler))
+    outcome = pac.sat_status(
+        uuid="6C3C0C87-5A34-46F3-BD37-7B79922A51E6",
+        receptor_rfc="LOPA800101AAA",
+        total_cents=11600,
+    )
+
+    assert outcome.provider == "finkok"
+    assert outcome.simulated is False
+    assert outcome.estado == "Vigente"
+    assert outcome.estatus_cancelacion == "En proceso"
+    assert outcome.es_cancelable == "Cancelable con aceptación"
+    assert outcome.codigo_estatus == "S - Comprobante obtenido satisfactoriamente"
+
+    assert str(sent[0].url) == f"{DEMO_BASE_URL}/servicios/soap/cancel"
+    assert sent[0].headers["SOAPAction"] == '"get_sat_status"'
+    assert _field(sent[0], "username") == "emisor@example.com"
+    assert _field(sent[0], "password") == "clave-finkok"
+    assert _field(sent[0], "taxpayer_id") == "EKU9003173C9"
+    assert _field(sent[0], "rtaxpayer_id") == "LOPA800101AAA"
+    assert _field(sent[0], "uuid") == "6C3C0C87-5A34-46F3-BD37-7B79922A51E6"
+    assert _field(sent[0], "total") == "116.00"
+
+
+def test_sat_status_propagates_the_pac_error() -> None:
+    pac = FinkokPac(
+        _settings(),
+        transport=httpx.MockTransport(
+            lambda _: _status_response(error="UUID no encontrado")
+        ),
+    )
+
+    with pytest.raises(PacRejected) as error:
+        pac.sat_status(
+            uuid="6C3C0C87-5A34-46F3-BD37-7B79922A51E6",
+            receptor_rfc="LOPA800101AAA",
+            total_cents=11600,
+        )
+
+    assert "UUID no encontrado" in str(error.value)
+
+
+def test_sat_status_without_the_sat_payload_is_unavailable() -> None:
+    pac = FinkokPac(
+        _settings(),
+        transport=httpx.MockTransport(
+            lambda _: _envelope(
+                "<can:get_sat_statusResponse>"
+                "<can:get_sat_statusResult/>"
+                "</can:get_sat_statusResponse>"
+            )
+        ),
+    )
+
+    with pytest.raises(PacUnavailable):
+        pac.sat_status(
+            uuid="6C3C0C87-5A34-46F3-BD37-7B79922A51E6",
+            receptor_rfc="LOPA800101AAA",
+            total_cents=11600,
+        )
+
+
+def test_simulated_gateway_reports_a_simulated_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PREVIEW_MODE", raising=False)
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+
+    outcome = pac_gateway().sat_status(
+        uuid="6C3C0C87-5A34-46F3-BD37-7B79922A51E6",
+        receptor_rfc="LOPA800101AAA",
+        total_cents=11600,
+    )
+
+    assert outcome.simulated is True
+    assert outcome.estado == "Vigente"

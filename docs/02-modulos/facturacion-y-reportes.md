@@ -52,7 +52,7 @@ La autorización para emitir, cancelar o ajustar comprobantes se valida en backe
 ### Flujo de cancelación o nota de crédito
 1. Un usuario autorizado solicita el ajuste, registra motivo y referencia al CFDI y a la operación de origen.
 2. El sistema valida el estado actual y solicita la operación correspondiente al PAC, incluyendo relación o aceptación cuando aplique.
-3. Se guarda la solicitud, respuesta y estado final confirmado por PAC/SAT.
+3. Se guarda la solicitud, respuesta y estado final confirmado por PAC/SAT. Si el PAC responde `202`, la factura sigue timbrada y conserva la solicitud como pendiente (`cancellation_requested_at` y evento `invoice_cancellation_pending`); el detalle ofrece «Consultar estado en el SAT» (`get_sat_status`), que la confirma, la mantiene o la descarta con su propio evento. La consulta es manual: no hay sondeo automático.
 4. El comprobante original permanece en el historial; los reportes reflejan la relación y el efecto del ajuste sin borrar eventos previos.
 
 ### Flujo de complemento de pago (PPD)
@@ -77,8 +77,8 @@ La autorización para emitir, cancelar o ajustar comprobantes se valida en backe
 
 ### 2. Detalle del comprobante
 - Objetivo: consultar trazabilidad y archivos fiscales
-- Componentes: UUID, receptor, concepto, referencias de pago, XML, PDF, eventos PAC/SAT y comprobantes relacionados
-- Acciones según permiso: descargar, reenviar, solicitar cancelación, revisar historial
+- Componentes: UUID, receptor, concepto, referencias de pago, XML, PDF, eventos PAC/SAT, estado de la cancelación (pendiente, confirmada o descartada) y comprobantes relacionados
+- Acciones según permiso: descargar, reenviar, solicitar cancelación, consultar el estado de una cancelación pendiente en el SAT, revisar historial
 
 ### 3. Perfil fiscal del cliente
 - Objetivo: capturar los datos del receptor necesarios para facturar

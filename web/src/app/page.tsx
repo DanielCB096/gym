@@ -536,6 +536,9 @@ type BillingInvoice = {
   cancellation_reason_code: string | null;
   cancellation_replacement_uuid: string | null;
   cancellation_note: string | null;
+  cancellation_requested_at: string | null;
+  cancellation_checked_at: string | null;
+  cancellation_pending: boolean;
   created_at: string;
   created_by: string | null;
   related_invoice_id: string | null;
@@ -582,6 +585,7 @@ type BillingSummary = {
   credit_notes: number;
   credit_note_cents: number;
   net_stamped_cents: number;
+  pending_cancellations: number;
 };
 
 type BillingPpdAgingBucket = "current" | "days_31_60" | "days_61_90" | "over_90";
@@ -8980,6 +8984,9 @@ function billingEventLabel(eventType: string): string {
     invoice_stamped: "Comprobante timbrado",
     invoice_stamp_failed: "Intento de timbrado fallido",
     invoice_cancelled: "Comprobante cancelado",
+    invoice_cancellation_pending: "Cancelación en proceso en el SAT",
+    invoice_cancellation_confirmed: "Cancelación confirmada por el SAT",
+    invoice_cancellation_cleared: "El SAT no canceló el comprobante",
     invoice_email_sent: "Factura enviada por correo",
     invoice_email_failed: "Envío de factura fallido",
   };
@@ -9115,6 +9122,7 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
         <div className="panel-header access-list-heading">
           <div><p className="section-kicker">COMPROBANTES FISCALES</p><h2>Facturas</h2></div>
           {summary !== null && summary.simulated > 0 && <span className="status-badge status-warn"><i />{summary.simulated} simuladas</span>}
+          {summary !== null && summary.pending_cancellations > 0 && <span className="status-badge status-warn"><i />{summary.pending_cancellations} en proceso en el SAT</span>}
         </div>
         <div className="table-toolbar">
           <label className="table-search"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por receptor, RFC u operación" /></label>
@@ -9137,7 +9145,7 @@ function BillingView({ permissions, onUnauthorized, onToast }: { permissions: st
                       <td><strong>{billingOriginLabels[invoice.origin_type]}</strong><small className="billing-inline-note">{invoice.origin_type === "credit_note" && invoice.related_invoice_folio_label ? `Sobre ${invoice.related_invoice_folio_label}` : invoice.origin_reference}</small></td>
                       <td className="time-cell">{formatMoment(invoice.created_at)}</td>
                       <td>{invoice.origin_type === "credit_note" ? `−${formatMoney(invoice.total_cents)}` : formatMoney(invoice.total_cents)}</td>
-                      <td><span className={`status-badge ${billingStatusBadges[status]}`}><i />{billingStatusLabels[status]}</span></td>
+                      <td><span className={`status-badge ${billingStatusBadges[status]}`}><i />{billingStatusLabels[status]}</span>{invoice.cancellation_pending && <small className="billing-inline-note">Cancelación en proceso</small>}</td>
                       <td>
                         <div className="pos-row-actions">
                           <button className="button button-secondary button-small" onClick={() => setActiveInvoiceId(invoice.id)}>Ver</button>
@@ -9884,7 +9892,7 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, o
   const [invoice, setInvoice] = useState<BillingInvoice | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState<"stamp" | "cancel" | "send" | "credit" | "payment" | "payment-stamp" | "payment-cancel" | null>(null);
+  const [busy, setBusy] = useState<"stamp" | "cancel" | "cancellation-check" | "send" | "credit" | "payment" | "payment-stamp" | "payment-cancel" | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reasonCode, setReasonCode] = useState("02");
   const [replacementUuid, setReplacementUuid] = useState("");
@@ -9986,7 +9994,36 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, o
       const updated = await response.json() as BillingInvoice;
       setInvoice(updated);
       setCancelOpen(false);
-      onChanged(`Comprobante ${updated.folio_label} cancelado.`);
+      onChanged(
+        updated.cancellation_pending
+          ? `Cancelación de ${updated.folio_label} en proceso en el SAT; consulta el estado más tarde.`
+          : `Comprobante ${updated.folio_label} cancelado.`,
+      );
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const checkCancellation = async () => {
+    if (!invoice) return;
+    setBusy("cancellation-check");
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/billing/invoices/${encodeURIComponent(invoice.id)}/cancellation-check`, {
+        method: "POST",
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        setError(billingErrorDetail(payload, "No se pudo consultar el estado en el SAT."));
+        return;
+      }
+      const result = await response.json() as { invoice: BillingInvoice; sat_status: { estado: string; estatus_cancelacion: string } };
+      setInvoice(result.invoice);
+      const estatus = result.sat_status.estatus_cancelacion ? ` · ${result.sat_status.estatus_cancelacion}` : "";
+      onChanged(`SAT: ${result.sat_status.estado}${estatus}.`);
     } catch {
       setError("No se pudo conectar con el backend.");
     } finally {
@@ -10277,7 +10314,7 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, o
   );
   const canIssueCreditNote = invoice !== null && canManage && invoice.status === "stamped" && isSourceInvoice && !isPpdInvoice && invoice.credit_balance_cents > 0;
   const canAddPayment = invoice !== null && canManage && invoice.status === "stamped" && isSourceInvoice && isPpdInvoice && invoice.payment_balance_cents > 0;
-  const canCancelInvoice = invoice !== null && canManage && invoice.status === "stamped" && stampedCreditNoteCount === 0 && stampedPaymentComplements.length === 0;
+  const canCancelInvoice = invoice !== null && canManage && invoice.status === "stamped" && !invoice.cancellation_pending && stampedCreditNoteCount === 0 && stampedPaymentComplements.length === 0;
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -10521,6 +10558,26 @@ function InvoiceDetailModal({ invoiceId, canManage, canRequest, onOpenInvoice, o
                   <div><span>REFERENCIA</span><strong>{invoice.provider_reference ?? "—"}</strong></div>
                   <div><span>TIMBRADO</span><strong>{formatMoment(invoice.stamped_at)}</strong></div>
                 </div>
+              </div>
+            )}
+
+            {invoice.cancellation_pending && (
+              <div className="detail-section">
+                <div className="modal-section-title"><span>CANCELACIÓN EN PROCESO</span></div>
+                <p className="billing-empty">El SAT recibió la solicitud y aún la está procesando: el comprobante sigue vigente hasta que la resuelva.</p>
+                <div className="billing-detail-grid">
+                  <div><span>SOLICITADA</span><strong>{formatMoment(invoice.cancellation_requested_at)}</strong></div>
+                  <div><span>ÚLTIMA CONSULTA</span><strong>{formatMoment(invoice.cancellation_checked_at)}</strong></div>
+                  <div><span>MOTIVO SAT</span><strong>{invoice.cancellation_reason_code ?? "—"}</strong></div>
+                  <div><span>NOTA</span><strong>{invoice.cancellation_note ?? "—"}</strong></div>
+                </div>
+                {canManage && (
+                  <div className="modal-actions">
+                    <button type="button" className="button button-secondary" onClick={checkCancellation} disabled={busy === "cancellation-check"}>
+                      {busy === "cancellation-check" ? "Consultando…" : "Consultar estado en el SAT"}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 

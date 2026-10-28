@@ -8,9 +8,10 @@ Finkok provides) plus the ``taxpayer_id``, so ``PAC_CERT_PATH`` and
 ``PAC_KEY_PATH`` must point at files the operator prepared offline.
 
 Only ``201`` (cancelled) and ``205`` (already cancelled) count as accepted.
-``202`` means the SAT kept the request pending; this domain has no pending
-state, so the invoice stays ``stamped`` with the PAC's message and the operator
-checks the SAT/Finkok portal before retrying.
+``202`` means the SAT kept the request pending: the invoice stays ``stamped``
+and is flagged as pending, and ``sat_status`` (the ``get_sat_status``
+operation of the same SOAP service) tells the operator when the SAT resolves
+it, instead of a blind retry.
 """
 
 from base64 import b64encode
@@ -24,7 +25,7 @@ import xml.etree.ElementTree as ET
 import httpx
 
 from app.modules.billing.errors import PacRejected, PacUnavailable
-from app.modules.billing.pac import CancellationOutcome, StampOutcome
+from app.modules.billing.pac import CancellationOutcome, SatStatusOutcome, StampOutcome
 from app.timezone import club_timezone
 
 SOAP_NS = "http://schemas.xmlsoap.org/soap/envelope/"
@@ -148,6 +149,32 @@ def _cancel_envelope(
     ET.SubElement(operation, f"{{{CANCEL_NS}}}key").text = private_key
     ET.SubElement(operation, f"{{{CANCEL_NS}}}store_pending").text = "0"
     return ET.tostring(envelope, encoding="utf-8", xml_declaration=True)
+
+
+def _status_envelope(
+    settings: FinkokSettings,
+    *,
+    uuid: str,
+    receptor_rfc: str,
+    total_cents: int,
+) -> bytes:
+    # get_sat_status lives in the cancel service and identifies the comprobante
+    # by issuer, receptor, UUID and total, not by UUID alone.
+    envelope = ET.Element(f"{{{SOAP_NS}}}Envelope")
+    ET.SubElement(envelope, f"{{{SOAP_NS}}}Header")
+    body = ET.SubElement(envelope, f"{{{SOAP_NS}}}Body")
+    operation = ET.SubElement(body, f"{{{CANCEL_NS}}}get_sat_status")
+    ET.SubElement(operation, f"{{{CANCEL_NS}}}username").text = settings.username
+    ET.SubElement(operation, f"{{{CANCEL_NS}}}password").text = settings.password
+    ET.SubElement(operation, f"{{{CANCEL_NS}}}taxpayer_id").text = settings.taxpayer_id
+    ET.SubElement(operation, f"{{{CANCEL_NS}}}rtaxpayer_id").text = receptor_rfc
+    ET.SubElement(operation, f"{{{CANCEL_NS}}}uuid").text = uuid
+    ET.SubElement(operation, f"{{{CANCEL_NS}}}total").text = _amount(total_cents)
+    return ET.tostring(envelope, encoding="utf-8", xml_declaration=True)
+
+
+def _amount(cents: int) -> str:
+    return f"{cents // 100}.{cents % 100:02d}"
 
 
 def _local_name(tag: str) -> str:
@@ -344,6 +371,38 @@ class FinkokPac:
             provider=self.provider,
             accepted=accepted,
             detail=detail,
+            simulated=False,
+        )
+
+    def sat_status(
+        self, *, uuid: str, receptor_rfc: str, total_cents: int
+    ) -> SatStatusOutcome:
+        if not self._settings.taxpayer_id:
+            raise PacUnavailable(
+                "La consulta de estado ante Finkok requiere PAC_TAXPAYER_ID o GYM_RFC."
+            )
+        envelope = _status_envelope(
+            self._settings,
+            uuid=uuid,
+            receptor_rfc=receptor_rfc,
+            total_cents=total_cents,
+        )
+        result = self._post("/servicios/soap/cancel", "get_sat_status", envelope)
+        error = _text(result, "error")
+        if error:
+            raise PacRejected(f"El PAC no pudo consultar el estado: {error}")
+        sat = _first(result, "sat")
+        estado = _text(sat, "Estado") if sat is not None else None
+        if sat is None or not estado:
+            raise PacUnavailable(
+                "El PAC no devolvió el estado del comprobante en el SAT."
+            )
+        return SatStatusOutcome(
+            provider=self.provider,
+            estado=estado,
+            es_cancelable=_text(sat, "EsCancelable") or "",
+            estatus_cancelacion=_text(sat, "EstatusCancelacion") or "",
+            codigo_estatus=_text(sat, "CodigoEstatus") or "",
             simulated=False,
         )
 

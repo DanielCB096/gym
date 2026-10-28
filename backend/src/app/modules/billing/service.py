@@ -70,7 +70,11 @@ from app.modules.billing.models import (
     MemberFiscalProfile,
     utc_now,
 )
-from app.modules.billing.pac import pac_gateway
+from app.modules.billing.pac import (
+    CancellationOutcome,
+    SatStatusOutcome,
+    pac_gateway,
+)
 from app.modules.notifications import (
     notify_invoice_cancelled,
     notify_invoice_failed,
@@ -81,6 +85,14 @@ from app.modules.memberships.models import Member, Membership, Payment, Plan
 from app.timezone import club_date, club_timezone, local_midnight
 
 CANCELLATION_REASONS = frozenset({"01", "02", "03", "04"})
+# Finkok's 202: the SAT accepted the request and is still processing it.
+PENDING_CANCEL_STATUS = "202"
+# SAT values of ``EstatusCancelacion`` that mean the request is still open.
+SAT_PENDING_CANCELLATION_STATES = (
+    "en proceso",
+    "en proceso de cancelación",
+    "solicitud de cancelación recibida",
+)
 UUID_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
@@ -264,6 +276,9 @@ class InvoiceView:
     payment_balance_cents: int = 0
     payment_status: str = "not_applicable"
     payment_complements: tuple[PaymentComplementRef, ...] = field(default=())
+    cancellation_requested_at: datetime | None = None
+    cancellation_checked_at: datetime | None = None
+    cancellation_pending: bool = False
     items: tuple[InvoiceItemView, ...] = field(default=())
     events: tuple[InvoiceEventView, ...] = field(default=())
     global_sales: tuple["GlobalInvoiceSaleView", ...] = field(default=())
@@ -290,6 +305,15 @@ class InvoiceSummary:
     credit_notes: int
     credit_note_cents: int
     net_stamped_cents: int
+    pending_cancellations: int = 0
+
+
+@dataclass(frozen=True)
+class CancellationCheck:
+    """Result of asking the SAT for the state of a stamped comprobante."""
+
+    invoice: InvoiceView
+    sat_status: SatStatusOutcome
 
 
 @dataclass(frozen=True)
@@ -723,6 +747,11 @@ def _invoice_view(
         cancellation_reason_code=invoice.cancellation_reason_code,
         cancellation_replacement_uuid=invoice.cancellation_replacement_uuid,
         cancellation_note=invoice.cancellation_note,
+        cancellation_requested_at=invoice.cancellation_requested_at,
+        cancellation_checked_at=invoice.cancellation_checked_at,
+        cancellation_pending=(
+            invoice.status == "stamped" and invoice.cancellation_requested_at is not None
+        ),
         created_at=invoice.created_at,
         created_by=invoice.created_by,
         related_invoice_id=invoice.related_invoice_id,
@@ -1933,6 +1962,19 @@ def cancel_invoice(
         replacement_uuid=replacement,
     )
     if not outcome.accepted:
+        if outcome.detail.get("status") == PENDING_CANCEL_STATUS:
+            _mark_cancellation_pending(
+                session,
+                invoice,
+                reason=reason,
+                replacement=replacement,
+                note=normalized_note,
+                actor_id=actor_id,
+                outcome=outcome,
+            )
+            session.commit()
+            session.refresh(invoice)
+            return _invoice_view(session, invoice, full=True)
         raise PacRejected(
             outcome.detail.get("message")
             or "El PAC rechazó la cancelación del comprobante."
@@ -1963,6 +2005,159 @@ def cancel_invoice(
     session.commit()
     session.refresh(invoice)
     return _invoice_view(session, invoice, full=True)
+
+
+def _mark_cancellation_pending(
+    session: Session,
+    invoice: Invoice,
+    *,
+    reason: str,
+    replacement: str | None,
+    note: str | None,
+    actor_id: UUID | None,
+    outcome: CancellationOutcome,
+) -> None:
+    """Keep a 202 on the invoice until the SAT resolves it.
+
+    The request data is stored so the later confirmation can freeze it on the
+    comprobante without asking the operator to retype the reason.
+    """
+
+    now = utc_now()
+    invoice.cancellation_reason_code = reason
+    invoice.cancellation_replacement_uuid = replacement
+    invoice.cancellation_note = note
+    invoice.cancellation_requested_at = now
+    invoice.cancellation_checked_at = now
+    _record_event(
+        session,
+        invoice,
+        "invoice_cancellation_pending",
+        from_status="stamped",
+        to_status="stamped",
+        actor_id=actor_id,
+        detail={
+            "reason_code": reason,
+            "replacement_uuid": replacement,
+            "note": note,
+            "provider": outcome.provider,
+            "status": outcome.detail.get("status"),
+            "estatus_cancelacion": outcome.detail.get("estatus_cancelacion"),
+        },
+    )
+
+
+def _sat_reports_a_pending_cancellation(estatus: str) -> bool:
+    normalized = estatus.strip().lower()
+    return normalized.startswith("en proceso") or (
+        normalized in SAT_PENDING_CANCELLATION_STATES
+    )
+
+
+def _sat_detail(outcome: SatStatusOutcome) -> dict[str, object]:
+    return {
+        "provider": outcome.provider,
+        "estado": outcome.estado,
+        "es_cancelable": outcome.es_cancelable,
+        "estatus_cancelacion": outcome.estatus_cancelacion,
+        "codigo_estatus": outcome.codigo_estatus,
+        "simulated": outcome.simulated,
+    }
+
+
+def refresh_cancellation_status(
+    session: Session,
+    invoice_id: UUID,
+    *,
+    actor_id: UUID | None = None,
+) -> CancellationCheck:
+    """Ask the SAT where a stamped comprobante stands and record the answer.
+
+    A pending 202 is confirmed when the SAT reports ``Cancelado`` and cleared
+    when it reports otherwise, so the operator stops seeing a request that no
+    longer exists. A comprobante cancelled out of band (through the Finkok
+    portal) is also picked up here.
+    """
+
+    invoice = session.get(Invoice, invoice_id)
+    if invoice is None:
+        raise InvoiceNotFound("La factura no existe.")
+    if invoice.status != "stamped":
+        raise InvoiceStateError("Solo se consulta el estado de una factura timbrada.")
+    if not invoice.uuid:
+        raise InvoiceStateError(
+            "La factura no tiene UUID del SAT; un comprobante simulado no se consulta."
+        )
+
+    outcome = pac_gateway().sat_status(
+        uuid=invoice.uuid,
+        receptor_rfc=invoice.receptor_rfc,
+        total_cents=invoice.total_cents,
+    )
+    estado = outcome.estado.strip().lower()
+    if estado == "no encontrado":
+        raise PacRejected(
+            "El SAT no encontró el comprobante con ese UUID, RFC y total; revisa "
+            "los datos antes de reintentar."
+        )
+
+    invoice = session.exec(
+        select(Invoice)
+        .where(Invoice.id == invoice_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if invoice is None:
+        raise InvoiceNotFound("La factura no existe.")
+
+    now = utc_now()
+    if estado == "cancelado":
+        invoice.status = "cancelled"
+        invoice.cancelled_at = now
+        invoice.cancelled_by = actor_id
+        invoice.cancellation_requested_at = None
+        invoice.cancellation_checked_at = now
+        _record_event(
+            session,
+            invoice,
+            "invoice_cancellation_confirmed",
+            from_status="stamped",
+            to_status="cancelled",
+            actor_id=actor_id,
+            detail=_sat_detail(outcome),
+        )
+        _notify_invoice_status(session, invoice, "cancelled")
+        session.commit()
+    elif _sat_reports_a_pending_cancellation(outcome.estatus_cancelacion):
+        invoice.cancellation_checked_at = now
+        session.commit()
+    elif invoice.cancellation_requested_at is not None:
+        previous = {
+            "reason_code": invoice.cancellation_reason_code,
+            "replacement_uuid": invoice.cancellation_replacement_uuid,
+            "note": invoice.cancellation_note,
+        }
+        invoice.cancellation_requested_at = None
+        invoice.cancellation_checked_at = now
+        invoice.cancellation_reason_code = None
+        invoice.cancellation_replacement_uuid = None
+        invoice.cancellation_note = None
+        _record_event(
+            session,
+            invoice,
+            "invoice_cancellation_cleared",
+            from_status="stamped",
+            to_status="stamped",
+            actor_id=actor_id,
+            detail={**_sat_detail(outcome), "previous": previous},
+        )
+        session.commit()
+
+    session.refresh(invoice)
+    return CancellationCheck(
+        invoice=_invoice_view(session, invoice, full=True),
+        sat_status=outcome,
+    )
 
 
 def payment_series() -> str:
@@ -2757,6 +2952,7 @@ def list_invoices(
     status_filter: str | None = None,
     origin_type: str | None = None,
     search: str | None = None,
+    cancellation_pending: bool | None = None,
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> InvoicePage:
@@ -2771,6 +2967,12 @@ def list_invoices(
         if origin_type not in INVOICE_ORIGIN_TYPES:
             raise InvoiceStateError("El tipo de comprobante no es válido.")
         conditions.append(Invoice.origin_type == origin_type)
+    if cancellation_pending is not None:
+        conditions.append(
+            Invoice.cancellation_requested_at.is_not(None)
+            if cancellation_pending
+            else Invoice.cancellation_requested_at.is_(None)
+        )
     term = (search or "").strip().lower()
     if term:
         conditions.append(
@@ -2835,6 +3037,14 @@ def invoice_summary(session: Session) -> InvoiceSummary:
     simulated = session.exec(
         select(func.count()).select_from(Invoice).where(Invoice.is_simulated.is_(True))
     ).first() or 0
+    pending_cancellations = session.exec(
+        select(func.count())
+        .select_from(Invoice)
+        .where(
+            Invoice.status == "stamped",
+            Invoice.cancellation_requested_at.is_not(None),
+        )
+    ).first() or 0
     stamped_total = int(stamped_cents)
     credit_note_total = int(credit_note_cents)
     return InvoiceSummary(
@@ -2849,6 +3059,7 @@ def invoice_summary(session: Session) -> InvoiceSummary:
         credit_notes=int(credit_notes),
         credit_note_cents=credit_note_total,
         net_stamped_cents=stamped_total - credit_note_total,
+        pending_cancellations=int(pending_cancellations),
     )
 
 

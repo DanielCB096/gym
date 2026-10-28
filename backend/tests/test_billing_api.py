@@ -10,9 +10,12 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import mailer
 from app.main import app, get_session
+from app.modules.billing import service as billing_service
 from app.modules.billing.models import Invoice
+from app.modules.billing.pac import CancellationOutcome, SatStatusOutcome
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.inventory.models import Product, Sale, SaleItem, SaleReturn
+from app.modules.notifications.models import MemberNotification
 from app.modules.memberships.models import (
     Member,
     Membership,
@@ -2475,5 +2478,282 @@ def test_ppd_receivables_age_open_balances_and_pending_complements(
                 headers=accountant,
                 params={"aging_bucket": "ancient"},
             ).status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+SAT_UUID = "6C3C0C87-5A34-46F3-BD37-7B79922A51E6"
+
+
+class _StubPac:
+    """Answers cancel and SAT queries; stamping stays with the simulated PAC."""
+
+    provider = "finkok"
+
+    def __init__(self) -> None:
+        self.cancel_calls: list[dict[str, object]] = []
+        self.status_calls: list[dict[str, object]] = []
+        self.cancel_outcome = _pending_cancel()
+        self.status_outcome = _sat_status(
+            estado="Vigente", estatus="En proceso de cancelación"
+        )
+
+    def stamp(self, xml: str):  # pragma: no cover - only cancel/status are exercised
+        raise AssertionError("El stub no timbra.")
+
+    def cancel(self, *, uuid, reason_code, replacement_uuid):
+        self.cancel_calls.append(
+            {
+                "uuid": uuid,
+                "reason_code": reason_code,
+                "replacement_uuid": replacement_uuid,
+            }
+        )
+        return self.cancel_outcome
+
+    def sat_status(self, *, uuid, receptor_rfc, total_cents):
+        self.status_calls.append(
+            {
+                "uuid": uuid,
+                "receptor_rfc": receptor_rfc,
+                "total_cents": total_cents,
+            }
+        )
+        return self.status_outcome
+
+
+def _pending_cancel() -> CancellationOutcome:
+    return CancellationOutcome(
+        provider="finkok",
+        accepted=False,
+        detail={
+            "status": "202",
+            "message": "En proceso de cancelación",
+            "estatus_cancelacion": "En proceso",
+        },
+        simulated=False,
+    )
+
+
+def _sat_status(*, estado: str, estatus: str) -> SatStatusOutcome:
+    return SatStatusOutcome(
+        provider="finkok",
+        estado=estado,
+        es_cancelable="Cancelable sin aceptación",
+        estatus_cancelacion=estatus,
+        codigo_estatus="S - Comprobante obtenido satisfactoriamente.",
+        simulated=False,
+    )
+
+
+def _assign_sat_uuid(engine, invoice_id: object) -> None:
+    """The simulated stamp leaves no UUID; a real comprobante has one."""
+
+    with Session(engine) as session:
+        invoice = session.get(Invoice, UUID(str(invoice_id)))
+        assert invoice is not None
+        invoice.uuid = SAT_UUID
+        session.add(invoice)
+        session.commit()
+
+
+def test_pending_cancellation_is_tracked_then_confirmed_by_the_sat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    engine, _, _, _, sale_id = _prepare()
+    pac = _StubPac()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            base = _stamped_sale_invoice(client, accountant, sale_id, key="sat-pending")
+            base_id = str(base["id"])
+            _assign_sat_uuid(engine, base_id)
+            monkeypatch.setattr(billing_service, "pac_gateway", lambda: pac)
+
+            cancelled = client.post(
+                f"/admin/billing/invoices/{base_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "02", "note": "Solicitud del socio"},
+            )
+            assert cancelled.status_code == 202, cancelled.text
+            pending = cancelled.json()
+            assert pending["status"] == "stamped"
+            assert pending["cancellation_pending"] is True
+            assert pending["cancellation_requested_at"] is not None
+            assert pending["cancellation_checked_at"] is not None
+            assert pending["cancellation_reason_code"] == "02"
+            assert pending["cancellation_note"] == "Solicitud del socio"
+            assert pending["cancelled_at"] is None
+            assert pending["events"][-1]["event_type"] == "invoice_cancellation_pending"
+            assert pac.cancel_calls == [
+                {"uuid": SAT_UUID, "reason_code": "02", "replacement_uuid": None}
+            ]
+
+            filtered = client.get(
+                "/admin/billing/invoices",
+                headers=accountant,
+                params={"cancellation_pending": "true"},
+            ).json()
+            assert filtered["total"] == 1
+            assert filtered["items"][0]["id"] == base_id
+            settled = client.get(
+                "/admin/billing/invoices",
+                headers=accountant,
+                params={"cancellation_pending": "false"},
+            ).json()
+            assert settled["total"] == 0
+            assert (
+                client.get("/admin/billing/summary", headers=accountant).json()[
+                    "pending_cancellations"
+                ]
+                == 1
+            )
+
+            still = client.post(
+                f"/admin/billing/invoices/{base_id}/cancellation-check",
+                headers=accountant,
+            )
+            assert still.status_code == 200, still.text
+            still_body = still.json()
+            assert still_body["sat_status"]["estado"] == "Vigente"
+            assert still_body["invoice"]["status"] == "stamped"
+            assert still_body["invoice"]["cancellation_pending"] is True
+            assert pac.status_calls == [
+                {
+                    "uuid": SAT_UUID,
+                    "receptor_rfc": "LOPA800101AAA",
+                    "total_cents": 11600,
+                }
+            ]
+
+            pac.status_outcome = _sat_status(estado="Cancelado", estatus="Cancelado")
+            confirmed = client.post(
+                f"/admin/billing/invoices/{base_id}/cancellation-check",
+                headers=accountant,
+            )
+            assert confirmed.status_code == 200, confirmed.text
+            body = confirmed.json()
+            assert body["sat_status"]["estado"] == "Cancelado"
+            assert body["invoice"]["status"] == "cancelled"
+            assert body["invoice"]["cancellation_pending"] is False
+            assert body["invoice"]["cancellation_requested_at"] is None
+            assert body["invoice"]["cancellation_reason_code"] == "02"
+            assert body["invoice"]["cancellation_note"] == "Solicitud del socio"
+            assert body["invoice"]["cancelled_at"] is not None
+            assert body["invoice"]["events"][-1]["event_type"] == (
+                "invoice_cancellation_confirmed"
+            )
+
+            with Session(engine) as session:
+                notices = session.exec(
+                    select(MemberNotification).where(
+                        MemberNotification.kind == "invoice_cancelled"
+                    )
+                ).all()
+            assert len(notices) == 1
+            assert str(notices[0].ref_id) == base_id
+
+            after = client.get("/admin/billing/summary", headers=accountant).json()
+            assert after["pending_cancellations"] == 0
+            assert after["cancelled"] == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_cancellation_check_clears_the_request_when_the_sat_keeps_the_invoice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    engine, _, _, _, sale_id = _prepare()
+    pac = _StubPac()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            base = _stamped_sale_invoice(client, accountant, sale_id, key="sat-cleared")
+            base_id = str(base["id"])
+            _assign_sat_uuid(engine, base_id)
+            monkeypatch.setattr(billing_service, "pac_gateway", lambda: pac)
+
+            assert client.post(
+                f"/admin/billing/invoices/{base_id}/cancel",
+                headers=accountant,
+                json={"reason_code": "03", "note": "No se realizó la operación"},
+            ).status_code == 202
+
+            pac.status_outcome = _sat_status(estado="No Encontrado", estatus="")
+            unknown = client.post(
+                f"/admin/billing/invoices/{base_id}/cancellation-check",
+                headers=accountant,
+            )
+            assert unknown.status_code == 502, unknown.text
+            assert "no encontró" in unknown.json()["detail"]
+            untouched = client.get(
+                f"/admin/billing/invoices/{base_id}", headers=accountant
+            ).json()
+            assert untouched["cancellation_pending"] is True
+            assert untouched["events"][-1]["event_type"] == "invoice_cancellation_pending"
+
+            pac.status_outcome = _sat_status(estado="Vigente", estatus="No cancelado")
+            checked = client.post(
+                f"/admin/billing/invoices/{base_id}/cancellation-check",
+                headers=accountant,
+            )
+            assert checked.status_code == 200, checked.text
+            body = checked.json()
+            assert body["invoice"]["status"] == "stamped"
+            assert body["invoice"]["cancellation_pending"] is False
+            assert body["invoice"]["cancellation_requested_at"] is None
+            assert body["invoice"]["cancellation_reason_code"] is None
+            assert body["invoice"]["cancellation_note"] is None
+            last = body["invoice"]["events"][-1]
+            assert last["event_type"] == "invoice_cancellation_cleared"
+            assert last["detail"]["previous"] == {
+                "reason_code": "03",
+                "replacement_uuid": None,
+                "note": "No se realizó la operación",
+            }
+            assert (
+                client.get("/admin/billing/summary", headers=accountant).json()[
+                    "pending_cancellations"
+                ]
+                == 0
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_cancellation_check_requires_manage_and_a_sat_uuid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PROVIDER", "simulated")
+    engine, _, _, _, sale_id = _prepare()
+    pac = _StubPac()
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            base = _stamped_sale_invoice(client, accountant, sale_id, key="sat-guards")
+            base_id = str(base["id"])
+            monkeypatch.setattr(billing_service, "pac_gateway", lambda: pac)
+
+            assert client.post(
+                f"/admin/billing/invoices/{base_id}/cancellation-check",
+                headers=reception,
+            ).status_code == 403
+
+            missing_uuid = client.post(
+                f"/admin/billing/invoices/{base_id}/cancellation-check",
+                headers=accountant,
+            )
+            assert missing_uuid.status_code == 409
+            assert "UUID" in missing_uuid.json()["detail"]
+            assert pac.status_calls == []
+
+            unknown = client.post(
+                f"/admin/billing/invoices/{uuid4()}/cancellation-check",
+                headers=accountant,
+            )
+            assert unknown.status_code == 404
     finally:
         app.dependency_overrides.clear()
