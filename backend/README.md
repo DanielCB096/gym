@@ -58,7 +58,7 @@ alembic downgrade base
 
 `downgrade base` elimina las tablas creadas por estas migraciones y solo debe usarse en una base desechable o después de respaldar y verificar los datos. Revisa `alembic upgrade head --sql` para inspeccionar SQL sin conectarte a PostgreSQL.
 
-**La cadena solo corre sobre PostgreSQL.** La vista previa usa SQLite y construye el esquema con `create_all` más `preview_patch.py`, así que las migraciones nunca se ejecutan en ese camino. Para que una migración rotosa no se descubra al desplegar, el job `migrations` de `.github/workflows/ci.yml` levanta PostgreSQL 16 y en cada push hace `alembic upgrade head` (0001 → actual), luego `downgrade -1` seguido de `upgrade head` para verificar el revertido de la más reciente, y finalmente lee `pg_get_constraintdef` de `ck_member_notifications_kind` para confirmar que el `CHECK` ensanchado de verdad quedó aplicado. Para reproducirlo local con Docker:
+**La cadena solo corre sobre PostgreSQL.** La vista previa usa SQLite y construye el esquema con `create_all` más `preview_patch.py`, así que las migraciones nunca se ejecutan en ese camino. Para que una migración rotosa no se descubra al desplegar, el job `migrations` de `.github/workflows/ci.yml` levanta PostgreSQL 16 y en cada push hace `alembic upgrade head` (0001 → actual), luego `downgrade -1` seguido de `upgrade head` para verificar el revertido de la más reciente, **`alembic check`** para comprobar que los modelos y el esquema migrado no divergen, y finalmente lee `pg_get_constraintdef` de `ck_member_notifications_kind` para confirmar que el `CHECK` ensanchado de verdad quedó aplicado. Para reproducirlo local con Docker:
 
 ```bash
 docker run -d --name gym-migrate-pg -e POSTGRES_USER=gym -e POSTGRES_PASSWORD=gym \
@@ -68,6 +68,8 @@ docker rm -f gym-migrate-pg
 ```
 
 `psycopg` (el driver real) no acepta el prefijo de dialecto de SQLAlchemy: si ejecutas SQL suelto contra esa base, usa `postgresql://` en lugar de `postgresql+psycopg://`.
+
+`alembic/env.py` **no lista los módulos a mano**: recorre `app.modules` e importa cada `models.py` que exista, porque la lista fija anterior tenía cuatro y el autogenerate se caía con `NoReferencedTableError` al resolver una FK hacia un módulo no importado. Un módulo nuevo se incluye solo; uno sin tablas (`reports`) se omite porque no publica `models.py`. Con el metadata completo, `alembic check` compara los modelos contra la base migrada y **falla si un modelo ganó una tabla o columna que ninguna migración crea** —fue exactamente como apareció la migración `20261027_0038_staffing_shifts_and_attendance.py`: `staff_shifts`, `staff_attendance` y `staff_attendance_events` llevaban desde su incremento en los modelos y en la vista previa (las crea `create_all`), pero no existía migración alguna, así que una base PostgreSQL real no tenía la tabla de turnos. Ojo con dos límites del check: **verifica primero que la base esté en `head`** (si está atrás falla con «Target database is not up to date» sin listar la divergencia) y **no compara los `CHECK`** (el autogenerate no trae comparación de restricciones de chequeo), así que una restricción mal escrita sigue dependiendo del `pg_get_constraintdef` del paso siguiente o del humano.
 
 Después de migrar una base nueva, crea el primer usuario dueño desde una consola local segura. Desde PowerShell en `backend/`:
 

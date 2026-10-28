@@ -209,6 +209,18 @@ Los **avisos** viven en dos tablas espejo del módulo transversal `app.modules.n
 
 El **recordatorio de vencimiento de membresía** no necesita programador: `_ensure_membership_expiring` lo calcula al leer la bandeja sobre la membresía `active` que termina primero y lo escribe con `dedupe_key = membership_expiring:<membership_id>:<7|3|1>`, de modo que hay **un aviso por ventana** y no uno por día. Los demás avisos los escriben los servicios de `routines` y `classes` dentro de la misma transacción del cambio que anuncian.
 
+## Esquema físico: turnos y asistencia del personal
+
+El módulo de personal lleva operando desde su incremento en `employees`/`app_users`, y sus tres tablas de turnos y asistencia existían **solo en los modelos**: la base de vista previa las crea `create_all` y el panel las consulta sin problema, pero **ninguna migración las definía**, así que una base PostgreSQL construida con `alembic upgrade head` no las tenía y cualquier consulta de turnos habría caído con `relation does not exist`. La migración `20261027_0038_staffing_shifts_and_attendance.py` las agrega con la forma exacta que los modelos publican; la detectó `alembic check` en su primera corrida (ver `backend/README.md`).
+
+| Tabla | Responsabilidad | Restricciones principales |
+|---|---|---|
+| `staff_shifts` | un turno programado a un empleado, con su ventana horaria | FK `RESTRICT` a `employees` y a `app_users` (quien lo programó); `ck_staff_shifts_period_valid` (`ends_at > starts_at`) y `ck_staff_shifts_status` (`scheduled`/`cancelled`, con `server_default 'scheduled'`); `created_at`/`updated_at` con `server_default now()`; índices `(employee_id, starts_at)` y `(starts_at, status)` |
+| `staff_attendance` | el marcaje real de un turno: entrada, salida y estado | FK `RESTRICT` a `staff_shifts` con **única** `uq_staff_attendance_shift` (un marcaje por turno), a `employees` y a `app_users` para los actores de entrada y salida; `ck_staff_attendance_status` (`present`/`late`) y `ck_staff_attendance_checkout_order` (`check_out_at IS NULL OR check_out_at >= check_in_at`); salida y su actor/fuente son nullable; índice `(employee_id, check_in_at)` |
+| `staff_attendance_events` | bitácora append-only de cada marcaje | FK `RESTRICT` a `staff_attendance` y a `app_users`; `uq_staff_attendance_events_request` sobre `request_id` es la **idempotencia** del alta, con `request_sha256` (64) para detectar la misma clave con otros datos; `ck_staff_attendance_events_type` (`check_in`/`check_out`) y `ck_staff_attendance_events_source` (`staff_app`/`manual`/`access_reader`); `reason` nullable; índices `(attendance_id, occurred_at)` y `request_id` |
+
+Hoy el único `source` que se escribe es `staff_app`, el que pasan `POST /staff/attendance/clock-in` y `clock-out` (auto-servicio con `attendance.self`); `manual` y `access_reader` están declarados en el `CHECK` pero sin llamador: el primero sería el marcaje corregido por el supervisor y el segundo el lector físico del control de acceso, que todavía no está conectado. El alta de turnos desde el panel es `POST /admin/staff/{employee_id}/shifts` con `attendance.manage`. Nómina y tolerancia a retardos no viven en el esquema.
+
 ## Persistencia local de acceso offline
 
 La primera implementación usa un archivo SQLite local para el caché de decisiones en el lector/controlador, separado de PostgreSQL central:

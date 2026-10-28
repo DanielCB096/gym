@@ -10,6 +10,7 @@ from app.main import app, get_session
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.memberships.models import Member
 from app.modules.routines import record_measurement
+from app.timezone import club_date
 
 
 def _build_engine():
@@ -51,7 +52,7 @@ def test_member_manages_own_goals(monkeypatch) -> None:
 
     engine = _build_engine()
     SQLModel.metadata.create_all(engine)
-    today = datetime.now(timezone.utc).date()
+    today = club_date(datetime.now(timezone.utc))
     with Session(engine) as session:
         ensure_default_access_control(session)
         register_user(

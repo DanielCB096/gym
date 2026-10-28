@@ -1,14 +1,14 @@
+import importlib
+import importlib.util
 import os
+import pkgutil
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
-import app.modules.memberships.models
-import app.modules.identity.models
-import app.modules.portal.models
-import app.modules.notifications.models
+import app.modules
 
 config = context.config
 
@@ -16,6 +16,25 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = SQLModel.metadata
+
+
+def import_all_models() -> None:
+    """Populate ``SQLModel.metadata`` with every module, not only the imported ones.
+
+    Listing the modules by hand is what let the metadata drift from the schema: a
+    table missing here makes autogenerate resolve foreign keys against incomplete
+    metadata and ``alembic check`` dies instead of reporting drift.
+    """
+    for package in pkgutil.iter_modules(app.modules.__path__):
+        if not package.ispkg:
+            continue
+        module_name = f"app.modules.{package.name}.models"
+        if importlib.util.find_spec(module_name) is None:
+            continue
+        importlib.import_module(module_name)
+
+
+import_all_models()
 
 
 def get_database_url() -> str:

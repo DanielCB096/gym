@@ -88,6 +88,9 @@ jobs:
           python -m alembic downgrade -1
           python -m alembic upgrade head
 
+      - name: Compare the models with the migrated schema
+        run: python -m alembic check
+
       - name: Check the notification kinds accepted by the database
         run: |
           python - <<'PY'
