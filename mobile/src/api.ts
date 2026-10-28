@@ -3,6 +3,7 @@ import { Platform } from "react-native";
 import { API_URL, REQUEST_TIMEOUT_MS } from "./config";
 import type {
   CodeRequestResult,
+  MemberAccessCode,
   MemberAccount,
   MemberBillableOriginPage,
   MemberClassPage,
@@ -131,6 +132,13 @@ export function verifyLoginCode(email: string, code: string): Promise<MemberLogi
 
 export function getMemberProfile(token: string): Promise<MemberProfile> {
   return request<MemberProfile>("/member/me", { token });
+}
+
+export function requestMemberAccessCode(token: string): Promise<MemberAccessCode> {
+  return request<MemberAccessCode>("/member/access/code", {
+    method: "POST",
+    token,
+  });
 }
 
 export function logoutMember(token: string): Promise<void> {

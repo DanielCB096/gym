@@ -1,0 +1,395 @@
+:root {
+  color-scheme: dark;
+  --background: #0b1220;
+  --surface: #151e2e;
+  --surface-muted: #1e293b;
+  --border: #263449;
+  --text: #f8fafc;
+  --muted: #94a3b8;
+  --accent: #22c55e;
+  --accent-dark: #16a34a;
+  --accent-text: #052e16;
+  --warning: #f59e0b;
+  --danger: #f87171;
+  --radius: 22px;
+  font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(circle at 15% 0%, rgba(34, 197, 94, 0.12), transparent 45%),
+    var(--background);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  min-height: 100dvh;
+  padding: clamp(16px, 3vw, 32px);
+}
+
+.topbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.brand {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.brand-dot {
+  background: var(--accent);
+  border-radius: 8px;
+  height: 16px;
+  width: 16px;
+}
+
+.brand-name {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 3px;
+  margin: 0;
+}
+
+.brand-sub {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 2px 0 0;
+}
+
+.status {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 13px;
+  gap: 8px;
+}
+
+.status-dot {
+  background: var(--accent);
+  border-radius: 50%;
+  height: 8px;
+  width: 8px;
+}
+
+.status-dot.offline {
+  background: var(--warning);
+}
+
+.clock {
+  color: var(--text);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  margin-left: 8px;
+}
+
+main {
+  align-items: center;
+  display: flex;
+  flex: 1;
+  justify-content: center;
+  padding: clamp(16px, 4vh, 40px) 0;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 560px;
+  padding: clamp(20px, 4vw, 36px);
+  text-align: center;
+  width: 100%;
+}
+
+h1 {
+  font-size: clamp(26px, 3.4vw, 34px);
+  letter-spacing: -0.6px;
+  margin: 0;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: clamp(15px, 1.6vw, 17px);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.small {
+  font-size: 14px;
+  min-height: 1.4em;
+}
+
+.error {
+  color: var(--danger);
+  font-size: 14px;
+  margin: 0;
+  text-align: left;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 4px 0 0;
+  text-align: left;
+}
+
+.code {
+  display: flex;
+  gap: clamp(6px, 1.4vw, 12px);
+  justify-content: center;
+  margin: 6px 0;
+}
+
+.slot {
+  align-items: center;
+  background: var(--surface-muted);
+  border: 2px solid var(--border);
+  border-radius: 14px;
+  display: flex;
+  font-size: clamp(30px, 5vw, 46px);
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  height: clamp(58px, 9vh, 82px);
+  justify-content: center;
+  transition: border-color 120ms ease;
+  width: clamp(42px, 6.5vw, 64px);
+}
+
+.slot.filled {
+  border-color: rgba(34, 197, 94, 0.65);
+}
+
+.slot.active {
+  border-color: var(--accent);
+}
+
+.keypad {
+  display: grid;
+  gap: clamp(8px, 1.4vw, 12px);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 6px;
+}
+
+.keypad button {
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: clamp(24px, 3vw, 30px);
+  font-weight: 700;
+  height: clamp(62px, 10vh, 88px);
+  transition:
+    background-color 120ms ease,
+    transform 80ms ease;
+}
+
+.keypad button:hover {
+  background: #27364d;
+}
+
+.keypad button:active {
+  transform: scale(0.97);
+}
+
+.keypad .key-soft {
+  color: var(--muted);
+  font-size: clamp(15px, 1.8vw, 18px);
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.primary,
+.secondary {
+  border-radius: 14px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 800;
+  padding: 15px 20px;
+}
+
+.primary {
+  background: var(--accent);
+  border: 0;
+  color: var(--accent-text);
+  margin-top: 6px;
+}
+
+.primary:hover {
+  background: var(--accent-dark);
+}
+
+.secondary {
+  align-self: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  margin-top: 8px;
+}
+
+.secondary:hover {
+  background: var(--surface-muted);
+}
+
+.setup {
+  text-align: left;
+}
+
+.setup h1,
+.setup .muted {
+  text-align: left;
+}
+
+.setup form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setup label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1.1px;
+  margin-top: 6px;
+  text-transform: uppercase;
+}
+
+.setup input {
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 16px;
+  padding: 14px 16px;
+  width: 100%;
+}
+
+.result {
+  align-items: center;
+  border-width: 2px;
+  gap: 16px;
+  padding: clamp(28px, 5vw, 48px);
+}
+
+.result.success {
+  border-color: rgba(34, 197, 94, 0.65);
+  box-shadow: 0 0 60px rgba(34, 197, 94, 0.12);
+}
+
+.result.denied {
+  border-color: rgba(248, 113, 113, 0.6);
+  box-shadow: 0 0 60px rgba(248, 113, 113, 0.1);
+}
+
+.result-mark {
+  align-items: center;
+  background: var(--accent);
+  border-radius: 50%;
+  color: var(--accent-text);
+  display: flex;
+  font-size: 46px;
+  font-weight: 900;
+  height: 96px;
+  justify-content: center;
+  width: 96px;
+}
+
+.result.denied .result-mark {
+  background: var(--danger);
+  color: #450a0a;
+}
+
+.result.success h1 {
+  color: var(--accent);
+}
+
+.result.denied h1 {
+  color: var(--danger);
+}
+
+.result-member {
+  font-size: clamp(22px, 3vw, 30px);
+  font-weight: 800;
+  margin: 0;
+}
+
+.footer {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.link {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px;
+  text-decoration: underline;
+}
+
+.link:hover {
+  color: var(--text);
+}
+
+@media (max-height: 620px) {
+  .panel {
+    gap: 8px;
+    padding: 18px;
+  }
+
+  .code {
+    margin: 0;
+  }
+
+  .keypad button {
+    height: 54px;
+  }
+
+  .brand-sub,
+  .footer span {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

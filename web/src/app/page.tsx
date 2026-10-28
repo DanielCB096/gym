@@ -26,6 +26,7 @@ import {
   LogOut,
   Menu,
   Minus,
+  MonitorSmartphone,
   MoreHorizontal,
   Package,
   Plus,
@@ -52,7 +53,7 @@ import {
 } from "lucide-react";
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
-type PageName = "Resumen" | "Accesos" | "Socios" | "Personal" | "Clases" | "Rutinas" | "Inventario" | "Mantenimiento" | "Facturación" | "Conciliación" | "Reportes";
+type PageName = "Resumen" | "Accesos" | "Socios" | "Personal" | "Clases" | "Rutinas" | "Inventario" | "Mantenimiento" | "Facturación" | "Conciliación" | "Reportes" | "Kiosco";
 type AccessState = "Autorizado" | "Denegado" | "Manual";
 
 type AccessEvent = {
@@ -264,6 +265,16 @@ type AccessDirectory = {
     manual: number;
   };
 };
+
+type KioskDevice = {
+  id: string;
+  label: string;
+  status: "active" | "revoked";
+  created_at: string;
+  last_seen_at: string | null;
+};
+
+type KioskDeviceCreated = KioskDevice & { token: string };
 
 type DashboardData = {
   as_of: string;
@@ -2559,6 +2570,7 @@ const requiredPermission: Record<PageName, string> = {
   Facturación: "billing.read",
   Conciliación: "finance.read",
   Reportes: "finance.read",
+  Kiosco: "settings.manage",
 };
 
 const roleLabels: Record<string, string> = {
@@ -2585,6 +2597,7 @@ const operationsNavigation: { label: PageName; icon: LucideIcon }[] = [
   { label: "Facturación", icon: Receipt },
   { label: "Conciliación", icon: Landmark },
   { label: "Reportes", icon: BarChart3 },
+  { label: "Kiosco", icon: MonitorSmartphone },
 ];
 
 const permissionRows = [
@@ -3113,6 +3126,7 @@ export default function HomePage() {
     Facturación: "Facturación electrónica",
     Conciliación: "Conciliación bancaria",
     Reportes: "Panel de analítica y reportes",
+    Kiosco: "Kiosco de recepción",
   };
 
   const hasPermission = (permission: string) => currentUser?.permissions.includes(permission) ?? false;
@@ -3280,6 +3294,7 @@ export default function HomePage() {
           {activePage === "Facturación" && <BillingView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Conciliación" && <ReconciliationView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Reportes" && <ReportsView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
+          {activePage === "Kiosco" && <KioskView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
         </div>
       </main>
 
@@ -3485,6 +3500,237 @@ function AccessView({ directory, loading, error, search, onSearch, filter, onFil
       </div>
       <footer className="page-footer"><span>Centro Fit · Control de accesos</span><span>BITÁCORA DEL BACKEND · AFORO Y HARDWARE NO CONECTADOS</span></footer>
     </>
+  );
+}
+
+function KioskView({ permissions, onUnauthorized, onToast }: { permissions: string[]; onUnauthorized: () => void; onToast: (message: string) => void }) {
+  const canManage = permissions.includes("settings.manage");
+  const [devices, setDevices] = useState<KioskDevice[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [newToken, setNewToken] = useState<string | null>(null);
+  const [createdLabel, setCreatedLabel] = useState("");
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+
+  const loadDevices = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/kiosk/devices", { cache: "no-store" });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as { items?: KioskDevice[]; detail?: string };
+      if (!response.ok) throw new Error(payload.detail || "No se pudieron cargar los kioscos.");
+      setDevices(payload.items ?? []);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "No se pudieron cargar los kioscos.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (canManage) {
+      void loadDevices();
+    }
+  }, []);
+
+  const createDevice = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const label = newLabel.trim();
+    if (!label || creating) return;
+    setCreating(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/kiosk/devices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
+      });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as KioskDeviceCreated & { detail?: string };
+      if (!response.ok) throw new Error(payload.detail || "No se pudo crear el kiosco.");
+      setDevices((current) => [payload, ...(current ?? [])]);
+      setNewToken(payload.token);
+      setCreatedLabel(payload.label);
+      setNewLabel("");
+      onToast(`Kiosco ${payload.label} creado. Copia el token ahora.`);
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "No se pudo crear el kiosco.");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const revokeDevice = async (device: KioskDevice) => {
+    if (!window.confirm(`¿Revocar «${device.label}»? Dejará de validar códigos hasta que configures uno nuevo.`)) {
+      return;
+    }
+    setRevokingId(device.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/kiosk/devices/${encodeURIComponent(device.id)}/revoke`, { method: "POST" });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as KioskDevice & { detail?: string };
+      if (!response.ok) throw new Error(payload.detail || "No se pudo revocar el kiosco.");
+      setDevices((current) => current?.map((item) => (item.id === device.id ? payload : item)) ?? current);
+      onToast(`Kiosco ${device.label} revocado.`);
+    } catch (revokeError) {
+      setError(revokeError instanceof Error ? revokeError.message : "No se pudo revocar el kiosco.");
+    } finally {
+      setRevokingId(null);
+    }
+  };
+
+  const copyToken = async () => {
+    if (!newToken) return;
+    try {
+      await navigator.clipboard.writeText(newToken);
+      onToast("Token copiado al portapapeles.");
+    } catch {
+      onToast("No se pudo copiar automáticamente; selecciona el token y cópialo.");
+    }
+  };
+
+  if (!canManage) {
+    return (
+      <section className="panel full-panel">
+        <p className="panel-hint">Solo el dueño puede administrar los kioscos de recepción.</p>
+      </section>
+    );
+  }
+
+  const activeCount = (devices ?? []).filter((device) => device.status === "active").length;
+
+  return (
+    <div className="kiosk-stack">
+      <section className="panel full-panel">
+        <div className="panel-header access-list-heading">
+          <div>
+            <p className="section-kicker">ACCESO EN RECEPCIÓN</p>
+            <h2>Kioscos autorizados</h2>
+          </div>
+          <span className="role-count">{activeCount}</span>
+        </div>
+        <p className="panel-hint">
+          Cada tablet de recepción valida el código de seis dígitos que muestra la app del socio.
+          El token se muestra una sola vez al crear el dispositivo; guárdalo en la pantalla de
+          configuración del kiosco y revócalo si el equipo se retira.
+        </p>
+        {error && <div className="login-error" role="alert">{error}</div>}
+        <form className="inline-form" onSubmit={createDevice}>
+          <label className="form-field inline-grow">
+            <span>Nombre del kiosco</span>
+            <input
+              value={newLabel}
+              onChange={(event) => setNewLabel(event.target.value)}
+              placeholder="Ej. Recepción principal"
+              maxLength={80}
+              required
+            />
+          </label>
+          <button type="submit" className="button button-primary" disabled={creating || !newLabel.trim()}>
+            <Plus size={16} />{creating ? "Creando…" : "Crear kiosco"}
+          </button>
+        </form>
+      </section>
+
+      {newToken && (
+        <section className="panel full-panel kiosk-token-panel" role="status">
+          <div className="panel-header">
+            <div>
+              <p className="section-kicker">TOKEN DE INSTALACIÓN</p>
+              <h2>Guárdalo ahora: no se vuelve a mostrar</h2>
+            </div>
+          </div>
+          <p className="panel-hint">
+            Captúralo en la pantalla de configuración del kiosco «{createdLabel}». Si lo pierdes,
+            revoca el dispositivo y crea otro.
+          </p>
+          <div className="kiosk-token-row">
+            <code className="kiosk-token">{newToken}</code>
+            <button type="button" className="button button-secondary" onClick={() => void copyToken()}>Copiar</button>
+            <button type="button" className="button button-secondary" onClick={() => setNewToken(null)}>Listo</button>
+          </div>
+        </section>
+      )}
+
+      <section className="panel full-panel">
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>KIOSCO</th>
+                <th>ESTADO</th>
+                <th>ALTA</th>
+                <th>ÚLTIMA ACTIVIDAD</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {loading && devices === null ? <tr><td colSpan={5} className="empty-row">Cargando kioscos…</td></tr>
+                : devices === null ? <tr><td colSpan={5} className="empty-row">No se pudieron cargar los kioscos.</td></tr>
+                : devices.length === 0 ? <tr><td colSpan={5} className="empty-row">Aún no hay kioscos registrados.</td></tr>
+                : devices.map((device) => {
+                  const busy = revokingId === device.id;
+                  return (
+                    <tr key={device.id}>
+                      <td>
+                        <div className="person-cell">
+                          <span className="pos-row-icon"><MonitorSmartphone size={15} /></span>
+                          <span>
+                            <strong>{device.label}</strong>
+                            <small>{device.id.slice(0, 8)}</small>
+                          </span>
+                        </div>
+                      </td>
+                      <td><StatusBadge state={device.status === "active" ? "Activo" : "Revocado"} /></td>
+                      <td className="time-cell">{formatSessionTime(device.created_at)}</td>
+                      <td className="time-cell">{device.last_seen_at ? formatSessionTime(device.last_seen_at) : "Sin uso"}</td>
+                      <td>
+                        {device.status === "active" && (
+                          <button type="button" className="button button-secondary" disabled={busy} onClick={() => void revokeDevice(device)}>
+                            {busy ? "Revocando…" : "Revocar"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        </div>
+        <div className="table-bottom">
+          <span>{(devices ?? []).length} {(devices ?? []).length === 1 ? "kiosco registrado" : "kioscos registrados"}</span>
+          <span>Token SHA-256 · intentos limitados por dispositivo</span>
+        </div>
+      </section>
+
+      <section className="panel full-panel">
+        <div className="panel-header">
+          <div>
+            <p className="section-kicker">CÓMO FUNCIONA</p>
+            <h2>Flujo de entrada del socio</h2>
+          </div>
+        </div>
+        <p className="panel-hint">
+          El socio abre «Acceso habilitado» en su app y muestra el código vigente. Recepción lo
+          captura en el kiosco: el sistema valida la membresía con el mismo motor de accesos y
+          registra la entrada o el motivo del rechazo en la bitácora. El código caduca a los cinco
+          minutos y solo se puede usar una vez.
+        </p>
+      </section>
+    </div>
   );
 }
 

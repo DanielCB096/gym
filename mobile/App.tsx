@@ -4,6 +4,7 @@ import { StatusBar } from "expo-status-bar";
 
 import { ApiError, getMemberProfile, getUnreadNotificationCount, logoutMember } from "./src/api";
 import { describeError } from "./src/errors";
+import { AccessCodeScreen } from "./src/screens/AccessCodeScreen";
 import { ClassesScreen } from "./src/screens/ClassesScreen";
 import { CodeScreen } from "./src/screens/CodeScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
@@ -24,6 +25,7 @@ type Stage =
   | "email"
   | "code"
   | "home"
+  | "accessCode"
   | "classes"
   | "routines"
   | "routineDetail"
@@ -181,6 +183,10 @@ export default function App() {
     setStage("classes");
   }
 
+  function handleOpenAccessCode() {
+    setStage("accessCode");
+  }
+
   function handleOpenRoutines() {
     setStage("routines");
   }
@@ -255,12 +261,20 @@ export default function App() {
             error={homeError}
             onRefresh={handleRefresh}
             onLogout={handleLogout}
+            onOpenAccessCode={handleOpenAccessCode}
             onOpenClasses={handleOpenClasses}
             onOpenRoutines={handleOpenRoutines}
             onOpenPayments={handleOpenPayments}
             onOpenInvoices={handleOpenInvoices}
             unreadNotifications={unreadNotifications}
             onOpenNotifications={handleOpenNotifications}
+          />
+        ) : null}
+        {stage === "accessCode" && token ? (
+          <AccessCodeScreen
+            token={token}
+            onBack={() => setStage("home")}
+            onSessionExpired={() => void handleSessionExpired()}
           />
         ) : null}
         {stage === "classes" && token ? (

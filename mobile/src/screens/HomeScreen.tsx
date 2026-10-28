@@ -25,6 +25,7 @@ type Props = {
   unreadNotifications: number;
   onRefresh: () => void;
   onLogout: () => void;
+  onOpenAccessCode: () => void;
   onOpenClasses: () => void;
   onOpenRoutines: () => void;
   onOpenPayments: () => void;
@@ -40,6 +41,7 @@ export function HomeScreen({
   unreadNotifications,
   onRefresh,
   onLogout,
+  onOpenAccessCode,
   onOpenClasses,
   onOpenRoutines,
   onOpenPayments,
@@ -90,11 +92,21 @@ export function HomeScreen({
             </View>
           ) : null}
 
-          <View
-            style={[
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              profile.access_enabled
+                ? "Ver mi código de acceso"
+                : "Acceso no disponible"
+            }
+            accessibilityState={{ disabled: !profile.access_enabled }}
+            disabled={!profile.access_enabled}
+            onPress={onOpenAccessCode}
+            style={({ pressed }) => [
               sharedStyles.card,
               styles.accessCard,
               profile.access_enabled ? styles.accessOn : styles.accessOff,
+              pressed && styles.navCardPressed,
             ]}
           >
             <View style={styles.accessRow}>
@@ -114,10 +126,13 @@ export function HomeScreen({
             </View>
             <Text style={sharedStyles.body}>
               {profile.access_enabled
-                ? "Tu membresía está vigente. Preséntate en recepción para registrar tu entrada."
+                ? "Muestra tu código en recepción para registrar tu entrada."
                 : "Tu membresía no está activa o está vencida. Pasa a recepción para regularizarla."}
             </Text>
-          </View>
+            {profile.access_enabled ? (
+              <Text style={styles.accessAction}>Ver mi código →</Text>
+            ) : null}
+          </Pressable>
 
           <Pressable
             accessibilityRole="button"
@@ -399,6 +414,11 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 17,
     fontWeight: "800",
+  },
+  accessAction: {
+    color: colors.accent,
+    fontSize: 15,
+    fontWeight: "700",
   },
   navCard: {
     alignItems: "center",

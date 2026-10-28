@@ -885,6 +885,12 @@ th.sortable-header .sort-indicator { font-size: 8px; color: #23509a; }
 .reconciliation-file-button { cursor: pointer; }
 .reconciliation-import-sample { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 8px; }
 
+.kiosk-stack { display: grid; gap: 14px; }
+.kiosk-stack > .panel { padding-bottom: 14px; }
+.kiosk-token-panel { border-color: #d7e6c8; background: #f8fcf4; }
+.kiosk-token-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.kiosk-token { flex: 1 1 260px; padding: 10px 12px; border: 1px dashed #c9d8b8; border-radius: 5px; background: #fff; color: #2d4a24; font: 600 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; user-select: all; }
+
 @media (max-width: 650px) {
   .photo-grid { grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); }
   .photo-viewer { padding: 12px; }

@@ -30,6 +30,21 @@ Este módulo cubre el control de acceso al gimnasio, validación de membresía, 
 
 ## 3. Flujos de usuario paso a paso
 
+### Flujo implementado: código rotativo en el kiosco
+1. El socio abre «Acceso habilitado» en la app y pulsa «Ver mi código».
+2. La app pide `POST /member/access/code`; el backend exige socio activo y membresía vigente y devuelve un código de seis dígitos con cinco minutos de vida. Emitir otro invalida el anterior.
+3. El socio dicta o muestra el código en recepción; la tablet del kiosco lo captura en el teclado numérico.
+4. El kiosco envía `POST /kiosk/check-in` con `X-Kiosk-Token` y el código. El backend autentica el dispositivo, consume el código de forma atómica y evalúa la membresía con el motor de acceso.
+5. La pantalla muestra «Acceso concedido» con el nombre abreviado o el motivo del rechazo («Código inválido o vencido.», «Membresía vencida. Pasa a recepción.» o «Demasiados intentos. Espera un momento.»).
+6. La decisión queda en `access_events` con origen `reader` y lector «Kiosco <etiqueta>», y aparece en la bitácora del panel. Un código usado no se puede repetir.
+
+### Flujo implementado: alta de un kiosco
+1. El dueño entra al panel con `settings.manage` y abre «Kiosco».
+2. Captura el nombre del dispositivo («Recepción») y lo crea.
+3. El panel muestra el token **una sola vez**; se copia a la pantalla de configuración del kiosco junto con la URL del backend.
+4. El kiosco prueba la conexión con `/health` y guarda `{apiUrl, token, label}` en el navegador.
+5. Si la tablet se retira o se compromete, el panel revoca el dispositivo; el siguiente check-in responde `401`, el kiosco borra el token y vuelve a configuración.
+
 ### Flujo principal: acceso válido
 1. El socio se acerca al lector.
 2. El sistema intenta identificar la credencial: QR, huella o tarjeta RFID.
@@ -62,33 +77,44 @@ Este módulo cubre el control de acceso al gimnasio, validación de membresía, 
 ### 1. Kiosco de recepción y acceso
 - Nombre: Entrada rápida de socio
 - Objetivo: validar acceso en menos de 1 segundo
-- Componentes:
+- Componentes (implementado el código rotativo, PWA en `kiosk/`):
+  - teclado numérico de seis dígitos para el código que muestra la app del socio
+  - pantalla de resultado con «Acceso concedido» o el motivo del rechazo y el nombre abreviado del socio
+  - configuración del dispositivo (dirección del backend y token de kiosco) con prueba de conexión
+  - indicador de conexión online/offline y reloj local
+  - botón «Siguiente socio» y reinicio automático del teclado
+- Componentes del diseño todavía pendientes:
   - barra de búsqueda por nombre, teléfono o ID
   - botón de escaneo QR
   - input para acceso manual
   - estado del aforo actual
-  - indicador de conexión online/offline
 - Estados: vacío, cargando, éxito, error, sin internet, acceso denegado
 
 ### 2. Panel web administrativo
 - Nombre: Control de acceso y aforo
 - Objetivo: monitorear entradas, salidas y alertas en tiempo real
-- Componentes:
-  - tablero con accesos del día
-  - filtros por horario, lector, status, plan o afiliación
-  - tabla de accesos denegados
+- Componentes (implementado):
+  - tablero con accesos del día y bitácora con filtros por estado y búsqueda
+  - acceso manual con motivo
+  - página «Kiosco» con los dispositivos autorizados, alta con token de una sola vista y revocación
+- Componentes del diseño todavía pendientes:
+  - filtros por horario, lector, plan o afiliación
+  - tabla específica de accesos denegados
   - lista de lectores conectados y estado del hardware
-  - opción de apertura manual del torniquete para permisos autorizados
+  - apertura manual del torniquete para permisos autorizados
 - Estados: normal, modo degradado, lector fuera de línea, aforo máximo
 
 ### 3. Móvil del socio
-- Nombre: Mi acceso
-- Objetivo: mostrar historial reciente, vigencia y estado de acceso
-- Componentes:
-  - tarjeta con membresía vigente/inactiva
-  - resumen de última entrada/salida
+- Nombre: Mi código de acceso
+- Objetivo: mostrar un código vigente para entrar al club y el estado de la membresía
+- Componentes (implementado):
+  - tarjeta «Acceso habilitado» que abre la pantalla del código y se deshabilita sin membresía
+  - código de seis dígitos agrupado (`397 969`) con cuenta regresiva de cinco minutos
+  - botón para generar otro código al vencer y mensaje de qué hacer en recepción
+- Componentes del diseño todavía pendientes:
+  - historial reciente de entradas y salidas
   - aviso de bloqueo por adeudo o congelamiento
-  - botón de ayuda si el QR no funciona
+  - botón de ayuda si el código no funciona
 
 ### 4. Bitácora de acceso
 - Nombre: Historial de accesos
@@ -193,14 +219,21 @@ Este módulo cubre el control de acceso al gimnasio, validación de membresía, 
 
 ## 13. Estado
 
-Diseño funcional / implementación inicial del motor offline
+Implementación inicial del motor offline y del kiosco de recepción con código rotativo
 
 ## 14. Historial de cambios
 
 - 2026-10-15: documento ampliado con flujos, pantallas, reglas,.hardware, métricas y criterios de aceptación.
+- 2026-10-28: se implementa el código rotativo en la app del socio, el endpoint del kiosco, la PWA de recepción y la administración de dispositivos en el panel (ADR-024).
 
 ## 15. Implementación actual y límites
 
+- El kiosco de recepción es una PWA estática en `kiosk/` que captura el código de seis dígitos, lo valida con `POST /kiosk/check-in` mediante un token de dispositivo y muestra el resultado en pantalla.
+- El código se emite desde la app (`POST /member/access/code`), dura cinco minutos, es de un solo uso, se guarda como HMAC-SHA256 y emitir otro invalida el anterior. Hay 6 emisiones por socio cada 10 minutos y 10 intentos por kiosco cada minuto; los intentos inválidos quedan en `kiosk_attempts` sin guardar el código.
+- Los dispositivos se administran desde el panel con `settings.manage`: alta con token de una sola vista y revocación inmediata. El token se guarda como SHA-256 y la tableta lo conserva en `localStorage`.
+- El kiosco reutiliza `evaluate_access` y escribe la decisión en `access_events` con origen `reader`; la bitácora del panel ya muestra lector «Kiosco <etiqueta>».
+- El snapshot del kiosco solo aporta estado y fechas de la membresía: no consulta adeudo, horario, límite diario ni antipassback, y envía ocupación 0. Un socio moroso o fuera de horario entra si su membresía está vigente.
+- No hay hardware conectado: el kiosco no abre torniquete ni registra salidas. Tampoco hay validación offline (el service worker solo cachea el shell) ni rotación o caducidad del token del dispositivo.
 - El motor valida estado/vigencia de membresía, adeudo bloqueante, horario local, límite diario, antipassback y aforo.
 - El snapshot y el outbox son persistentes en SQLite local; cada decisión usa `event_id` idempotente y queda pendiente hasta recibir confirmación de sincronización.
 - Una salida se permite aunque no exista snapshot de membresía, para no impedir el egreso por una membresía vencida o una caché faltante.

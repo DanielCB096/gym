@@ -1,0 +1,394 @@
+from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+from uuid import UUID
+
+from fastapi.testclient import TestClient
+from sqlalchemy import event
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine, select
+
+from app.main import app, get_session
+from app.modules.access.kiosk import (
+    ACCESS_CODE_MAX_REQUESTS,
+    InvalidAccessCode,
+    check_in_with_code,
+    create_kiosk_device,
+    issue_member_access_code,
+)
+from app.modules.access.models import KioskAttempt, KioskDevice
+from app.modules.identity.service import ensure_default_access_control, register_user
+from app.modules.memberships.models import Member, Membership, Plan
+
+
+def _build_engine():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(connection, _: object) -> None:
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    return engine
+
+
+def _seed(session: Session) -> dict[str, UUID]:
+    ensure_default_access_control(session)
+    register_user(
+        session,
+        email="owner@example.com",
+        password="owner-strong-password",
+        role_codes=("owner",),
+    )
+    register_user(
+        session,
+        email="reception@example.com",
+        password="reception-strong-password",
+        role_codes=("reception",),
+    )
+    now = datetime.now(timezone.utc)
+    plan = Plan(code="MONTHLY", name="Mensual", duration_days=30, price_cents=50000)
+    ana = Member(first_name="Ana", last_name="Lopez", email="ana@example.com", status="active")
+    beto = Member(first_name="Beto", last_name="Ruiz", email="beto@example.com", status="active")
+    lapsed = Member(first_name="Carla", last_name="Soto", email="carla@example.com", status="active")
+    session.add_all([plan, ana, beto, lapsed])
+    session.flush()
+    session.add_all(
+        [
+            Membership(
+                member_id=ana.id,
+                plan_id=plan.id,
+                status="active",
+                starts_at=now - timedelta(days=10),
+                ends_at=now + timedelta(days=20),
+            ),
+            Membership(
+                member_id=beto.id,
+                plan_id=plan.id,
+                status="active",
+                starts_at=now - timedelta(days=40),
+                ends_at=now - timedelta(days=1),
+            ),
+            Membership(
+                member_id=lapsed.id,
+                plan_id=plan.id,
+                status="active",
+                starts_at=now + timedelta(days=5),
+                ends_at=now + timedelta(days=35),
+            ),
+        ]
+    )
+    session.commit()
+    return {"ana": ana.id, "beto": beto.id, "carla": lapsed.id}
+
+
+def _login_staff(client: TestClient, email: str, password: str) -> dict[str, str]:
+    response = client.post("/auth/login", json={"email": email, "password": password})
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+def _login_member(client: TestClient, email: str) -> dict[str, str]:
+    requested = client.post("/member/auth/request-code", json={"email": email})
+    assert requested.status_code == 202, requested.text
+    verified = client.post(
+        "/member/auth/verify",
+        json={"email": email, "code": requested.json()["preview_code"]},
+    )
+    assert verified.status_code == 200, verified.text
+    return {"Authorization": f"Bearer {verified.json()['access_token']}"}
+
+
+def _create_device(client: TestClient, headers: dict[str, str], label: str = "Recepción"):
+    response = client.post("/admin/kiosk/devices", headers=headers, json={"label": label})
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _wrong_code(valid: str, index: int) -> str:
+    candidate = f"{(index + 1) % 1_000_000:06d}"
+    return candidate if candidate != valid else f"{(index + 500_000) % 1_000_000:06d}"
+
+
+def test_kiosk_device_provisioning_and_code_check_in(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed(session)
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            assert client.get("/admin/kiosk/devices").status_code == 401
+
+            owner = _login_staff(client, "owner@example.com", "owner-strong-password")
+            reception = _login_staff(client, "reception@example.com", "reception-strong-password")
+
+            assert client.get("/admin/kiosk/devices", headers=reception).status_code == 403
+            empty = client.get("/admin/kiosk/devices", headers=owner)
+            assert empty.status_code == 200
+            assert empty.json() == {"items": []}
+
+            assert client.post(
+                "/admin/kiosk/devices", headers=owner, json={"label": ""}
+            ).status_code == 422
+            assert client.post(
+                "/admin/kiosk/devices", headers=owner, json={"label": "   "}
+            ).status_code == 422
+            assert client.post(
+                "/admin/kiosk/devices", headers=reception, json={"label": "Recepción"}
+            ).status_code == 403
+
+            device = _create_device(client, owner)
+            token = device["token"]
+            assert device["status"] == "active"
+            assert device["last_seen_at"] is None
+            assert len(token) >= 32
+            assert "token" not in client.get("/admin/kiosk/devices", headers=owner).json()["items"][0]
+
+            with Session(engine) as session:
+                stored = session.exec(select(KioskDevice)).one()
+                assert stored.token_sha256 == sha256(token.encode("utf-8")).hexdigest()
+                assert stored.token_sha256 != token
+
+            member_headers = _login_member(client, "ana@example.com")
+            first = client.post("/member/access/code", headers=member_headers)
+            assert first.status_code == 201, first.text
+            first_body = first.json()
+            assert len(first_body["code"]) == 6 and first_body["code"].isdigit()
+            assert first_body["expires_in_seconds"] == 300
+            expires_at = datetime.fromisoformat(first_body["expires_at"])
+            assert expires_at > datetime.now(timezone.utc) + timedelta(minutes=4)
+
+            second = client.post("/member/access/code", headers=member_headers)
+            assert second.status_code == 201
+            code = second.json()["code"]
+
+            kiosk_headers = {"X-Kiosk-Token": token}
+            assert client.post("/kiosk/check-in", json={"code": code}).status_code == 401
+            assert client.post(
+                "/kiosk/check-in",
+                headers={"X-Kiosk-Token": "not-a-token"},
+                json={"code": code},
+            ).status_code == 401
+
+            superseded = client.post(
+                "/kiosk/check-in", headers=kiosk_headers, json={"code": first_body["code"]}
+            )
+            assert superseded.status_code == 400
+
+            granted = client.post(
+                "/kiosk/check-in", headers=kiosk_headers, json={"code": code}
+            )
+            assert granted.status_code == 200, granted.text
+            granted_body = granted.json()
+            assert granted_body["authorized"] is True
+            assert granted_body["reason"] == "entry_allowed"
+            assert granted_body["message"] == "Acceso concedido"
+            assert granted_body["member_name"] == "Ana L."
+            assert granted_body["reader_id"] == "Kiosco Recepción"
+            UUID(granted_body["event_id"])
+
+            assert client.post(
+                "/kiosk/check-in", headers=kiosk_headers, json={"code": code}
+            ).status_code == 400
+            assert client.post(
+                "/kiosk/check-in", headers=kiosk_headers, json={"code": "12ab"}
+            ).status_code == 400
+
+            events = client.get("/admin/access-events", headers=owner).json()
+            assert events["total"] == 1
+            event = events["items"][0]
+            assert event["authorized"] is True
+            assert event["source"] == "reader"
+            assert event["reader_id"] == "Kiosco Recepción"
+            assert event["member_name"] == "Ana Lopez"
+
+            revoked = client.post(
+                f"/admin/kiosk/devices/{device['id']}/revoke",
+                headers=owner,
+            )
+            assert revoked.status_code == 200
+            assert revoked.json()["status"] == "revoked"
+
+            refreshed = client.post("/member/access/code", headers=member_headers)
+            assert refreshed.status_code == 201
+            assert client.post(
+                "/kiosk/check-in",
+                headers=kiosk_headers,
+                json={"code": refreshed.json()["code"]},
+            ).status_code == 401
+
+            assert client.post(
+                f"/admin/kiosk/devices/{device['id']}/revoke",
+                headers=reception,
+            ).status_code == 403
+            assert client.post(
+                "/admin/kiosk/devices/00000000-0000-0000-0000-000000000000/revoke",
+                headers=owner,
+            ).status_code == 404
+
+            listed = client.get("/admin/kiosk/devices", headers=owner).json()["items"]
+            assert len(listed) == 1
+            assert listed[0]["status"] == "revoked"
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
+def test_kiosk_denies_without_current_membership(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            owner = _login_staff(client, "owner@example.com", "owner-strong-password")
+            device = _create_device(client, owner)
+            kiosk_headers = {"X-Kiosk-Token": device["token"]}
+
+            for email in ("beto@example.com", "carla@example.com"):
+                member_headers = _login_member(client, email)
+                rejected = client.post("/member/access/code", headers=member_headers)
+                assert rejected.status_code == 409
+                assert "membresía no está activa" in rejected.json()["detail"]
+
+            ana_headers = _login_member(client, "ana@example.com")
+            issued = client.post("/member/access/code", headers=ana_headers)
+            assert issued.status_code == 201
+            code = issued.json()["code"]
+
+            with Session(engine) as session:
+                membership = session.exec(
+                    select(Membership).where(Membership.member_id == ids["ana"])
+                ).one()
+                membership.ends_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+                session.add(membership)
+                session.commit()
+
+            denied = client.post(
+                "/kiosk/check-in", headers=kiosk_headers, json={"code": code}
+            )
+            assert denied.status_code == 200, denied.text
+            body = denied.json()
+            assert body["authorized"] is False
+            assert body["reason"] == "membership_expired"
+            assert body["message"] == "Membresía vencida. Pasa a recepción."
+
+            second_try = client.post(
+                "/kiosk/check-in", headers=kiosk_headers, json={"code": code}
+            )
+            assert second_try.status_code == 400
+
+            events = client.get("/admin/access-events", headers=owner).json()
+            assert events["total"] == 1
+            assert events["items"][0]["authorized"] is False
+            assert events["items"][0]["reason"] == "membership_expired"
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
+def test_kiosk_rate_limits_codes_and_attempts(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed(session)
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            owner = _login_staff(client, "owner@example.com", "owner-strong-password")
+            device = _create_device(client, owner)
+            other_device = _create_device(client, owner, label="Recepción 2")
+            member_headers = _login_member(client, "ana@example.com")
+
+            code = None
+            for _ in range(ACCESS_CODE_MAX_REQUESTS):
+                issued = client.post("/member/access/code", headers=member_headers)
+                assert issued.status_code == 201, issued.text
+                code = issued.json()["code"]
+
+            limited = client.post("/member/access/code", headers=member_headers)
+            assert limited.status_code == 429
+            assert "Espera unos minutos" in limited.json()["detail"]
+
+            kiosk_headers = {"X-Kiosk-Token": device["token"]}
+            for index in range(10):
+                wrong = client.post(
+                    "/kiosk/check-in",
+                    headers=kiosk_headers,
+                    json={"code": _wrong_code(code, index)},
+                )
+                assert wrong.status_code == 400, wrong.text
+
+            blocked = client.post(
+                "/kiosk/check-in", headers=kiosk_headers, json={"code": code}
+            )
+            assert blocked.status_code == 429
+            assert "Demasiados intentos" in blocked.json()["detail"]
+
+            with Session(engine) as session:
+                attempts = session.exec(select(KioskAttempt)).all()
+                assert len(attempts) == 10
+                assert {attempt.result for attempt in attempts} == {"invalid"}
+
+            other_headers = {"X-Kiosk-Token": other_device["token"]}
+            granted = client.post(
+                "/kiosk/check-in", headers=other_headers, json={"code": code}
+            )
+            assert granted.status_code == 200, granted.text
+            assert granted.json()["authorized"] is True
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
+def test_access_code_expires_five_minutes_after_issue(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-kiosk-access-secret")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+        device, _ = create_kiosk_device(session, label="Tablet")
+        now = datetime.now(timezone.utc)
+
+        first = issue_member_access_code(session, ids["ana"], now=now)
+        granted = check_in_with_code(
+            session, device=device, code=first.code, now=now + timedelta(minutes=1)
+        )
+        assert granted.authorized is True
+
+        second = issue_member_access_code(session, ids["ana"], now=now + timedelta(minutes=2))
+        assert second.expires_at == now + timedelta(minutes=7)
+        try:
+            check_in_with_code(
+                session, device=device, code=second.code, now=now + timedelta(minutes=7)
+            )
+        except InvalidAccessCode:
+            pass
+        else:
+            raise AssertionError("An expired code must be rejected")
+    engine.dispose()

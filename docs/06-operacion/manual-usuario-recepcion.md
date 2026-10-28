@@ -12,6 +12,18 @@ Instruir a la recepción en alta de socios, cobro, acceso y atención básica.
 - atención de corte de caja
 - acceso manual con bitácora
 
+## Entrada con código y kiosco
+
+1. Pide al socio que abra «Acceso habilitado» en la app y pulse «Ver mi código»; verá seis dígitos y una cuenta regresiva de cinco minutos.
+2. Captura el código en la tablet de recepción con el teclado numérico o el teclado físico; la validación es automática al sexto dígito.
+3. La pantalla muestra «Acceso concedido» con el nombre del socio o «Acceso denegado» con el motivo:
+   - «Código inválido o vencido.»: pide un código nuevo desde la app; cada código sirve una sola vez.
+   - «Membresía vencida. Pasa a recepción.»: cobra la renovación antes de permitir la entrada.
+   - «Demasiados intentos. Espera un momento.»: el kiosco alcanzó su límite; espera un minuto o usa otra tablet.
+4. Pulsa «Siguiente socio» o espera el reinicio automático de la pantalla.
+5. Si la tablet muestra la pantalla de configuración con «El token del kiosco no es válido o fue revocado», avisa a quien administre el panel: hay que crear o revocar el dispositivo en **Kiosco** y capturar el token nuevo. No compartas el token por mensajería ni lo dejes a la vista del público.
+6. La entrada queda en la bitácora del panel con el lector «Kiosco <nombre>». Para una excepción, usa «Acceso manual» con su motivo; el kiosco no permite saltarse la validación.
+
 ## Reglas de seguridad
 
 - no se debe registrar tarjeta completa

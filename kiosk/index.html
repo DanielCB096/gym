@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0B1220" />
+    <meta name="description" content="Kiosco de recepción de Centro Fit: valida el código de acceso del socio." />
+    <title>Kiosco de recepción · Centro Fit</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <div>
+          <p class="brand-name">CENTRO FIT</p>
+          <p class="brand-sub" id="device-label">Kiosco de recepción</p>
+        </div>
+      </div>
+      <div class="status">
+        <span class="status-dot" id="network-dot" aria-hidden="true"></span>
+        <span id="network-label">En línea</span>
+        <time id="clock" class="clock">--:--</time>
+      </div>
+    </header>
+
+    <main>
+      <section id="setup-view" class="panel setup" hidden>
+        <h1>Configura este kiosco</h1>
+        <p class="muted">
+          Captura la dirección del servidor y el token del dispositivo que se muestra una
+          sola vez al crearlo en el panel.
+        </p>
+        <form id="setup-form" novalidate>
+          <label for="api-url">Dirección del servidor</label>
+          <input
+            id="api-url"
+            name="apiUrl"
+            type="url"
+            inputmode="url"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="http://127.0.0.1:8000"
+            required
+          />
+          <label for="device-token">Token del kiosco</label>
+          <input
+            id="device-token"
+            name="token"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Token generado en el panel"
+            required
+          />
+          <p id="setup-error" class="error" role="alert" hidden></p>
+          <button type="submit" class="primary">Guardar y probar conexión</button>
+        </form>
+        <p class="hint">
+          Este equipo debe ser propiedad del gimnasio. El token se guarda solo en este
+          navegador y debe revocarse si el kiosco se retira.
+        </p>
+      </section>
+
+      <section id="keypad-view" class="panel" hidden>
+        <h1>Ingresa tu código</h1>
+        <p class="muted">Escríbelo o pídelo en la tablet de recepción.</p>
+        <output id="code-display" class="code" aria-live="polite" aria-label="Código capturado">
+          <span class="slot"></span>
+          <span class="slot"></span>
+          <span class="slot"></span>
+          <span class="slot"></span>
+          <span class="slot"></span>
+          <span class="slot"></span>
+        </output>
+        <div class="keypad" aria-label="Teclado numérico">
+          <button type="button" data-key="1">1</button>
+          <button type="button" data-key="2">2</button>
+          <button type="button" data-key="3">3</button>
+          <button type="button" data-key="4">4</button>
+          <button type="button" data-key="5">5</button>
+          <button type="button" data-key="6">6</button>
+          <button type="button" data-key="7">7</button>
+          <button type="button" data-key="8">8</button>
+          <button type="button" data-key="9">9</button>
+          <button type="button" data-action="clear" class="key-soft">Limpiar</button>
+          <button type="button" data-key="0">0</button>
+          <button type="button" data-action="back" class="key-soft" aria-label="Borrar el último dígito">
+            ⌫
+          </button>
+        </div>
+        <p id="keypad-message" class="muted small" role="status"></p>
+      </section>
+
+      <section id="result-view" class="panel result" hidden aria-live="assertive">
+        <div id="result-mark" class="result-mark" aria-hidden="true">✓</div>
+        <h1 id="result-title">Acceso concedido</h1>
+        <p id="result-member" class="result-member"></p>
+        <p id="result-message" class="muted"></p>
+        <button type="button" id="result-close" class="secondary">
+          Siguiente socio
+        </button>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Acceso validado con la membresía vigente del club.</span>
+      <button type="button" id="open-setup" class="link">Configurar kiosco</button>
+    </footer>
+  </body>
+</html>

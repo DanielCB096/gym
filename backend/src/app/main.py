@@ -9,7 +9,7 @@ import os
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -24,6 +24,22 @@ from app.modules.access.models import (
     AccessRequest,
     AccessSnapshot,
     AccessWindow,
+)
+from app.modules.access.kiosk import (
+    AccessCodeRateLimited,
+    InvalidAccessCode,
+    InvalidKioskLabel,
+    InvalidKioskToken,
+    KioskDevice,
+    KioskDeviceNotFound,
+    KioskRateLimited,
+    MemberAccessUnavailable,
+    authenticate_kiosk_device,
+    check_in_with_code,
+    create_kiosk_device,
+    issue_member_access_code,
+    list_kiosk_devices,
+    revoke_kiosk_device,
 )
 from app.modules.access.offline_store import SQLiteAccessStore
 from app.modules.access.service import (
@@ -2652,6 +2668,46 @@ class ManualAccessRequest(BaseModel):
     reader_id: str = Field(default="Recepción", min_length=1, max_length=80)
 
 
+class MemberAccessCodeResponse(BaseModel):
+    code: str
+    expires_at: datetime
+    expires_in_seconds: int
+
+
+class KioskDeviceResponse(BaseModel):
+    id: UUID
+    label: str
+    status: str
+    created_at: datetime
+    last_seen_at: datetime | None
+
+
+class KioskDeviceDirectoryResponse(BaseModel):
+    items: list[KioskDeviceResponse]
+
+
+class KioskDeviceCreatedResponse(KioskDeviceResponse):
+    token: str
+
+
+class KioskDeviceCreateRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=80)
+
+
+class KioskCheckInRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=12)
+
+
+class KioskCheckInResponse(BaseModel):
+    authorized: bool
+    reason: str
+    message: str
+    member_name: str | None
+    reader_id: str
+    occurred_at: datetime
+    event_id: UUID
+
+
 class DashboardMembersResponse(BaseModel):
     total: int
     active: int
@@ -2737,6 +2793,36 @@ def get_current_member(
         ) from error
 
 
+def get_kiosk_device(
+    session: SessionDependency,
+    x_kiosk_token: Annotated[str | None, Header(alias="X-Kiosk-Token")] = None,
+) -> KioskDevice:
+    if not x_kiosk_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Kiosk token required",
+            headers={"WWW-Authenticate": "Kiosk"},
+        )
+    try:
+        return authenticate_kiosk_device(session, x_kiosk_token)
+    except InvalidKioskToken as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Kiosk is not authorized",
+            headers={"WWW-Authenticate": "Kiosk"},
+        ) from error
+
+
+def _kiosk_device_response(device: KioskDevice) -> KioskDeviceResponse:
+    return KioskDeviceResponse(
+        id=device.id,
+        label=device.label,
+        status=device.status,
+        created_at=device.created_at,
+        last_seen_at=device.last_seen_at,
+    )
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if PREVIEW_MODE:
@@ -2766,7 +2852,7 @@ if CORS_ORIGINS:
         allow_origins=list(CORS_ORIGINS),
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", "X-Kiosk-Token"],
     )
 
 
@@ -2871,6 +2957,31 @@ def member_logout(
     session: SessionDependency,
 ) -> None:
     revoke_member_session(session, member)
+
+
+@app.post(
+    "/member/access/code",
+    response_model=MemberAccessCodeResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["member self-service"],
+)
+def member_access_code(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberAccessCodeResponse:
+    try:
+        result = issue_member_access_code(session, member.member_id)
+    except MemberAccessUnavailable as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except AccessCodeRateLimited as error:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(error)
+        ) from error
+    return MemberAccessCodeResponse(
+        code=result.code,
+        expires_at=result.expires_at,
+        expires_in_seconds=result.expires_in_seconds,
+    )
 
 
 @app.get(
@@ -4212,6 +4323,87 @@ def create_manual_access(
         occurred_at=item.occurred_at,
         offline=item.offline,
     )
+
+
+@app.post("/kiosk/check-in", response_model=KioskCheckInResponse, tags=["kiosk"])
+def kiosk_check_in(
+    request: KioskCheckInRequest,
+    device: Annotated[KioskDevice, Depends(get_kiosk_device)],
+    session: SessionDependency,
+) -> KioskCheckInResponse:
+    try:
+        result = check_in_with_code(session, device=device, code=request.code)
+    except KioskRateLimited as error:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(error)
+        ) from error
+    except InvalidAccessCode as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+        ) from error
+    return KioskCheckInResponse(
+        authorized=result.authorized,
+        reason=result.reason,
+        message=result.message,
+        member_name=result.member_name,
+        reader_id=result.reader_id,
+        occurred_at=result.occurred_at,
+        event_id=result.event_id,
+    )
+
+
+@app.get(
+    "/admin/kiosk/devices",
+    response_model=KioskDeviceDirectoryResponse,
+    tags=["access administration"],
+)
+def list_kiosk_devices_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("settings.manage"))],
+) -> KioskDeviceDirectoryResponse:
+    return KioskDeviceDirectoryResponse(
+        items=[_kiosk_device_response(device) for device in list_kiosk_devices(session)]
+    )
+
+
+@app.post(
+    "/admin/kiosk/devices",
+    response_model=KioskDeviceCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["access administration"],
+)
+def create_kiosk_device_endpoint(
+    request: KioskDeviceCreateRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("settings.manage"))],
+) -> KioskDeviceCreatedResponse:
+    try:
+        device, token = create_kiosk_device(
+            session, label=request.label, created_by=principal.user_id
+        )
+    except InvalidKioskLabel as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    response = _kiosk_device_response(device)
+    return KioskDeviceCreatedResponse(**response.model_dump(), token=token)
+
+
+@app.post(
+    "/admin/kiosk/devices/{device_id}/revoke",
+    response_model=KioskDeviceResponse,
+    tags=["access administration"],
+)
+def revoke_kiosk_device_endpoint(
+    device_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("settings.manage"))],
+) -> KioskDeviceResponse:
+    try:
+        device = revoke_kiosk_device(session, device_id)
+    except KioskDeviceNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return _kiosk_device_response(device)
 
 
 @app.get("/admin/dashboard", response_model=DashboardResponse, tags=["dashboard"])

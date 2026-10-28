@@ -41,6 +41,12 @@ export type CodeRequestResult = {
   preview_code: string | null;
 };
 
+export type MemberAccessCode = {
+  code: string;
+  expires_at: string;
+  expires_in_seconds: number;
+};
+
 export type MemberClassReservation = {
   id: string;
   session_id: string;

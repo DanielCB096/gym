@@ -1,6 +1,6 @@
 # App móvil del socio
 
-Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, la **carga y consulta de fotos de progreso con consentimiento**, los **pagos y el estado de cuenta** (solo lectura), las **facturas del socio** con descarga de PDF y XML y **solicitud de factura** de sus propias compras y cobros, y la **bandeja de avisos del gimnasio**; no incluye todavía pago en línea.
+Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, el **código rotativo de entrada al club**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, la **carga y consulta de fotos de progreso con consentimiento**, los **pagos y el estado de cuenta** (solo lectura), las **facturas del socio** con descarga de PDF y XML y **solicitud de factura** de sus propias compras y cobros, y la **bandeja de avisos del gimnasio**; no incluye todavía pago en línea.
 
 ## Alcance implementado
 
@@ -8,13 +8,19 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
 - Sesión de 30 días guardada en `expo-secure-store` (en web no se persiste).
 - Pantalla de inicio con:
   - saludo y datos de contacto del socio;
-  - estado de acceso (`Acceso habilitado` o el motivo por el que no lo está);
+  - estado de acceso (`Acceso habilitado` o el motivo por el que no lo está) como botón que abre el código de entrada; sin acceso la tarjeta se deshabilita;
   - plan, estado de la membresía, periodo y días restantes;
   - saldo de la cuenta del socio;
   - fecha de alta y estado del socio;
   - tarjeta «Avisos del gimnasio» con la insignia de avisos sin leer (tope visible `99+`);
   - tarjeta «Facturas» para consultar y descargar los comprobantes fiscales;
   - actualización manual y cierre de sesión.
+- Pantalla del código de entrada (se abre desde la tarjeta «Acceso habilitado») con:
+  - código de seis dígitos agrupado (`397 969`) para dictarlo o mostrarlo en recepción;
+  - cuenta regresiva de cinco minutos y texto de qué hacer al llegar al club;
+  - botón «Generar nuevo código» al vencer, con reemplazo del anterior;
+  - validación de sesión expirada, mensajes de error y estados de carga;
+  - el código no se guarda en el dispositivo ni en el historial.
 - Pantalla de clases con:
   - cartelera de los próximos 14 días (fecha, tipo, salón, instructor y lugares disponibles);
   - reserva de un lugar o ingreso a la lista de espera cuando la clase está llena;
@@ -103,6 +109,13 @@ CORS_ORIGINS=http://localhost:8081,http://127.0.0.1:8081
 2. El socio captura el código y `POST /member/auth/verify` devuelve el token y el resumen de la sesión.
 3. `GET /member/me` con `Authorization: Bearer <token>` devuelve perfil, membresía, acceso y saldo.
 4. `POST /member/auth/logout` revoca la sesión.
+
+## Flujo de entrada con código
+
+1. La tarjeta «Acceso habilitado» del inicio abre `AccessCodeScreen` y la pantalla pide `POST /member/access/code` con el Bearer del socio.
+2. El backend exige membresía vigente y devuelve un código de seis dígitos con cinco minutos de vida; emitir otro invalida el anterior. La app solo lo mantiene en memoria y muestra la cuenta regresiva.
+3. El socio dicta o muestra el código en recepción y la tablet lo valida con `POST /kiosk/check-in`; la app no sabe si se usó, así que el contador sigue hasta el vencimiento.
+4. Al vencer, «Generar nuevo código» pide otro; un `401` cierra la sesión y vuelve al inicio de sesión.
 
 ## Flujo de clases
 
@@ -193,6 +206,7 @@ mobile/
         ├── LoginScreen.tsx # captura del correo
         ├── CodeScreen.tsx  # código de 6 dígitos, reenvío y código de vista previa
         ├── HomeScreen.tsx  # perfil, acceso, membresía, saldo y accesos a avisos, clases, rutinas, pagos y facturas
+        ├── AccessCodeScreen.tsx # código rotativo de seis dígitos con cuenta regresiva para el kiosco
         ├── ClassesScreen.tsx # cartelera, reserva, lista de espera y cancelación
         ├── RoutinesScreen.tsx # resumen de progreso, metas (con alta y cancelación), medidas (con alta) y rutinas asignadas
         ├── RoutineDetailScreen.tsx # plan, editor de series, historial y registro de entrenamientos

@@ -232,6 +232,18 @@ La primera implementación usa un archivo SQLite local para el caché de decisio
 - Los eventos se insertan transaccionalmente y el mismo `event_id` con solicitud distinta se rechaza.
 - El preview puede marcar eventos como sincronizados para probar el flujo; la integración real de transporte al backend y el hardware siguen pendientes.
 
+## Esquema físico: kiosco de recepción y código rotativo
+
+La migración `20261028_0042_kiosk_access.py` agrega tres tablas para el primer canal de entrada autónomo del socio. El código no se guarda en claro y el token del dispositivo tampoco: ambos se almacenan como hash, igual que las sesiones y los códigos OTP.
+
+| Tabla | Responsabilidad | Restricciones principales |
+|---|---|---|
+| `kiosk_devices` | tablet autorizada de recepción | etiqueta de 1–80 caracteres, `token_sha256` único (64), estado `active`/`revoked` con CHECK, `created_by` FK `RESTRICT` a `app_users`, `revoked_at` solo en `revoked` (`ck_kiosk_devices_revoked`) y `last_seen_at` refrescado como máximo una vez por minuto |
+| `member_access_codes` | código rotativo de seis dígitos emitido por la app | FK en cascada al socio, `code_hash` HMAC-SHA256 (64), `issued_at`, `expires_at` con CHECK `expires_at > issued_at`, `consumed_at` nulo mientras está vigente; índices por socio/emisión y por expiración; emitir un código marca como consumidos los anteriores no usados |
+| `kiosk_attempts` | intentos fallidos del dispositivo, sin el código capturado | FK en cascada al kiosco, resultado `invalid` con CHECK, `occurred_at` e índice por dispositivo/fecha; el límite de 10 por minuto se calcula sobre esta tabla |
+
+El código solo prueba identidad: la decisión de entrada la sigue tomando `evaluate_access` con un `AccessSnapshot` armado desde la membresía más reciente, y el resultado se persiste en `access_events` (no en una tabla nueva) con `source = "reader"` y `reader_id = "Kiosco <etiqueta>"`. Un código solo se consume si el `UPDATE ... WHERE consumed_at IS NULL` afecta una fila, así que dos kioscos que lo capturen a la vez no pueden conceder dos entradas. Los intentos válidos no se copian a `kiosk_attempts`, y ni el código en claro ni el token aparecen en la tabla ni en la respuesta del listado de dispositivos; el token se devuelve una sola vez al crear el dispositivo. La vista previa crea estas tablas con `create_all` y no necesita parche porque son tablas nuevas.
+
 ## Identidad y autorización inicial
 
 - `employees` mantiene el directorio operativo básico; `app_users` es la identidad de acceso y se vincula opcionalmente con un empleado por `employee_id` (único, FK `RESTRICT`). Ese vínculo es el que usa `staff_user_for_employee` para decidir a qué cuenta del panel llega un aviso de entrenador o de técnico.

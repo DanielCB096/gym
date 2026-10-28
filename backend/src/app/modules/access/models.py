@@ -3,7 +3,16 @@ from datetime import datetime, time, timezone
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Index, Uuid, func
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlmodel import Field, SQLModel
 
 
@@ -118,3 +127,87 @@ class AccessEvent(SQLModel, table=True):
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
+
+
+class KioskDevice(SQLModel, table=True):
+    """Tablet at the front desk that validates member check-in codes.
+
+    Only the SHA-256 digest of the device token is stored, mirroring staff and
+    member sessions: the raw token is shown once when the device is created.
+    """
+
+    __tablename__ = "kiosk_devices"
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'revoked')", name="ck_kiosk_devices_status"),
+        UniqueConstraint("token_sha256", name="uq_kiosk_devices_token"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    label: str = Field(max_length=80)
+    token_sha256: str = Field(max_length=64)
+    status: str = Field(default="active", max_length=16)
+    created_by: UUID | None = Field(
+        default=None,
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="RESTRICT")),
+    )
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+    last_seen_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+
+
+class MemberAccessCode(SQLModel, table=True):
+    """Short-lived six-digit check-in code issued to one member.
+
+    The code is stored as an HMAC digest. Issuing a new code invalidates the
+    previous unconsumed ones so only the code on screen can open the door.
+    """
+
+    __tablename__ = "member_access_codes"
+    __table_args__ = (
+        CheckConstraint(
+            "expires_at > created_at", name="ck_member_access_codes_expiry_order"
+        ),
+        Index("ix_member_access_codes_member_created", "member_id", "created_at"),
+        Index("ix_member_access_codes_hash", "code_hash"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    member_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("members.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    code_hash: str = Field(max_length=64)
+    created_at: datetime = Field(sa_type=DateTime(timezone=True))
+    expires_at: datetime = Field(sa_type=DateTime(timezone=True))
+    consumed_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+
+class KioskAttempt(SQLModel, table=True):
+    """One check-in attempt per kiosk, used for the per-device rate limit."""
+
+    __tablename__ = "kiosk_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "result IN ('authorized', 'denied', 'invalid')",
+            name="ck_kiosk_attempts_result",
+        ),
+        Index("ix_kiosk_attempts_device_occurred", "device_id", "occurred_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    device_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("kiosk_devices.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    result: str = Field(max_length=16)
+    occurred_at: datetime = Field(sa_type=DateTime(timezone=True))

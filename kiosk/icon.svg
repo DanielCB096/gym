@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Centro Fit">
+  <rect width="512" height="512" rx="112" fill="#0B1220" />
+  <circle cx="256" cy="184" r="58" fill="#22C55E" />
+  <rect x="186" y="272" width="140" height="34" rx="17" fill="#F8FAFC" />
+  <rect x="166" y="316" width="180" height="34" rx="17" fill="#22C55E" />
+  <rect x="206" y="360" width="100" height="34" rx="17" fill="#F8FAFC" />
+</svg>
