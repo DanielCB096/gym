@@ -2,11 +2,15 @@ import { API_URL, REQUEST_TIMEOUT_MS } from "./config";
 import type {
   CodeRequestResult,
   MemberAccount,
+  MemberBillableOriginPage,
   MemberClassPage,
   MemberClassReservation,
+  MemberFiscalProfile,
   MemberGoal,
   MemberGoalInput,
   MemberInvoicePage,
+  MemberInvoiceRequestInput,
+  MemberInvoiceRequestResult,
   MemberLoginResult,
   MemberPaymentPage,
   MemberProfile,
@@ -215,6 +219,36 @@ export function getMemberAccount(token: string): Promise<MemberAccount> {
 export function getMemberInvoices(token: string, pageSize = 20): Promise<MemberInvoicePage> {
   return request<MemberInvoicePage>(`/member/invoices?page=1&page_size=${pageSize}`, {
     token,
+  });
+}
+
+export function getMemberBillableOrigins(
+  token: string,
+  pageSize = 50,
+): Promise<MemberBillableOriginPage> {
+  return request<MemberBillableOriginPage>(
+    `/member/invoices/origins?page=1&page_size=${pageSize}`,
+    { token },
+  );
+}
+
+export function getMemberFiscalProfile(
+  token: string,
+): Promise<MemberFiscalProfile | null> {
+  return request<{ profile: MemberFiscalProfile | null }>(
+    "/member/fiscal-profile",
+    { token },
+  ).then((result) => result.profile);
+}
+
+export function requestMemberInvoice(
+  token: string,
+  input: MemberInvoiceRequestInput,
+): Promise<MemberInvoiceRequestResult> {
+  return request<MemberInvoiceRequestResult>("/member/invoices", {
+    method: "POST",
+    token,
+    body: input,
   });
 }
 

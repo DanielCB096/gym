@@ -380,10 +380,14 @@ from app.modules.portal.routines import (
     record_member_measurement,
 )
 from app.modules.portal.invoices import (
+    BillableOriginItem,
     InvalidDownloadLink,
     MemberInvoiceItem,
     download_member_invoice,
+    list_billable_origins,
     list_member_invoices,
+    member_fiscal_profile,
+    request_member_invoice,
     verify_download_link,
 )
 from app.modules.portal.payments import (
@@ -425,6 +429,7 @@ from app.modules.billing import (
     BillingMemberNotFound,
     CancellationNotAllowed,
     FiscalDataInvalid,
+    FiscalProfileView,
     GlobalInvoiceNoEligibleSales,
     GlobalInvoicePeriodConflict,
     InvoiceDeliveryFailed,
@@ -1804,6 +1809,32 @@ class MemberAccountResponse(BaseModel):
     entries_total: int
 
 
+class FiscalDataRequest(BaseModel):
+    """CFDI receptor data, shared by the staff and member invoice requests."""
+
+    rfc: str = Field(min_length=12, max_length=13)
+    legal_name: str = Field(min_length=2, max_length=254)
+    tax_regime: str = Field(min_length=3, max_length=3)
+    postal_code: str = Field(min_length=5, max_length=5)
+    cfdi_use: str = Field(default="G03", min_length=3, max_length=3)
+    email: EmailStr | None = None
+
+
+class MemberFiscalProfileResponse(BaseModel):
+    member_id: UUID
+    rfc: str
+    legal_name: str
+    tax_regime: str
+    postal_code: str
+    cfdi_use: str
+    email: str | None
+    updated_at: datetime
+
+
+class MemberFiscalProfileEnvelopeResponse(BaseModel):
+    profile: MemberFiscalProfileResponse | None
+
+
 class MemberInvoiceResponse(BaseModel):
     id: UUID
     series: str
@@ -1834,6 +1865,38 @@ class MemberInvoicePageResponse(BaseModel):
     page: int
     page_size: int
     pages: int
+
+
+class MemberBillableOriginResponse(BaseModel):
+    origin_type: str
+    origin_id: UUID
+    reference: str
+    occurred_at: datetime
+    total_cents: int
+    description: str
+    payment_method: str
+
+
+class MemberBillableOriginPageResponse(BaseModel):
+    items: list[MemberBillableOriginResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class MemberInvoiceCreateRequest(BaseModel):
+    origin_type: Literal["sale", "membership_payment"]
+    origin_id: UUID
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    payment_form: str | None = Field(default=None, min_length=2, max_length=2)
+    payment_method: Literal["PUE", "PPD"] | None = None
+    receptor: FiscalDataRequest
+
+
+class MemberInvoiceRequestResponse(BaseModel):
+    invoice: MemberInvoiceResponse
+    idempotent_replay: bool
 
 
 class MemberNotificationResponse(BaseModel):
@@ -3116,6 +3179,103 @@ def member_invoices(
         page=listing.page,
         page_size=listing.page_size,
         pages=listing.pages,
+    )
+
+
+@app.get(
+    "/member/invoices/origins",
+    response_model=MemberBillableOriginPageResponse,
+    tags=["member self-service"],
+)
+def member_billable_origins(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+    origin_type: Annotated[
+        Literal["sale", "membership_payment"] | None, Query()
+    ] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> MemberBillableOriginPageResponse:
+    try:
+        listing = list_billable_origins(
+            session,
+            member.member_id,
+            origin_type=origin_type,
+            page=page,
+            page_size=page_size,
+        )
+    except MemberPortalError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+        ) from error
+    return MemberBillableOriginPageResponse(
+        items=[_member_billable_origin_response(item) for item in listing.items],
+        total=listing.total,
+        page=listing.page,
+        page_size=listing.page_size,
+        pages=listing.pages,
+    )
+
+
+@app.get(
+    "/member/fiscal-profile",
+    response_model=MemberFiscalProfileEnvelopeResponse,
+    tags=["member self-service"],
+)
+def member_fiscal_profile_detail(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberFiscalProfileEnvelopeResponse:
+    try:
+        profile = member_fiscal_profile(session, member.member_id)
+    except MemberPortalError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+        ) from error
+    return MemberFiscalProfileEnvelopeResponse(
+        profile=(
+            _member_fiscal_profile_response(profile) if profile is not None else None
+        )
+    )
+
+
+@app.post(
+    "/member/invoices",
+    response_model=MemberInvoiceRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["member self-service"],
+)
+def member_request_invoice(
+    payload: MemberInvoiceCreateRequest,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberInvoiceRequestResponse:
+    receptor = payload.receptor
+    try:
+        invoice, created = request_member_invoice(
+            session,
+            member.member_id,
+            origin_type=payload.origin_type,
+            origin_id=payload.origin_id,
+            rfc=receptor.rfc,
+            legal_name=receptor.legal_name,
+            tax_regime=receptor.tax_regime,
+            postal_code=receptor.postal_code,
+            cfdi_use=receptor.cfdi_use,
+            email=str(receptor.email) if receptor.email is not None else None,
+            payment_form=payload.payment_form,
+            payment_method=payload.payment_method,
+            idempotency_key=payload.idempotency_key,
+        )
+    except MemberPortalError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+        ) from error
+    except CfdiError as error:
+        _raise_cfdi_error(error)
+    return MemberInvoiceRequestResponse(
+        invoice=_member_invoice_response(invoice),
+        idempotent_replay=not created,
     )
 
 
@@ -7446,6 +7606,35 @@ def _member_invoice_response(item: MemberInvoiceItem) -> MemberInvoiceResponse:
     )
 
 
+def _member_billable_origin_response(
+    item: BillableOriginItem,
+) -> MemberBillableOriginResponse:
+    return MemberBillableOriginResponse(
+        origin_type=item.origin_type,
+        origin_id=item.origin_id,
+        reference=item.reference,
+        occurred_at=item.occurred_at,
+        total_cents=item.total_cents,
+        description=item.description,
+        payment_method=item.payment_method,
+    )
+
+
+def _member_fiscal_profile_response(
+    profile: FiscalProfileView,
+) -> MemberFiscalProfileResponse:
+    return MemberFiscalProfileResponse(
+        member_id=profile.member_id,
+        rfc=profile.rfc,
+        legal_name=profile.legal_name,
+        tax_regime=profile.tax_regime,
+        postal_code=profile.postal_code,
+        cfdi_use=profile.cfdi_use,
+        email=profile.email,
+        updated_at=profile.updated_at,
+    )
+
+
 def _member_notification_response(item: MemberNotificationItem) -> MemberNotificationResponse:
     return MemberNotificationResponse(
         id=item.id,
@@ -8113,15 +8302,6 @@ def _as_utc(value: datetime) -> datetime:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
 # --- Billing / CFDI ---------------------------------------------------------
-
-
-class FiscalDataRequest(BaseModel):
-    rfc: str = Field(min_length=12, max_length=13)
-    legal_name: str = Field(min_length=2, max_length=254)
-    tax_regime: str = Field(min_length=3, max_length=3)
-    postal_code: str = Field(min_length=5, max_length=5)
-    cfdi_use: str = Field(default="G03", min_length=3, max_length=3)
-    email: EmailStr | None = None
 
 
 class InvoiceCreateRequest(BaseModel):

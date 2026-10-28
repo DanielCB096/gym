@@ -27,12 +27,18 @@ import type { MemberInvoice, MemberInvoicePage } from "../types";
 type Props = {
   token: string;
   onBack: () => void;
+  onRequestInvoice: () => void;
   onSessionExpired: () => void;
 };
 
 type DocumentKind = "pdf" | "xml";
 
-export function InvoicesScreen({ token, onBack, onSessionExpired }: Props) {
+export function InvoicesScreen({
+  token,
+  onBack,
+  onRequestInvoice,
+  onSessionExpired,
+}: Props) {
   const [invoices, setInvoices] = useState<MemberInvoicePage | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -116,6 +122,18 @@ export function InvoicesScreen({ token, onBack, onSessionExpired }: Props) {
         </Text>
       </View>
 
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Solicitar una factura nueva"
+        onPress={onRequestInvoice}
+        style={({ pressed }) => [
+          sharedStyles.primaryButton,
+          pressed && sharedStyles.primaryButtonPressed,
+        ]}
+      >
+        <Text style={sharedStyles.primaryButtonText}>Solicitar factura</Text>
+      </Pressable>
+
       {error ? (
         <View style={styles.errorBanner}>
           <Text style={sharedStyles.error}>{error}</Text>
@@ -133,8 +151,8 @@ export function InvoicesScreen({ token, onBack, onSessionExpired }: Props) {
         invoices.items.length === 0 ? (
           <View style={sharedStyles.card}>
             <Text style={sharedStyles.body}>
-              Aún no tienes facturas emitidas. Si necesitas un comprobante de tus
-              pagos, solicítalo en recepción.
+              Aún no tienes facturas emitidas. Solicita la factura de tus compras
+              o pagos con el botón de arriba.
             </Text>
           </View>
         ) : (

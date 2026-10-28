@@ -7,6 +7,7 @@ import { describeError } from "./src/errors";
 import { ClassesScreen } from "./src/screens/ClassesScreen";
 import { CodeScreen } from "./src/screens/CodeScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
+import { InvoiceRequestScreen } from "./src/screens/InvoiceRequestScreen";
 import { InvoicesScreen } from "./src/screens/InvoicesScreen";
 import { LoginScreen } from "./src/screens/LoginScreen";
 import { NotificationsScreen } from "./src/screens/NotificationsScreen";
@@ -27,6 +28,7 @@ type Stage =
   | "routineDetail"
   | "payments"
   | "invoices"
+  | "invoiceRequest"
   | "notifications";
 
 export default function App() {
@@ -194,6 +196,10 @@ export default function App() {
     setStage("invoices");
   }
 
+  function handleOpenInvoiceRequest() {
+    setStage("invoiceRequest");
+  }
+
   function handleOpenNotifications() {
     setStage("notifications");
   }
@@ -285,6 +291,14 @@ export default function App() {
           <InvoicesScreen
             token={token}
             onBack={() => setStage("home")}
+            onRequestInvoice={handleOpenInvoiceRequest}
+            onSessionExpired={() => void handleSessionExpired()}
+          />
+        ) : null}
+        {stage === "invoiceRequest" && token ? (
+          <InvoiceRequestScreen
+            token={token}
+            onBack={() => setStage("invoices")}
             onSessionExpired={() => void handleSessionExpired()}
           />
         ) : null}

@@ -302,6 +302,58 @@ export type MemberInvoicePage = {
   pages: number;
 };
 
+export type MemberBillableOrigin = {
+  origin_type: string;
+  origin_id: string;
+  reference: string;
+  occurred_at: string;
+  total_cents: number;
+  description: string;
+  payment_method: string;
+};
+
+export type MemberBillableOriginPage = {
+  items: MemberBillableOrigin[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+};
+
+export type MemberFiscalProfile = {
+  member_id: string;
+  rfc: string;
+  legal_name: string;
+  tax_regime: string;
+  postal_code: string;
+  cfdi_use: string;
+  email: string | null;
+  updated_at: string;
+};
+
+export type MemberInvoiceReceptorInput = {
+  rfc: string;
+  legal_name: string;
+  tax_regime: string;
+  postal_code: string;
+  cfdi_use: string;
+  email?: string | null;
+};
+
+export type MemberInvoiceRequestInput = {
+  origin_type: "sale" | "membership_payment";
+  origin_id: string;
+  idempotency_key: string;
+  payment_form?: string | null;
+  payment_method?: "PUE" | "PPD" | null;
+  receptor: MemberInvoiceReceptorInput;
+};
+
+export type MemberInvoiceRequestResult = {
+  invoice: MemberInvoice;
+  idempotent_replay: boolean;
+};
+
 export type MemberAccountEntry = {
   kind: string;
   occurred_at: string;

@@ -1,6 +1,6 @@
 # App móvil del socio
 
-Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, los **pagos y el estado de cuenta** (solo lectura), las **facturas del socio** con descarga de PDF y XML, y la **bandeja de avisos del gimnasio**; no incluye todavía pago en línea ni solicitud de facturas.
+Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, los **pagos y el estado de cuenta** (solo lectura), las **facturas del socio** con descarga de PDF y XML y **solicitud de factura** de sus propias compras y cobros, y la **bandeja de avisos del gimnasio**; no incluye todavía pago en línea.
 
 ## Alcance implementado
 
@@ -134,7 +134,17 @@ El saldo puede ser negativo (saldo a favor); el aviso que lo acompaña indica qu
 2. La app no reenvía el token en las descargas: cada `pdf_path`/`xml_path` lleva `exp` y `sig` (HMAC-SHA256 con el `SECRET_KEY` del backend) y vence a los **10 minutos**. Al abrir el documento se usa `Linking.openURL(API_URL + path)`, así que el navegador del sistema lo descarga sin sesión.
 3. Si un enlace vence, el botón responde con un error de enlace inválido; deslizar hacia abajo regenera los enlaces. No se guardan copias en el dispositivo ni se comparten archivos.
 
-Las facturas solo se entregan si están timbradas o canceladas; las solicitadas o con error de timbrado no muestran botones. El socio **no** solicita facturas nuevas desde la app: eso sigue en recepción o en el panel.
+Las facturas solo se entregan si están timbradas o canceladas; las solicitadas o con error de timbrado no muestran botones.
+
+## Flujo de solicitud de factura
+
+1. `GET /member/invoices/origins?page=1&page_size=50` lista las operaciones propias pendientes de facturar y `GET /member/fiscal-profile` trae el perfil fiscal guardado (o `null`).
+2. El socio elige una operación, revisa o corrige RFC, razón social, régimen fiscal, código postal, uso del CFDI y correo, y envía `POST /member/invoices` con `origin_type`, `origin_id`, `idempotency_key`, `receptor` y, opcionalmente, `payment_form`/`payment_method`.
+3. La app valida el formato antes de enviar (RFC 12–13, nombre de al menos 2, régimen de 3 dígitos, CP de 5, uso de 3 y correo con `@`). La clave de idempotencia se deriva con FNV-1a del origen y del formulario normalizado: reintentar reutiliza la clave y corregir un dato genera otra.
+4. La respuesta (`201`) trae la factura y `idempotent_replay`; la app muestra folio, estado e importe, quita la operación de la lista y ofrece «Ver mis facturas» o «Solicitar otra factura».
+5. La solicitud queda en `requested`: **el socio no timbra**. Cuando el personal la timbra, el comprobante aparece con sus botones de descarga en la pantalla de facturas.
+
+La app no ofrece PPD: envía siempre la forma derivada del cobro con método PUE. El perfil fiscal se guarda en el backend aunque la solicitud se rechace, para no perder la captura en el siguiente intento.
 
 ## Flujo de avisos
 
@@ -151,7 +161,7 @@ Límites del backend: 5 solicitudes por correo cada 15 minutos, 5 intentos por c
 
 ```text
 mobile/
-├── App.tsx                 # máquina de estados restoring → email → code → home → classes → routines → routineDetail → payments → invoices → notifications
+├── App.tsx                 # máquina de estados restoring → email → code → home → classes → routines → routineDetail → payments → invoices → invoiceRequest → notifications
 ├── index.ts                # registro de Expo
 ├── app.json                # nombre, slug, tema y plugin de SecureStore
 └── src/
@@ -170,7 +180,8 @@ mobile/
         ├── RoutinesScreen.tsx # resumen de progreso, metas (con alta y cancelación), medidas (con alta) y rutinas asignadas
         ├── RoutineDetailScreen.tsx # plan, editor de series, historial y registro de entrenamientos
         ├── PaymentsScreen.tsx # pagos de membresía y estado de cuenta (solo lectura)
-        ├── InvoicesScreen.tsx # facturas del socio con descarga PDF/XML por enlace firmado
+        ├── InvoicesScreen.tsx # facturas del socio con descarga PDF/XML por enlace firmado y acceso a solicitar
+        ├── InvoiceRequestScreen.tsx # operaciones por facturar, formulario fiscal y solicitud con idempotencia
         └── NotificationsScreen.tsx # bandeja de avisos del club, marcar leído individual o masivo
 ```
 
@@ -181,7 +192,7 @@ mobile/
 - Cerrar el pendiente de revisión desde la app del entrenador: hoy el entrenador **sí recibe** `workout_pending_review` en la campana del panel (ADR-017), pero el aviso no se cierra al revisar y la app del socio no tiene vista de entrenador.
 - Fotos de progreso en la app, con consentimiento y política de acceso.
 - El aviso de equipo fuera de servicio **no enlaza con lo afectado**: la app no tiene pantalla de equipos y el detalle del plan todavía no renderiza `equipment_status`, así que el socio lee el aviso sin ver marcado el ejercicio cuya máquina se paró. Tampoco hay aviso cuando el equipo vuelve a estar operativo.
-- Pagos en línea, solicitud de facturas nuevas y detalle de la venta detrás de cada cargo (hoy se consulta el movimiento). La descarga de facturas ya existe, pero solo de la primera página (20) y sin historial de descargas.
+- Pago en línea y detalle de la venta detrás de cada cargo (hoy se consulta el movimiento). Las facturas se descargan y se solicitan desde la app, pero la lista pide solo la primera página (20), no hay historial de descargas, la solicitud no se timbra desde la app, no se puede elegir PPD ni se avisa cuando cambia el estado de la factura.
 - Cobro del precio extra de las clases premium desde la app.
 - Notificaciones push y recordatorios programados (renovación, clase, cobranza): la bandeja ya existe, pero el aviso solo se ve cuando el socio abre la app.
 - Rotación de tokens, cierre de sesiones por inactividad y MFA opcional.

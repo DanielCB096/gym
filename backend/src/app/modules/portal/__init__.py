@@ -9,11 +9,16 @@ from app.modules.portal.classes import (
 )
 from app.modules.portal.models import MemberAuthEvent, MemberLoginCode, MemberSession
 from app.modules.portal.invoices import (
+    BillableOriginItem,
+    BillableOriginPage,
     InvalidDownloadLink,
     MemberInvoiceItem,
     MemberInvoicePage,
     download_member_invoice,
+    list_billable_origins,
     list_member_invoices,
+    member_fiscal_profile,
+    request_member_invoice,
     verify_download_link,
 )
 from app.modules.portal.payments import (
@@ -54,6 +59,8 @@ from app.modules.portal.service import (
 
 __all__ = [
     "AuthenticatedMember",
+    "BillableOriginItem",
+    "BillableOriginPage",
     "InvalidDownloadLink",
     "InvalidMemberCode",
     "InvalidMemberSession",
@@ -86,14 +93,17 @@ __all__ = [
     "get_member_account",
     "get_member_progress",
     "get_member_routine",
+    "list_billable_origins",
     "list_member_classes",
     "list_member_invoices",
     "list_member_payments",
     "list_member_routines",
     "log_member_workout",
+    "member_fiscal_profile",
     "member_profile",
     "record_member_measurement",
     "request_login_code",
+    "request_member_invoice",
     "reserve_member_class",
     "revoke_member_session",
     "verify_download_link",

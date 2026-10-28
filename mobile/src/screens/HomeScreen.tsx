@@ -210,7 +210,7 @@ export function HomeScreen({
 
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Ver facturas y comprobantes fiscales"
+            accessibilityLabel="Ver facturas, solicitar y descargar comprobantes fiscales"
             onPress={onOpenInvoices}
             style={({ pressed }) => [
               sharedStyles.card,
@@ -221,7 +221,7 @@ export function HomeScreen({
             <View style={styles.navText}>
               <Text style={styles.navTitle}>Facturas</Text>
               <Text style={sharedStyles.body}>
-                Descarga tus comprobantes fiscales en PDF y XML.
+                Solicita facturas y descarga tus comprobantes en PDF y XML.
               </Text>
             </View>
             <Text style={styles.navChevron}>→</Text>

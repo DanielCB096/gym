@@ -1253,6 +1253,7 @@ def create_invoice(
     payment_form: str | None = None,
     payment_method: str | None = None,
     actor_id: UUID | None = None,
+    channel: str = "staff",
 ) -> tuple[InvoiceView, bool]:
     """Request an invoice for one sale or membership payment.
 
@@ -1261,6 +1262,9 @@ def create_invoice(
     without duplicating folios, XML or events. A PPD invoice is issued with
     FormaPago 99 (payment still undefined); each partiality is a payment
     complement created later from the billing panel.
+
+    ``channel`` only labels the request event (``staff`` or ``member_app``);
+    the authorization decision belongs to the caller.
     """
 
     key = (idempotency_key or "").strip()
@@ -1423,6 +1427,7 @@ def create_invoice(
             "total_cents": origin.total_cents,
             "payment_method": requested_method,
             "payment_form": form,
+            "channel": channel,
         },
     )
     try:
