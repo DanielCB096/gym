@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-28 · El backend se niega a arrancar con una zona horaria inválida
+
+- **Arranque**: `validate_club_timezone()` en `src/app/timezone.py` resuelve `APP_TIMEZONE` (o el nombre recibido) y falla con `ValueError` («APP_TIMEZONE no es una zona horaria válida: …») en vez de degradar a UTC. El `lifespan` de `src/app/main.py` la llama antes de montar la vista previa, así que una errata detiene el proceso en vez de correr folios, cortes de caja y reportes un día sin avisar.
+- **Lecturas**: `club_timezone()` conserva la degradación a UTC documentada, para que un error de configuración nunca tumbe una petición; la diferencia entre validar al arrancar y degradar al leer queda fijada por pruebas.
+- **Pruebas**: nuevo `backend/tests/test_timezone_config.py` (4 pruebas): la zona por defecto es válida, una zona desconocida se rechaza nombrándola, el arranque de la app no levanta con una zona inválida y la lectura sigue degradando a UTC. Suite del backend en **200 pruebas**.
+- **Documentación**: deuda técnica, README del backend y plan de pruebas.
+
 ## 2026-10-28 · El socio entra al club con un código rotativo y el kiosco de recepción
 
 - **Modelo y migración**: `20261028_0042_kiosk_access.py` crea `kiosk_devices` (token SHA-256 único, estado `active`/`revoked`, actor de alta y última actividad), `member_access_codes` (HMAC-SHA256 del código, emisión, vencimiento y consumo único) y `kiosk_attempts` (intentos inválidos por dispositivo, sin el código capturado). La vista previa las crea con `create_all`; no hubo que parchear la base existente.

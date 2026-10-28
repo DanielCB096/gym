@@ -528,7 +528,7 @@ from app.modules.reports import (
     build_report,
     resolve_period,
 )
-from app.timezone import DEFAULT_TIMEZONE
+from app.timezone import DEFAULT_TIMEZONE, validate_club_timezone
 
 PreviewOutcome = Literal["succeeded", "failed", "unknown", "processing"]
 PREVIEW_MODE = os.getenv("PREVIEW_MODE", "").lower() == "true"
@@ -2825,6 +2825,7 @@ def _kiosk_device_response(device: KioskDevice) -> KioskDeviceResponse:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    validate_club_timezone()
     if PREVIEW_MODE:
         if engine is None or not DATABASE_URL or not DATABASE_URL.startswith("sqlite"):
             raise RuntimeError("Preview mode requires a SQLite DATABASE_URL")

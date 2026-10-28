@@ -31,6 +31,23 @@ def club_timezone(name: str | None = None) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+def validate_club_timezone(name: str | None = None) -> ZoneInfo:
+    """Resolve ``timezone_name`` (or ``APP_TIMEZONE``) or fail loudly.
+
+    Startup calls this instead of :func:`club_timezone`: an unknown zone must
+    stop the process instead of silently moving every club calendar to UTC.
+    """
+
+    value = name or os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE)
+    try:
+        return ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as error:
+        raise ValueError(
+            f"APP_TIMEZONE no es una zona horaria válida: {value!r}. "
+            "Corrígela (por ejemplo America/Mexico_City) o quita la variable."
+        ) from error
+
+
 def local_midnight(day: date, tz: ZoneInfo) -> datetime:
     """UTC instant at which ``day`` starts in ``tz``."""
 
