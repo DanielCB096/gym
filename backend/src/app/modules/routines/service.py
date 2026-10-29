@@ -42,6 +42,7 @@ from app.modules.notifications import (
     notify_goal_updated_by_staff,
     notify_trainer_pending_workout,
     notify_workout_reviewed,
+    resolve_staff_notifications,
 )
 from app.modules.routines.models import (
     ASSIGNMENT_STATUSES,
@@ -1632,6 +1633,14 @@ def review_workout(
         workout_id=workout.id,
         performed_on=workout.performed_at,
         routine_name=routine.name if routine is not None else None,
+        now=occurred,
+    )
+    # The trainer's inbox was reporting this workout as pending; the review is
+    # exactly the work it announced, so the notice closes in the same commit.
+    resolve_staff_notifications(
+        session,
+        kind="workout_pending_review",
+        ref_id=workout.id,
         now=occurred,
     )
     session.commit()

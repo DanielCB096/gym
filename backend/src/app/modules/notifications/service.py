@@ -21,7 +21,9 @@ Three producers feed the two inboxes:
   per window (7, then 3, then 1 day left; 24 then 2 hours before the class).
 
 Readers can only ever see and acknowledge their own rows; there is no update or
-delete path on either inbox.
+delete path on either inbox. The one exception happens outside the reader: the
+service that completes the work a staff notice announced closes it with
+``resolved_at``, so the inbox stops reporting a pending item the panel handled.
 """
 
 import math
@@ -94,6 +96,7 @@ class StaffNotificationItem:
     ref_id: UUID | None
     created_at: datetime
     read_at: datetime | None
+    resolved_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -675,11 +678,14 @@ def _paginate_inbox(
     *,
     page: int,
     page_size: int,
+    unread_predicates: tuple = (),
 ) -> tuple[int, int, list[NotificationRow], int, int, int]:
     """Count, unread-count and page one inbox.
 
     Both inboxes have the same shape once the owner column is given, so the
-    paging rules stay in a single place and cannot drift apart.
+    paging rules stay in a single place and cannot drift apart. The staff inbox
+    passes the extra condition that a resolved notice no longer counts as
+    unread, because the badge is about work still owed.
     """
     page, page_size = _clamp_page(page, page_size)
     total = int(
@@ -688,7 +694,9 @@ def _paginate_inbox(
     unread_total = int(
         session.exec(
             select(func.count(model.id)).where(
-                owner_column == owner_id, model.read_at.is_(None)
+                owner_column == owner_id,
+                model.read_at.is_(None),
+                *unread_predicates,
             )
         ).one()
         or 0
@@ -810,6 +818,7 @@ def list_staff_notifications(
         user_id,
         page=page,
         page_size=page_size,
+        unread_predicates=(StaffNotification.resolved_at.is_(None),),
     )
     return StaffNotificationPage(
         items=[_staff_notification_item(row) for row in rows],
@@ -822,11 +831,18 @@ def list_staff_notifications(
 
 
 def unread_staff_notification_count(session: Session, user_id: UUID) -> int:
+    """Unread notices still owed to the account.
+
+    A resolved notice is gone from the badge even if the reader never opened it:
+    the badge answers "what is left for me to do", and the service that closed
+    the notice already did it.
+    """
     return int(
         session.exec(
             select(func.count(StaffNotification.id)).where(
                 StaffNotification.user_id == user_id,
                 StaffNotification.read_at.is_(None),
+                StaffNotification.resolved_at.is_(None),
             )
         ).one()
         or 0
@@ -869,6 +885,42 @@ def mark_all_staff_notifications_read(
     )
     session.commit()
     return int(result.rowcount or 0)
+
+
+def resolve_staff_notifications(
+    session: Session,
+    *,
+    kind: str,
+    ref_id: UUID,
+    now: datetime | None = None,
+) -> int:
+    """Close the notices a completed piece of work made obsolete.
+
+    The caller is the service that finished the work —reviewing a workout— and
+    it is already inside its own transaction, so this neither commits nor opens
+    a savepoint: the resolution lands together with the change that justifies
+    it or not at all. Every account that received the notice is closed, since
+    the audience is resolved from who owns the work at emission time.
+
+    Closing also marks the notice as read when nobody had opened it, so the
+    list does not show a "new" dot next to an item that is already attended.
+    """
+    occurred = _as_utc(now or utc_now())
+    rows = list(
+        session.exec(
+            select(StaffNotification).where(
+                StaffNotification.kind == kind,
+                StaffNotification.ref_id == ref_id,
+                StaffNotification.resolved_at.is_(None),
+            )
+        ).all()
+    )
+    for row in rows:
+        row.resolved_at = occurred
+        if row.read_at is None:
+            row.read_at = occurred
+        session.add(row)
+    return len(rows)
 
 
 def _materialise_deferred(
@@ -1010,6 +1062,7 @@ def _staff_notification_item(row: StaffNotification) -> StaffNotificationItem:
         ref_id=row.ref_id,
         created_at=_as_utc(row.created_at),
         read_at=_as_utc(row.read_at) if row.read_at is not None else None,
+        resolved_at=_as_utc(row.resolved_at) if row.resolved_at is not None else None,
     )
 
 

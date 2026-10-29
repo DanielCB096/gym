@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-29 · El aviso de revisión se cierra al revisar
+
+- **Estado nuevo en la bandeja del personal**: `staff_notifications.resolved_at` (migración `20261029_0054_staff_notification_resolved.py`, columna anulable; `preview_patch.py` la agrega en la vista previa). Es distinta de `read_at`: un aviso puede estar leído y seguir pendiente, o cerrarse sin que nadie lo abriera.
+- **Lo cierra el servicio, no el lector**: `review_workout` llama a `resolve_staff_notifications(kind="workout_pending_review", ref_id=<entrenamiento>)` antes de su `commit()`. La función no hace commit ni abre savepoint —o se guardan juntos el estado del entrenamiento y el cierre del aviso, o no se guarda ninguno— y sella `read_at` si la fila no lo tenía, para no dejar un punto de «nuevo» sobre un pendiente ya atendido. No filtra por cuenta: cierra el aviso donde viva, aunque la asignación haya cambiado de entrenador.
+- **El contador mide trabajo, no lecturas**: `GET /admin/notifications?` y `/unread-count` filtran `resolved_at IS NULL` (vía el nuevo parámetro `unread_predicates` de `_paginate_inbox`), así que lo atendido deja de deber y desaparece de la insignia. La fila sigue en la lista y el socio recibe su `workout_reviewed` igual que antes.
+- **API**: `StaffNotificationResponse` expone `resolved_at`; marcar leído no lo toca y `read-all` tampoco resuelve nada.
+- **Panel**: la campana dice «N por atender» / «Todo atendido», el aviso atendido se muestra atenuado con la etiqueta **«Atendido»** y la vista de Rutinas avisa al encabezado al revisar un entrenamiento, de modo que el conteo se actualiza sin recargar.
+- **Pruebas**: un caso nuevo en `backend/tests/test_staff_notifications_api.py` (aviso pendiente → revisión → `resolved_at` y `read_at` sellados, `total = 1` con `unread_total = 0`, segunda revisión `409`, marcar leído y `read-all` sin resucitarlo, y el `workout_reviewed` del socio). Suite en **231 pruebas** (227 pasan y las 4 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`).
+- **Documentación**: nuevo ADR-038, módulo de avisos, deuda técnica, plan de pruebas y README del backend, del panel y de documentación.
+
 ## 2026-10-29 · Aviso de clase cancelada o reprogramada
 
 - **Avisos nuevos**: `class_cancelled` y `class_rescheduled` en `member_notifications` (migración `20261029_0053_class_change_notifications.py`, que amplía el `CHECK` de tipos a catorce; `preview_patch.py` actualiza la base de vista previa). El socio lee «Se canceló tu clase» con clase, día y hora, o «Cambió el horario de tu clase» con la ventana anterior y la nueva.

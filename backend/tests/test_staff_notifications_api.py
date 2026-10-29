@@ -389,3 +389,76 @@ def test_the_staff_inbox_is_scoped_to_the_authenticated_user(monkeypatch) -> Non
                 assert _notifications_for(session, ids["ghost_user"]) == 0
     finally:
         app.dependency_overrides.clear()
+
+
+def test_reviewing_the_workout_closes_the_trainers_pending_notice(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-staff-notifications-secret")
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+
+    engine, ids = _prepare()
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            owner = _login(client, "owner@example.com", "owner-strong-password")
+            trainer = _login(client, "trainer@example.com", "trainer-strong-password")
+            socio = _member_headers(client, "socio@example.com")
+
+            logged = client.post(
+                f"/member/routines/{ids['assignment']}/workouts",
+                headers=socio,
+                json={"performed_at": ids["today"], "duration_minutes": 40},
+            )
+            assert logged.status_code == 201, logged.text
+            workout_id = logged.json()["id"]
+
+            pending = _inbox(client, trainer)
+            assert pending["total"] == 1
+            assert pending["unread_total"] == 1
+            assert pending["items"][0]["resolved_at"] is None
+
+            reviewed = client.post(
+                f"/admin/routines/workouts/{workout_id}/review", headers=owner
+            )
+            assert reviewed.status_code == 200, reviewed.text
+            assert reviewed.json()["status"] == "reviewed"
+
+            # The notice stops being owed work but stays in the inbox as
+            # history; closing it also marks it read, so nothing looks new.
+            attended = _inbox(client, trainer)
+            assert attended["total"] == 1
+            assert attended["unread_total"] == 0
+            notice = attended["items"][0]
+            assert notice["kind"] == "workout_pending_review"
+            assert notice["ref_id"] == workout_id
+            assert notice["resolved_at"] is not None
+            assert notice["read_at"] is not None
+            assert client.get("/admin/notifications/unread-count", headers=trainer).json() == {
+                "unread": 0
+            }
+
+            # Reviewing twice is rejected and the resolution does not move; a
+            # later acknowledgement neither resurrects it nor rewrites it.
+            again = client.post(
+                f"/admin/routines/workouts/{workout_id}/review", headers=owner
+            )
+            assert again.status_code == 409
+            marked = client.post(f"/admin/notifications/{notice['id']}/read", headers=trainer)
+            assert marked.status_code == 200, marked.text
+            assert marked.json()["resolved_at"] == notice["resolved_at"]
+            assert client.post("/admin/notifications/read-all", headers=trainer).json() == {
+                "updated": 0
+            }
+            assert _inbox(client, trainer)["items"][0]["resolved_at"] == notice["resolved_at"]
+            assert client.get("/admin/notifications/unread-count", headers=trainer).json() == {
+                "unread": 0
+            }
+
+            # The member is told the review happened, and no other account
+            # gained access to the trainer's row.
+            member_inbox = client.get("/member/notifications", headers=socio)
+            assert member_inbox.status_code == 200, member_inbox.text
+            assert [item["kind"] for item in member_inbox.json()["items"]] == ["workout_reviewed"]
+            assert member_inbox.json()["items"][0]["ref_id"] == workout_id
+            assert _inbox(client, owner)["total"] == 0
+    finally:
+        app.dependency_overrides.clear()

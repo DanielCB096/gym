@@ -14,10 +14,14 @@ deleted. ``ref_id`` is an untyped reference used only to deep-link.
 
 Both tables are append-only from the point of view of the reader: the services
 create rows through the domain events and the reader can only mark them as read,
-never edit or delete them. The staff inbox is addressed to an ``app_users``
-account because that is what signs in to the panel; the employee behind that
-account is what a trainer-owned assignment or a ticket points at, so the
-audience is resolved employee → account when the notice is emitted.
+never edit or delete them. The staff inbox adds one more state: the service that
+emitted an actionable notice can close it with ``resolved_at`` once the work it
+announced is done (the trainer reviewed the workout), so the inbox stops
+reporting a pending item the panel already attended. The staff inbox is addressed
+to an ``app_users`` account because that is what signs in to the panel; the
+employee behind that account is what a trainer-owned assignment or a ticket
+points at, so the audience is resolved employee → account when the notice is
+emitted.
 """
 
 from datetime import datetime, timezone
@@ -162,3 +166,4 @@ class StaffNotification(SQLModel, table=True):
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
     read_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    resolved_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))

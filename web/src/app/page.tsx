@@ -122,6 +122,7 @@ type BackendNotice = {
   ref_id: string | null;
   created_at: string;
   read_at: string | null;
+  resolved_at: string | null;
 };
 
 type BackendAttendance = {
@@ -3240,14 +3241,14 @@ export default function HomePage() {
           <div className="topbar-actions">
             <div className="preview-pill"><span />Vista previa · datos de muestra</div>
             <div className="notification-wrap">
-              <button className={`icon-button notification-button ${notificationsOpen ? "icon-button-selected" : ""}`} aria-label={unreadNotices > 0 ? `Notificaciones, ${unreadNotices} sin leer` : "Notificaciones"} onClick={toggleNotices}>
+              <button className={`icon-button notification-button ${notificationsOpen ? "icon-button-selected" : ""}`} aria-label={unreadNotices > 0 ? `Notificaciones, ${unreadNotices} por atender` : "Notificaciones"} onClick={toggleNotices}>
                 <Bell size={19} />{unreadNotices > 0 && <i />}
               </button>
               {notificationsOpen && (
                 <div className="notification-popover">
                   <div className="notification-head">
                     <strong>Notificaciones</strong>
-                    <span>{unreadNotices > 0 ? `${unreadNotices} sin leer` : "Todo leído"}</span>
+                    <span>{unreadNotices > 0 ? `${unreadNotices} por atender` : "Todo atendido"}</span>
                   </div>
                   {noticesLoading && <p className="notification-state">Cargando…</p>}
                   {!noticesLoading && noticesError && <p className="notification-state notification-failed">{noticesError}</p>}
@@ -3255,10 +3256,13 @@ export default function HomePage() {
                     <p className="notification-state">Sin avisos por ahora.</p>
                   )}
                   {!noticesLoading && !noticesError && (notices ?? []).map((notice) => (
-                    <button key={notice.id} className={`notification-item ${notice.read_at ? "is-read" : "is-new"}`} onClick={() => void markNoticeRead(notice)}>
-                      <span className={`notification-dot ${notice.read_at ? "lime-dot" : "coral-dot"}`} />
+                    <button key={notice.id} className={`notification-item ${notice.resolved_at ? "is-attended" : notice.read_at ? "is-read" : "is-new"}`} onClick={() => void markNoticeRead(notice)}>
+                      <span className={`notification-dot ${notice.read_at || notice.resolved_at ? "lime-dot" : "coral-dot"}`} />
                       <span className="notification-copy">
-                        <strong>{notice.title}</strong>
+                        <strong>
+                          {notice.title}
+                          {notice.resolved_at && <i className="notification-chip">Atendido</i>}
+                        </strong>
                         <span>{notice.body}</span>
                         <em>{formatNoticeMoment(notice.created_at)}</em>
                       </span>
@@ -3327,7 +3331,7 @@ export default function HomePage() {
           {activePage === "Personal" && <StaffView onToast={showToast} canManageRoles={hasPermission("roles.manage")} canManageSessions={hasPermission("sessions.manage")} canManageStaff={hasPermission("staff.manage")} canViewAttendance={hasPermission("attendance.read")} canManageAttendance={hasPermission("attendance.manage")} employees={backendStaff} roles={backendRoles} users={backendUsers} sessions={backendSessions} shifts={backendShifts} loading={staffLoading} error={staffError} onIdentityChanged={() => setStaffRefresh((value) => value + 1)} />}
           {activePage === "Inventario" && <InventoryView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Clases" && <ClassesView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
-          {activePage === "Rutinas" && <RoutinesView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
+          {activePage === "Rutinas" && <RoutinesView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} onNotificationsChanged={() => { void refreshUnreadNotices(); if (notificationsOpen) void loadNotices(); }} />}
           {activePage === "Mantenimiento" && <MaintenanceView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Facturación" && <BillingView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Conciliación" && <ReconciliationView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
@@ -7992,7 +7996,7 @@ function RoutinePlanList({ items }: { items: BackendRoutineLine[] }) {
   );
 }
 
-function RoutinesView({ permissions, onUnauthorized, onToast }: { permissions: string[]; onUnauthorized: () => void; onToast: (message: string) => void }) {
+function RoutinesView({ permissions, onUnauthorized, onToast, onNotificationsChanged }: { permissions: string[]; onUnauthorized: () => void; onToast: (message: string) => void; onNotificationsChanged: () => void }) {
   const canManage = permissions.includes("routines.manage");
 
   const [tab, setTab] = useState<"seguimiento" | "rutinas" | "ejercicios">("seguimiento");
@@ -8353,7 +8357,7 @@ function RoutinesView({ permissions, onUnauthorized, onToast }: { permissions: s
 
       {assignmentModalOpen && <AssignmentFormModal routines={routineItems} members={members} instructors={instructors} onClose={() => setAssignmentModalOpen(false)} onSaved={(message) => { setAssignmentModalOpen(false); reload(); onToast(message); }} onUnauthorized={onUnauthorized} />}
 
-      {assignmentDetailId && <AssignmentDetailModal assignmentId={assignmentDetailId} canManage={canManage} onClose={() => setAssignmentDetailId(null)} onChanged={() => reload()} onToast={onToast} onUnauthorized={onUnauthorized} />}
+      {assignmentDetailId && <AssignmentDetailModal assignmentId={assignmentDetailId} canManage={canManage} onClose={() => setAssignmentDetailId(null)} onChanged={() => reload()} onReviewed={onNotificationsChanged} onToast={onToast} onUnauthorized={onUnauthorized} />}
     </>
   );
 }
@@ -8690,7 +8694,7 @@ function AssignmentFormModal({ routines, members, instructors, onClose, onSaved,
   );
 }
 
-function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, onToast, onUnauthorized }: { assignmentId: string; canManage: boolean; onClose: () => void; onChanged: () => void; onToast: (message: string) => void; onUnauthorized: () => void }) {
+function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, onReviewed, onToast, onUnauthorized }: { assignmentId: string; canManage: boolean; onClose: () => void; onChanged: () => void; onReviewed: () => void; onToast: (message: string) => void; onUnauthorized: () => void }) {
   const [detail, setDetail] = useState<AssignmentDetail | null>(null);
   const [workouts, setWorkouts] = useState<BackendWorkout[]>([]);
   const [progress, setProgress] = useState<MemberProgress | null>(null);
@@ -8996,6 +9000,8 @@ function AssignmentDetailModal({ assignmentId, canManage, onClose, onChanged, on
       const payload = await response.json().catch(() => ({})) as { detail?: string };
       if (!response.ok) { onToast(payload.detail || "No se pudo marcar el entrenamiento como revisado."); return; }
       setRefresh((value) => value + 1);
+      // Reviewing closes the trainer's pending notice, so the badge is stale now.
+      onReviewed();
       onToast("Entrenamiento revisado.");
     } catch {
       onToast("No se pudo conectar con el backend.");

@@ -97,6 +97,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .notification-popover .notification-item { display: flex; align-items: flex-start; gap: 9px; width: 100%; margin-top: 8px; padding: 8px 9px; border: 1px solid transparent; border-radius: 6px; color: inherit; text-align: left; background: #f6f8f4; cursor: pointer; }
 .notification-popover .notification-item:hover { border-color: #dce3dd; background: #fff; }
 .notification-popover .notification-item.is-read { background: transparent; color: #7e8982; }
+.notification-popover .notification-item.is-attended { background: transparent; color: #8a968e; }
+.notification-popover .notification-chip { margin-left: 6px; padding: 1px 6px; border-radius: 999px; color: #3f6b4c; background: #e6f0e8; font-size: 9px; font-style: normal; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; }
 .notification-popover .notification-item .notification-dot { margin-top: 4px; }
 .notification-popover .notification-copy { display: flex; flex-direction: column; gap: 3px; font-size: 11px; }
 .notification-popover .notification-copy strong { font-size: 11px; font-weight: 600; }

@@ -2001,6 +2001,7 @@ class StaffNotificationResponse(BaseModel):
     ref_id: UUID | None
     created_at: datetime
     read_at: datetime | None
+    resolved_at: datetime | None
 
 
 class StaffNotificationPageResponse(BaseModel):
@@ -8292,6 +8293,7 @@ def _staff_notification_response(item: StaffNotificationItem) -> StaffNotificati
         ref_id=item.ref_id,
         created_at=item.created_at,
         read_at=item.read_at,
+        resolved_at=item.resolved_at,
     )
 
 
