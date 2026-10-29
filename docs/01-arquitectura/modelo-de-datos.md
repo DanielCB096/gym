@@ -209,7 +209,7 @@ Los **avisos** viven en dos tablas espejo del módulo transversal `app.modules.n
 | un aviso no se edita ni se borra | `read_at` es la única columna que cambia después del alta; ambas bandejas son historial |
 | un empleado puede no tener cuenta del panel | si `staff_user_for_employee` no encuentra una cuenta **activa**, el aviso se omite en silencio y la operación de dominio se completa igual |
 
-El **recordatorio de vencimiento de membresía** no necesita programador: `_ensure_membership_expiring` lo calcula al leer la bandeja sobre la membresía `active` que termina primero y lo escribe con `dedupe_key = membership_expiring:<membership_id>:<7|3|1>`, de modo que hay **un aviso por ventana** y no uno por día. Los demás avisos los escriben los servicios de `routines` y `classes` dentro de la misma transacción del cambio que anuncian.
+Los **recordatorios** no necesitan programador: `_ensure_membership_expiring` lo calcula al leer la bandeja sobre la membresía `active` que termina primero y lo escribe con `dedupe_key = membership_expiring:<membership_id>:<7|3|1>`, de modo que hay **un aviso por ventana** y no uno por día; `_ensure_class_reminders` hace lo mismo con cada reserva `reserved` de una clase `scheduled` que empieza en 24 o 2 horas, con `dedupe_key = class_reminder:<reservation_id>:<24|2>` (ADR-035). Los demás avisos los escriben los servicios de `routines` y `classes` dentro de la misma transacción del cambio que anuncian.
 
 ## Esquema físico: turnos y asistencia del personal
 

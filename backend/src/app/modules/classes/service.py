@@ -661,6 +661,9 @@ def update_class_session(
 
     item.updated_at = _as_utc(now or utc_now())
     session.add(item)
+    session.flush()
+    if capacity is not None:
+        _seat_waitlist_in_free_spots(session, session_id, now=item.updated_at)
     session.commit()
     session.refresh(item)
     return _session_item_by_id(session, item.id)
@@ -969,11 +972,7 @@ def cancel_reservation(
         now=occurred,
     )
 
-    if (
-        was_seated
-        and class_session is not None
-        and class_session.status == "scheduled"
-    ):
+    if was_seated:
         _promote_next_waitlist(session, reservation.session_id, now=occurred)
 
     member = session.get(Member, reservation.member_id)
@@ -1033,6 +1032,11 @@ def mark_attendance(
     reservation.marked_at = occurred
     reservation.updated_at = occurred
     session.add(reservation)
+    session.flush()
+    if not attended:
+        # A no-show frees the seat. Before the class it is still worth seating
+        # somebody; after it started the promotion guard leaves the queue alone.
+        _seat_waitlist_in_free_spots(session, reservation.session_id, now=occurred)
 
     member = session.get(Member, reservation.member_id)
     member_name = _member_name(member)
@@ -1106,6 +1110,20 @@ def _refund_premium_charge(
 def _promote_next_waitlist(
     session: Session, session_id: UUID, *, now: datetime | None = None
 ) -> ClassReservation | None:
+    """Seat the head of the queue, but only while the class can still be attended.
+
+    A seat freed once the class began has nobody left to seat: the promoted
+    member would be told about a class already in progress. The queue then stays
+    untouched and the freed seat simply goes unused.
+    """
+    occurred = _as_utc(now or utc_now())
+    class_session = session.get(ClassSession, session_id)
+    if (
+        class_session is None
+        or class_session.status != "scheduled"
+        or _as_utc(class_session.starts_at) <= occurred
+    ):
+        return None
     candidate = session.exec(
         select(ClassReservation)
         .where(
@@ -1118,21 +1136,37 @@ def _promote_next_waitlist(
         return None
     candidate.status = "reserved"
     candidate.waitlist_position = None
-    candidate.updated_at = _as_utc(now or utc_now())
+    candidate.updated_at = occurred
     session.add(candidate)
     session.flush()
     _renumber_waitlist(session, session_id)
-    class_session = session.get(ClassSession, session_id)
-    if class_session is not None:
-        notify_waitlist_promoted(
-            session,
-            member_id=candidate.member_id,
-            reservation_id=candidate.id,
-            class_title=class_session.title,
-            starts_at=_as_utc(class_session.starts_at),
-            now=candidate.updated_at,
-        )
+    notify_waitlist_promoted(
+        session,
+        member_id=candidate.member_id,
+        reservation_id=candidate.id,
+        class_title=class_session.title,
+        starts_at=_as_utc(class_session.starts_at),
+        now=occurred,
+    )
     return candidate
+
+
+def _seat_waitlist_in_free_spots(
+    session: Session, session_id: UUID, *, now: datetime
+) -> None:
+    """Move the queue into seats the club just opened.
+
+    Raising the capacity is the one way a seat appears without a cancellation,
+    so without this the queue would wait behind an empty chair until somebody
+    cancelled. Promotion stops at the room limit, leaving the rest of the list
+    in order when the new capacity still does not cover it.
+    """
+    class_session = session.get(ClassSession, session_id)
+    if class_session is None:
+        return
+    while _count_seated(session, session_id) < class_session.capacity:
+        if _promote_next_waitlist(session, session_id, now=now) is None:
+            return
 
 
 def _renumber_waitlist(session: Session, session_id: UUID) -> None:

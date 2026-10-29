@@ -182,10 +182,10 @@ La app no ofrece PPD: envía siempre la forma derivada del cobro con método PUE
 
 ## Flujo de avisos
 
-1. `GET /member/notifications?page=1&page_size=30` devuelve la bandeja del socio con `total`, `pages` y `unread_total`; los avisos los generan los eventos del club (revisión de un entrenamiento, meta cumplida, meta ajustada o cancelada por el personal, lugar liberado en lista de espera, vencimiento próximo de la membresía, equipo de la rutina que queda fuera de servicio y estado de una factura: timbrada, fallida o cancelada).
-2. `POST /member/notifications/{id}/read` marca uno (idempotente) y `POST /member/notifications/read-all` marca todos devolviendo `{"updated": n}`. Los avisos `invoice_stamped`/`invoice_failed`/`invoice_cancelled` se etiquetan «Factura» y, al tocarlos, la app los marca leídos y abre la pantalla de Facturas; el resto solo cambia el estado de lectura.
+1. `GET /member/notifications?page=1&page_size=30` devuelve la bandeja del socio con `total`, `pages` y `unread_total`; los avisos los generan los eventos del club (revisión de un entrenamiento, meta cumplida, meta ajustada o cancelada por el personal, lugar liberado en lista de espera, recordatorio de la clase próxima, vencimiento próximo de la membresía, equipo de la rutina que queda fuera de servicio y estado de una factura: timbrada, fallida o cancelada).
+2. `POST /member/notifications/{id}/read` marca uno (idempotente) y `POST /member/notifications/read-all` marca todos devolviendo `{"updated": n}`. Los avisos `invoice_stamped`/`invoice_failed`/`invoice_cancelled` se etiquetan «Factura» y, al tocarlos, la app los marca leídos y abre la pantalla de Facturas; los de clase (`class_reminder` y `class_waitlist_promoted`) se etiquetan «Clase» y abren la pantalla **Clases**. El resto solo cambia el estado de lectura.
 3. `GET /member/notifications/unread-count` alimenta la insignia de la pantalla de inicio; se consulta al restaurar la sesión, al iniciar sesión, al actualizar el perfil y al salir de la bandeja.
-4. Al abrir la bandeja el backend evalúa el vencimiento de la membresía y crea el recordatorio si falta ≤ 7, ≤ 3 o ≤ 1 días (una sola vez por ventana).
+4. Al abrir la bandeja el backend evalúa el vencimiento de la membresía (≤ 7, ≤ 3 o ≤ 1 días) y la clase próxima (≤ 24 h y ≤ 2 h), y crea el recordatorio de cada ventana una sola vez, deduplicado por `dedupe_key`.
 
 La app **no** crea, edita ni borra avisos, y no recibe notificaciones push: el aviso queda en la bandeja hasta que el socio abre la app. Un fallo al consultar el contador se ignora en silencio porque la bandeja muestra el conteo real al abrirla.
 
@@ -230,7 +230,7 @@ mobile/
 - El aviso de equipo fuera de servicio solo se ve en el detalle del plan, donde el ejercicio afectado queda marcado con su `equipment_status`; la app no tiene pantalla de equipos, así que el socio no puede consultar el estado desde otro lugar ni hay aviso cuando el equipo vuelve a estar operativo.
 - Pago en línea y detalle de la venta detrás de cada cargo (hoy se consulta el movimiento). Las facturas se descargan y se solicitan desde la app, pero la lista pide solo la primera página (20), no hay historial de descargas, la solicitud no se timbra desde la app, no se puede elegir PPD ni se avisa cuando cambia el estado de la factura.
 - Cobro del precio extra de las clases premium desde la app.
-- Notificaciones push y recordatorios programados (renovación, clase, cobranza): la bandeja ya existe, pero el aviso solo se ve cuando el socio abre la app.
+- Notificaciones push y avisos fuera de la app (renovación, clase, cobranza): la bandeja ya trae el recordatorio de la membresía y el de la clase próxima, pero el socio solo lo ve cuando abre la app.
 - Rotación de tokens, cierre de sesiones por inactividad y MFA opcional.
 - Persistencia del token en la vista web (hoy se pierde al recargar) y almacenamiento seguro nativo con biometría.
 - Deep links, iconos y splash definitivos, y publicación en tiendas.

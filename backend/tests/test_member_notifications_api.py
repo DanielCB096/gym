@@ -243,7 +243,12 @@ def test_inbox_collects_every_member_event(monkeypatch) -> None:
                 "workout_reviewed",
             ]
             assert ana_inbox["total"] == 5
-            assert _kinds(client, beto) == ["class_waitlist_promoted"]
+            # The promoted seat is a class less than a day away, so it also
+            # earns the first reminder window the moment Beto opens the inbox.
+            assert sorted(_kinds(client, beto)) == [
+                "class_reminder",
+                "class_waitlist_promoted",
+            ]
 
             by_kind = {item["kind"]: item for item in ana_inbox["items"]}
             achieved = by_kind["goal_achieved"]
@@ -259,10 +264,14 @@ def test_inbox_collects_every_member_event(monkeypatch) -> None:
             assert "cintura" in by_kind["goal_cancelled_by_staff"]["body"]
             assert "Full body" in by_kind["workout_reviewed"]["body"]
 
-            promoted = client.get(
+            beto_inbox = client.get(
                 "/member/notifications", headers=beto, params={"page_size": 50}
-            ).json()["items"][0]
-            assert "Spinning 6am" in promoted["body"]
+            ).json()
+            beto_by_kind = {item["kind"]: item for item in beto_inbox["items"]}
+            assert "Spinning 6am" in beto_by_kind["class_waitlist_promoted"]["body"]
+            reminder = beto_by_kind["class_reminder"]
+            assert "Spinning 6am" in reminder["body"]
+            assert "menos de 24 horas" in reminder["body"]
 
             # Acknowledging: one at a time, then the whole inbox.
             unread = client.get("/member/notifications/unread-count", headers=ana).json()

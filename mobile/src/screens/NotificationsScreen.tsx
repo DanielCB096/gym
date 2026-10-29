@@ -20,12 +20,15 @@ import { formatDateTime, notificationKindLabel } from "../format";
 import { colors, radius, sharedStyles, spacing } from "../theme";
 import type { MemberNotification, MemberNotificationPage } from "../types";
 
+const CLASS_KINDS = new Set(["class_reminder", "class_waitlist_promoted"]);
+
 type Props = {
   token: string;
   onBack: () => void;
   onSessionExpired: () => void;
   onUnreadChange: (count: number) => void;
   onOpenInvoices: () => void;
+  onOpenClasses: () => void;
 };
 
 export function NotificationsScreen({
@@ -34,6 +37,7 @@ export function NotificationsScreen({
   onSessionExpired,
   onUnreadChange,
   onOpenInvoices,
+  onOpenClasses,
 }: Props) {
   const [inbox, setInbox] = useState<MemberNotificationPage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -103,6 +107,8 @@ export function NotificationsScreen({
     }
     if (item.kind.startsWith("invoice_")) {
       onOpenInvoices();
+    } else if (CLASS_KINDS.has(item.kind)) {
+      onOpenClasses();
     }
   }
 
@@ -230,9 +236,11 @@ export function NotificationsScreen({
                 accessibilityLabel={
                   item.kind.startsWith("invoice_")
                     ? `Abrir facturas: ${item.title}`
-                    : item.read_at
-                      ? `Aviso leído: ${item.title}`
-                      : `Marcar como leído: ${item.title}`
+                    : CLASS_KINDS.has(item.kind)
+                      ? `Abrir clases: ${item.title}`
+                      : item.read_at
+                        ? `Aviso leído: ${item.title}`
+                        : `Marcar como leído: ${item.title}`
                 }
                 onPress={() => void handleOpen(item)}
                 style={({ pressed }) => [
@@ -262,8 +270,9 @@ export function NotificationsScreen({
       ) : null}
 
       <Text style={sharedStyles.hint}>
-        Toca un aviso para marcarlo como leído. Los avisos no se borran: quedan en tu
-        historial. Desliza hacia abajo para actualizar.
+        Toca un aviso para marcarlo como leído. Los de factura abren Facturas y los de
+        clase abren Clases. Los avisos no se borran: quedan en tu historial. Desliza
+        hacia abajo para actualizar.
       </Text>
     </ScrollView>
   );

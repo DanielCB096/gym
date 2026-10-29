@@ -14,10 +14,11 @@ Three producers feed the two inboxes:
   into work for a named person. The audience is a panel account, so the employee
   behind the assignment or the ticket is resolved to its ``app_users`` row here
   and the notice is simply skipped when that employee has no active account;
-* the membership window, which has no scheduler to wake it up. It is materialised
-  lazily when the member opens the inbox and is deduplicated by
-  ``membership_expiring:<membership>:<window>``, so the same reminder is written
-  at most once per threshold (7, then 3, then 1 day left).
+* the time-based reminders —a membership about to expire, a class about to
+  start— which have no scheduler to wake them up. They are materialised lazily
+  when the member reads the inbox or the unread counter and are deduplicated by
+  a key that names the threshold, so the same reminder is written at most once
+  per window (7, then 3, then 1 day left; 24 then 2 hours before the class).
 
 Readers can only ever see and acknowledge their own rows; there is no update or
 delete path on either inbox.
@@ -25,7 +26,7 @@ delete path on either inbox.
 
 import math
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Sequence, TypeVar
 from uuid import UUID
 
@@ -48,6 +49,9 @@ from app.modules.notifications.models import (
 from app.timezone import to_club_timezone
 
 MEMBERSHIP_EXPIRY_WINDOWS = (7, 3, 1)
+# Ascending order: each read picks the tightest window the class is already
+# inside, so opening the inbox twice within the same window writes one row.
+CLASS_REMINDER_WINDOWS_HOURS = (2, 24)
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
 
@@ -600,7 +604,7 @@ def list_member_notifications(
     member = session.get(Member, member_id)
     if member is None:
         raise NotificationError("El socio no existe")
-    _ensure_membership_expiring(session, member_id, now=now)
+    _materialise_deferred(session, member_id, now=now)
 
     page, page_size, rows, total, pages, unread_total = _paginate_inbox(
         session,
@@ -620,7 +624,16 @@ def list_member_notifications(
     )
 
 
-def unread_notification_count(session: Session, member_id: UUID) -> int:
+def unread_notification_count(
+    session: Session, member_id: UUID, *, now: datetime | None = None
+) -> int:
+    """Unread rows for the badge.
+
+    The deferred reminders are materialised here too: the badge is what makes
+    the member open the inbox, so a reminder that only appeared after opening
+    it would never be announced.
+    """
+    _materialise_deferred(session, member_id, now=now)
     return int(
         session.exec(
             select(func.count(MemberNotification.id)).where(
@@ -743,6 +756,78 @@ def mark_all_staff_notifications_read(
     )
     session.commit()
     return int(result.rowcount or 0)
+
+
+def _materialise_deferred(
+    session: Session, member_id: UUID, *, now: datetime | None = None
+) -> None:
+    """Write every reminder that only exists because someone is looking.
+
+    There is no scheduler, so the two time-based notices are produced by the
+    read path instead of a worker. Each producer deduplicates itself, which
+    makes this safe to call on every read of the inbox and of the badge.
+    """
+    occurred = _as_utc(now or utc_now())
+    _ensure_membership_expiring(session, member_id, now=occurred)
+    _ensure_class_reminders(session, member_id, now=occurred)
+
+
+def _ensure_class_reminders(
+    session: Session, member_id: UUID, *, now: datetime | None = None
+) -> None:
+    """Write the reminder of every class the member is about to attend.
+
+    The window is part of the dedupe key, so a member who opens the app the day
+    before and again shortly before the class gets one reminder per threshold,
+    while opening it twice inside the same window changes nothing. A cancelled
+    reservation stops matching the query, and the reminder it already received
+    stays in the inbox as history.
+    """
+    # Imported here because the classes service imports this module for the
+    # waitlist notice; a top-level import would close the cycle at startup.
+    from app.modules.classes.models import ClassReservation, ClassSession
+
+    occurred = _as_utc(now or utc_now())
+    horizon = occurred + timedelta(hours=max(CLASS_REMINDER_WINDOWS_HOURS))
+    rows = session.exec(
+        select(ClassReservation, ClassSession)
+        .join(ClassSession, ClassSession.id == ClassReservation.session_id)
+        .where(
+            ClassReservation.member_id == member_id,
+            ClassReservation.status == "reserved",
+            ClassSession.status == "scheduled",
+            ClassSession.starts_at > occurred,
+            ClassSession.starts_at <= horizon,
+        )
+        .order_by(ClassSession.starts_at)
+    ).all()
+    if not rows:
+        return
+    for reservation, class_session in rows:
+        starts_at = _as_utc(class_session.starts_at)
+        hours_left = (starts_at - occurred).total_seconds() / 3600
+        window = next(
+            (limit for limit in CLASS_REMINDER_WINDOWS_HOURS if hours_left <= limit),
+            None,
+        )
+        if window is None:
+            continue
+        local = to_club_timezone(starts_at)
+        create_notification(
+            session,
+            member_id=member_id,
+            kind="class_reminder",
+            title="Tu clase empieza pronto",
+            body=(
+                f"Tu clase {_clip(class_session.title, 80)} del {local:%d/%m/%Y} "
+                f"a las {local:%H:%M} empieza en menos de {window} horas. "
+                "Llega unos minutos antes."
+            ),
+            ref_id=reservation.id,
+            dedupe_key=f"class_reminder:{reservation.id}:{window}",
+            now=occurred,
+        )
+    session.commit()
 
 
 def _ensure_membership_expiring(
