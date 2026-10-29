@@ -9,13 +9,16 @@ la entrada o la deniega con el motor de acceso del club.
 - Resultado grande y accesible: «Acceso concedido» o «Acceso denegado» con el motivo.
 - Reinicio automático del teclado a los pocos segundos para el siguiente socio.
 - Configuración del kiosco por pantalla: dirección del servidor y token del dispositivo.
-- Token guardado solo en `localStorage` del equipo; se puede revocar desde el panel.
-- Manifest y service worker para instalar la PWA y conservar el shell sin conexión.
+- Token guardado solo en `localStorage` del equipo; vive 90 días y se puede rotar o revocar desde el panel.
+- Manifest y service worker (`centrofit-kiosk-v3`) para instalar la PWA y conservar el shell sin conexión.
 - Aviso explícito de que el registro de entrada necesita el servidor; no hay check-in offline.
 - Banda «Equipos no disponibles hoy» con la flota en mantenimiento o fuera de servicio,
   refrescada cada minuto desde `GET /kiosk/equipment`.
 - Control de duplicados configurable desde el panel: un código del socio que ya entró
   dentro de la ventana del club se deniega con «Entrada duplicada. Espera un momento.».
+- Token de 90 días con fecha visible en el panel («TOKEN VENCE»). Al vencer o rotarse,
+  el kiosco y el cartel reciben `401`, borran el token y vuelven a configuración con
+  «El token del kiosco no es válido, fue revocado o caducó. Captura uno nuevo.».
 - Cartel de recepción (`cartel.html`) como pantalla pasiva para una TV o monitor:
   lista grande de equipos no disponibles con ubicación y estado, estado vacío
   «Todos los equipos están operativos», reloj y fecha, y su propia configuración
@@ -44,9 +47,15 @@ PREVIEW_MODE=true ... uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 1. En el panel, entra a **Kiosco** con una cuenta con `settings.manage`.
 2. Crea el dispositivo con un nombre reconocible, por ejemplo «Recepción».
-3. Copia el token que se muestra **una sola vez** y captúralo en la pantalla de
-   configuración del kiosco (`Configurar kiosco`).
+3. Copia el token que se muestra **una sola vez** (vive 90 días) y captúralo en la
+   pantalla de configuración del kiosco (`Configurar kiosco`).
 4. Guarda: el kiosco prueba `/health` y queda listo para recibir códigos.
+
+Para renovar el token antes de que venza —o cuando la tablet ya volvió a
+configuración— usa **Rotar token** en el panel, confirma el aviso y captura el
+token nuevo en la pantalla; el anterior deja de servir de inmediato y el
+dispositivo conserva su historial. Un kiosco revocado no se puede rotar: hay que
+crear uno nuevo.
 
 Para retirar un equipo, revócalo en el panel; el kiosco recibe `401` en el
 siguiente intento y pide un token nuevo.
@@ -74,6 +83,11 @@ la lista al validar un código.
 - 6 códigos por socio cada 10 minutos.
 - 10 intentos por kiosco cada minuto.
 - Códigos guardados como HMAC; el token del kiosco como SHA-256.
+- El token caduca a los 90 días (`KIOSK_TOKEN_LIFETIME`) y la rotación es manual y
+  presencial; no hay aviso previo automático ni aprovisionamiento remoto, y la
+  caducidad no revoca el dispositivo (sigue apareciendo como «Caducado» y se puede
+  rotar). Un check-in que ya autenticó el token anterior puede completarse después
+  de la rotación; el corte aplica desde la siguiente petición.
 - La lista de equipos no disponibles se refresca cada minuto o al recuperar la red;
   si la consulta falla se conserva la última conocida, así que un cambio puede tardar
   hasta un minuto en verse y no hay push.
@@ -100,6 +114,6 @@ la lista al validar un código.
 
 - Modo offline con cola local y sincronización.
 - QR, huella o tarjeta física y apertura de torniquete.
-- Rotación automática de tokens y aprovisionamiento remoto.
+- Rotación automática de tokens, aviso previo al vencimiento y aprovisionamiento remoto.
 - Refresco por push del cartel y del kiosco (hoy ambos consultan cada minuto).
 - Antipassback por área, lector o plan (hoy la ventana es global del club).

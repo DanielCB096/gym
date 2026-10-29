@@ -188,7 +188,7 @@ async function submitCode() {
     if (response.status === 401) {
       state.config.token = "";
       saveConfig();
-      openSetup("El token del kiosco no es válido o fue revocado. Captura uno nuevo.");
+      openSetup("El token del kiosco no es válido, fue revocado o caducó. Captura uno nuevo.");
       return;
     }
     if (response.status === 429) {
@@ -323,7 +323,7 @@ async function refreshEquipmentNotices() {
       saveConfig();
       renderEquipmentNotices([]);
       if (!state.busy && state.digits.length === 0) {
-        openSetup("El token del kiosco no es válido o fue revocado. Captura uno nuevo.");
+        openSetup("El token del kiosco no es válido, fue revocado o caducó. Captura uno nuevo.");
       }
       return;
     }

@@ -41,9 +41,15 @@ Este módulo cubre el control de acceso al gimnasio, validación de membresía, 
 ### Flujo implementado: alta de un kiosco
 1. El dueño entra al panel con `settings.manage` y abre «Kiosco».
 2. Captura el nombre del dispositivo («Recepción») y lo crea.
-3. El panel muestra el token **una sola vez**; se copia a la pantalla de configuración del kiosco junto con la URL del backend.
+3. El panel muestra el token **una sola vez**, con su fecha de vencimiento (90 días); se copia a la pantalla de configuración del kiosco junto con la URL del backend.
 4. El kiosco prueba la conexión con `/health` y guarda `{apiUrl, token, label}` en el navegador.
 5. Si la tablet se retira o se compromete, el panel revoca el dispositivo; el siguiente check-in responde `401`, el kiosco borra el token y vuelve a configuración.
+
+### Flujo implementado: rotar o recuperar un token vencido
+1. La página «Kiosco» muestra en «TOKEN VENCE» la fecha de cada dispositivo, «Vence en N días» en ámbar cuando faltan 15 o menos y «Caducado» cuando ya pasó.
+2. Antes de que venza —o cuando la tablet ya volvió a configuración con «El token del kiosco no es válido, fue revocado o caducó»— el dueño pulsa «Rotar token» y confirma en el aviso en línea.
+3. El backend genera un token nuevo, reinicia la fecha a 90 días y lo devuelve **una sola vez**; el anterior deja de servir en la siguiente petición. Un kiosco revocado responde `409`: para recuperarlo hay que crear uno nuevo.
+4. Alguien frente a la tablet captura el token nuevo en el formulario y prueba la conexión. La rotación no borra el dispositivo ni su historial de eventos.
 
 ### Flujo principal: acceso válido
 1. El socio se acerca al lector.
@@ -97,7 +103,7 @@ Este módulo cubre el control de acceso al gimnasio, validación de membresía, 
 - Componentes (implementado):
   - tablero con accesos del día y bitácora con filtros por estado y búsqueda
   - acceso manual con motivo
-  - página «Kiosco» con los dispositivos autorizados, alta con token de una sola vista y revocación
+  - página «Kiosco» con los dispositivos autorizados, alta con token de una sola vista, fecha de vencimiento con aviso a 15 días, rotación del token y revocación
   - tarjeta «Límite diario de entradas» en «Kiosco»: un campo por plan para fijar o retirar `daily_entry_limit`
   - tarjeta «Control de duplicados» en «Kiosco»: ventana de antipassback del club en segundos (`0` la desactiva) con insignia, estado y guardado
 - Componentes del diseño todavía pendientes:
@@ -232,19 +238,21 @@ Implementación inicial del motor offline y del kiosco de recepción con código
 - 2026-10-28: se agrega el cartel de recepción (`kiosk/cartel.html`), una pantalla pasiva que reutiliza `GET /kiosk/equipment` con el token de un dispositivo propio para mostrar la flota no disponible en la TV de recepción; no valida códigos ni escribe en la bitácora.
 - 2026-10-28: el límite diario de entradas deja de ser una regla del motor sin datos y pasa a configurarse por plan (`plans.daily_entry_limit`) desde el panel; el kiosco cuenta las entradas autorizadas del día del club, incluidas las manuales, y deniega con «Ya usaste tus entradas de hoy.» (ADR-025).
 - 2026-10-28: el antipassback deja de ser una regla sin datos y pasa a configurarse como ventana del club (`access_settings.antipassback_seconds`, `0` desactivado) desde la página «Kiosco»; el kiosco consulta la última entrada autorizada del socio —también las manuales— y deniega el código siguiente con «Entrada duplicada. Espera un momento.» (ADR-026).
+- 2026-10-28: el token del kiosco caduca a los 90 días y se puede rotar desde el panel sin crear otro dispositivo; el token anterior deja de servir al instante, un vencido o revocado responde el mismo `401` y el kiosco y el cartel vuelven a configuración (ADR-027).
 
 ## 15. Implementación actual y límites
 
 - El kiosco de recepción es una PWA estática en `kiosk/` que captura el código de seis dígitos, lo valida con `POST /kiosk/check-in` mediante un token de dispositivo y muestra el resultado en pantalla.
 - El código se emite desde la app (`POST /member/access/code`), dura cinco minutos, es de un solo uso, se guarda como HMAC-SHA256 y emitir otro invalida el anterior. Hay 6 emisiones por socio cada 10 minutos y 10 intentos por kiosco cada minuto; los intentos inválidos quedan en `kiosk_attempts` sin guardar el código.
-- Los dispositivos se administran desde el panel con `settings.manage`: alta con token de una sola vista y revocación inmediata. El token se guarda como SHA-256 y la tableta lo conserva en `localStorage`.
+- Los dispositivos se administran desde el panel con `settings.manage`: alta con token de una sola vista, fecha de vencimiento, rotación y revocación inmediata. El token se guarda como SHA-256 y la tableta lo conserva en `localStorage`.
+- El token vive **90 días** desde el alta o la última rotación (`KIOSK_TOKEN_LIFETIME`). `POST /admin/kiosk/devices/{id}/rotate-token` reemplaza el hash, reinicia la fecha y devuelve el token nuevo una sola vez; el anterior deja de servir en la siguiente petición y un dispositivo revocado responde `409`. Un token vencido o revocado produce el mismo `401` genérico, así que el kiosco y el cartel borran su token y vuelven a configuración con «El token del kiosco no es válido, fue revocado o caducó. Captura uno nuevo.»; la recuperación es presencial (ADR-027).
 - El kiosco reutiliza `evaluate_access` y escribe la decisión en `access_events` con origen `reader`; la bitácora del panel ya muestra lector «Kiosco <etiqueta>».
 - El kiosco consulta `GET /kiosk/equipment` al arrancar, al recuperar la red y cada 60 segundos, y pinta «Equipos no disponibles hoy» con nombre, ubicación y estado (`En mantenimiento` / `Fuera de servicio`). Es un aviso de solo lectura: no bloquea el check-in, conserva la última lista conocida si la consulta falla y un `401` borra el token y vuelve a configuración, igual que en el check-in. La lista sale de `list_unavailable_equipment` en el módulo de mantenimiento, importado de forma perezosa desde `access.kiosk`.
 - El cartel de recepción (`kiosk/cartel.html`) usa la misma consulta y un dispositivo propio para pintar la flota no disponible como pantalla pasiva en una TV; su token solo permite leer la lista, no validar códigos, y se revoca desde la misma página «Kiosco» del panel.
 - El límite diario se configura por plan con `PATCH /admin/plans/{plan_id}` (permiso `settings.manage`, solo propietario) y el kiosco lo consulta en cada check-in a través del plan de la membresía vigente. El conteo usa el día local del club (`APP_TIMEZONE`) e incluye las entradas autorizadas, también las manuales de recepción; la entrada manual sigue permitiéndose como `manual_override` y emitir un código nunca se bloquea. Sin límite (`null`) no se consulta el conteo.
 - El control de duplicados es una ventana global del club (`access_settings.antipassback_seconds`, `0`–`3600`, `0` desactivado) que se lee en cada check-in con `GET/PATCH /admin/access/settings` para configurarla (`settings.manage`). El kiosco busca la última entrada autorizada del socio —incluidas las manuales— anterior al intento y el motor deniega dentro de la ventana con `reason="antipassback"`. La entrada manual nunca se bloquea, pero cuenta; con `0` no se consulta la última entrada (ADR-026).
 - El snapshot del kiosco aporta estado, fechas, límite diario del plan y ventana de antipassback: no consulta adeudo ni horario, y envía ocupación 0. Un socio moroso o fuera de horario entra si su membresía está vigente, no agotó su límite y no repite entrada dentro de la ventana.
-- No hay hardware conectado: el kiosco no abre torniquete ni registra salidas. Tampoco hay validación offline (el service worker solo cachea el shell) ni rotación o caducidad del token del dispositivo.
+- No hay hardware conectado: el kiosco no abre torniquete ni registra salidas. Tampoco hay validación offline (el service worker solo cachea el shell) ni aprovisionamiento remoto: rotar o caducar el token exige capturarlo de nuevo en la tablet.
 - El motor valida estado/vigencia de membresía, adeudo bloqueante, horario local, límite diario, antipassback y aforo.
 - El snapshot y el outbox son persistentes en SQLite local; cada decisión usa `event_id` idempotente y queda pendiente hasta recibir confirmación de sincronización.
 - Una salida se permite aunque no exista snapshot de membresía, para no impedir el egreso por una membresía vencida o una caché faltante.

@@ -48,6 +48,7 @@ ACCESS_CODE_REQUEST_WINDOW = timedelta(minutes=10)
 ACCESS_CODE_MAX_REQUESTS = 6
 KIOSK_ATTEMPT_WINDOW = timedelta(minutes=1)
 KIOSK_ATTEMPT_LIMIT = 10
+KIOSK_TOKEN_LIFETIME = timedelta(days=90)
 LAST_SEEN_REFRESH = timedelta(minutes=1)
 
 REASON_MESSAGES: dict[str, str] = {
@@ -73,6 +74,10 @@ class InvalidKioskToken(KioskError):
 
 
 class KioskDeviceNotFound(KioskError):
+    pass
+
+
+class KioskDeviceRevoked(KioskError):
     pass
 
 
@@ -201,14 +206,17 @@ def create_kiosk_device(
     *,
     label: str,
     created_by: UUID | None = None,
+    now: datetime | None = None,
 ) -> tuple[KioskDevice, str]:
     cleaned = label.strip()
     if not cleaned or len(cleaned) > 80:
         raise InvalidKioskLabel("El nombre del kiosco debe tener entre 1 y 80 caracteres.")
+    occurred_at = _as_utc(now or utc_now())
     raw_token = secrets.token_urlsafe(32)
     device = KioskDevice(
         label=cleaned,
         token_sha256=_token_hash(raw_token),
+        token_expires_at=occurred_at + KIOSK_TOKEN_LIFETIME,
         created_by=created_by,
     )
     session.add(device)
@@ -242,6 +250,27 @@ def revoke_kiosk_device(
     return device
 
 
+def rotate_kiosk_device(
+    session: Session,
+    device_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> tuple[KioskDevice, str]:
+    occurred_at = _as_utc(now or utc_now())
+    device = session.get(KioskDevice, device_id)
+    if device is None:
+        raise KioskDeviceNotFound("El kiosco no existe.")
+    if device.status != "active":
+        raise KioskDeviceRevoked("Un kiosco revocado no puede recibir un token nuevo.")
+    raw_token = secrets.token_urlsafe(32)
+    device.token_sha256 = _token_hash(raw_token)
+    device.token_expires_at = occurred_at + KIOSK_TOKEN_LIFETIME
+    session.add(device)
+    session.commit()
+    session.refresh(device)
+    return device, raw_token
+
+
 def authenticate_kiosk_device(
     session: Session,
     token: str,
@@ -257,6 +286,11 @@ def authenticate_kiosk_device(
     ).first()
     if device is None:
         raise InvalidKioskToken("El kiosco no está autorizado.")
+    if (
+        device.token_expires_at is not None
+        and _as_utc(device.token_expires_at) <= occurred_at
+    ):
+        raise InvalidKioskToken("El token del kiosco expiró.")
     last_seen = device.last_seen_at
     if last_seen is None or _as_utc(last_seen) <= occurred_at - LAST_SEEN_REFRESH:
         device.last_seen_at = occurred_at

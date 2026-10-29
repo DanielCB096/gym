@@ -165,7 +165,7 @@ async function refreshEquipment() {
       state.items = null;
       state.updatedAt = null;
       state.lastFetchFailed = false;
-      openSetup("El token del dispositivo no es válido o fue revocado. Captura uno nuevo.");
+      openSetup("El token del dispositivo no es válido, fue revocado o caducó. Captura uno nuevo.");
       return;
     }
     if (!response.ok) {

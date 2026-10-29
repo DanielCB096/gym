@@ -161,6 +161,8 @@ class KioskDevice(SQLModel, table=True):
 
     Only the SHA-256 digest of the device token is stored, mirroring staff and
     member sessions: the raw token is shown once when the device is created.
+    ``token_expires_at`` bounds the life of that bearer; a NULL value belongs to
+    devices created before the column existed and never expires.
     """
 
     __tablename__ = "kiosk_devices"
@@ -172,6 +174,9 @@ class KioskDevice(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     label: str = Field(max_length=80)
     token_sha256: str = Field(max_length=64)
+    token_expires_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
     status: str = Field(default="active", max_length=16)
     created_by: UUID | None = Field(
         default=None,

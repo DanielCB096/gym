@@ -32,7 +32,7 @@
         <h1>Configura este kiosco</h1>
         <p class="muted">
           Captura la dirección del servidor y el token del dispositivo que se muestra una
-          sola vez al crearlo en el panel.
+          sola vez al crearlo o al rotarlo en el panel.
         </p>
         <form id="setup-form" novalidate>
           <label for="api-url">Dirección del servidor</label>
@@ -60,8 +60,9 @@
           <button type="submit" class="primary">Guardar y probar conexión</button>
         </form>
         <p class="hint">
-          Este equipo debe ser propiedad del gimnasio. El token se guarda solo en este
-          navegador y debe revocarse si el kiosco se retira.
+          Este equipo debe ser propiedad del gimnasio. El token vive 90 días y se guarda solo
+          en este navegador: si caduca o se revoca, recepción debe rotarlo en el panel y
+          capturar el nuevo aquí.
         </p>
       </section>
 

@@ -11,7 +11,10 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.main import app, get_session
 from app.modules.access.kiosk import (
     ACCESS_CODE_MAX_REQUESTS,
+    KIOSK_TOKEN_LIFETIME,
     InvalidAccessCode,
+    InvalidKioskToken,
+    authenticate_kiosk_device,
     check_in_with_code,
     create_kiosk_device,
     issue_member_access_code,
@@ -257,6 +260,103 @@ def test_kiosk_device_provisioning_and_code_check_in(monkeypatch) -> None:
     finally:
         app.dependency_overrides.pop(get_session, None)
         engine.dispose()
+
+
+def test_kiosk_token_rotation_replaces_the_device_token(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed(session)
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            owner = _login_staff(client, "owner@example.com", "owner-strong-password")
+            reception = _login_staff(client, "reception@example.com", "reception-strong-password")
+            device = _create_device(client, owner)
+            assert device["token_expires_at"] is not None
+            issued_expiry = datetime.fromisoformat(device["token_expires_at"])
+            if issued_expiry.tzinfo is None:
+                issued_expiry = issued_expiry.replace(tzinfo=timezone.utc)
+            assert issued_expiry > datetime.now(timezone.utc) + timedelta(days=89)
+            old_token = device["token"]
+            old_headers = {"X-Kiosk-Token": old_token}
+            assert client.get("/kiosk/equipment", headers=old_headers).status_code == 200
+
+            rotate_path = f"/admin/kiosk/devices/{device['id']}/rotate-token"
+            assert client.post(rotate_path, headers=reception).status_code == 403
+            assert client.post(
+                "/admin/kiosk/devices/00000000-0000-0000-0000-000000000000/rotate-token",
+                headers=owner,
+            ).status_code == 404
+
+            rotated = client.post(rotate_path, headers=owner)
+            assert rotated.status_code == 200, rotated.text
+            rotated_body = rotated.json()
+            new_token = rotated_body["token"]
+            assert new_token != old_token
+            assert rotated_body["status"] == "active"
+            assert rotated_body["token_expires_at"] is not None
+
+            assert client.get("/kiosk/equipment", headers=old_headers).status_code == 401
+            assert client.get(
+                "/kiosk/equipment", headers={"X-Kiosk-Token": new_token}
+            ).status_code == 200
+
+            listed = client.get("/admin/kiosk/devices", headers=owner).json()["items"]
+            assert listed[0]["token_expires_at"] == rotated_body["token_expires_at"]
+            assert "token" not in listed[0]
+
+            assert client.post(
+                f"/admin/kiosk/devices/{device['id']}/revoke", headers=owner
+            ).status_code == 200
+            assert client.post(rotate_path, headers=owner).status_code == 409
+            assert client.get(
+                "/kiosk/equipment", headers={"X-Kiosk-Token": new_token}
+            ).status_code == 401
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
+def test_kiosk_token_expires_after_ninety_days(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-kiosk-token-secret")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed(session)
+        base = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
+        device, token = create_kiosk_device(session, label="Tablet", now=base)
+        # SQLite drops the timezone on the way out; the stored value is UTC.
+        assert device.token_expires_at.replace(
+            tzinfo=timezone.utc
+        ) == base + KIOSK_TOKEN_LIFETIME
+
+        last_valid = base + KIOSK_TOKEN_LIFETIME - timedelta(seconds=1)
+        assert authenticate_kiosk_device(session, token, now=last_valid).id == device.id
+
+        try:
+            authenticate_kiosk_device(session, token, now=base + KIOSK_TOKEN_LIFETIME)
+        except InvalidKioskToken:
+            pass
+        else:
+            raise AssertionError("A token must be rejected once it expires")
+
+        # Devices created before the column existed have no expiry date and keep
+        # working until they are rotated or revoked.
+        device.token_expires_at = None
+        session.add(device)
+        session.commit()
+        assert (
+            authenticate_kiosk_device(session, token, now=base + timedelta(days=400)).id
+            == device.id
+        )
+    engine.dispose()
 
 
 def test_kiosk_denies_without_current_membership(monkeypatch) -> None:

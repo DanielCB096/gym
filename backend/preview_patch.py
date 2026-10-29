@@ -42,6 +42,7 @@ ADDED_COLUMNS = {
         "note": "VARCHAR(200)",
     },
     "progress_photos": {"origin": "VARCHAR(8) NOT NULL DEFAULT 'staff'"},
+    "kiosk_devices": {"token_expires_at": "DATETIME"},
     "invoices": {
         "global_year": "INTEGER",
         "global_month": "INTEGER",
@@ -282,6 +283,17 @@ def main(reset_maintenance: bool) -> None:
                     continue
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
                 print(f"Added {table}.{column}")
+
+        # Match the migration's backfill: devices that existed before the column
+        # get a full 90-day window instead of expiring retroactively.
+        if "kiosk_devices" in tables and "token_expires_at" in column_names(
+            connection, "kiosk_devices"
+        ):
+            connection.execute(
+                "UPDATE kiosk_devices "
+                "SET token_expires_at = datetime('now', '+90 days') "
+                "WHERE token_expires_at IS NULL"
+            )
 
         for table, replacements in CHECK_UPGRADES.items():
             if table in tables:

@@ -33,6 +33,7 @@ from app.modules.access.kiosk import (
     InvalidKioskToken,
     KioskDevice,
     KioskDeviceNotFound,
+    KioskDeviceRevoked,
     KioskRateLimited,
     MemberAccessUnavailable,
     authenticate_kiosk_device,
@@ -42,6 +43,7 @@ from app.modules.access.kiosk import (
     list_kiosk_devices,
     list_kiosk_equipment_notices,
     revoke_kiosk_device,
+    rotate_kiosk_device,
 )
 from app.modules.access.offline_store import SQLiteAccessStore
 from app.modules.access.service import (
@@ -2691,6 +2693,7 @@ class KioskDeviceResponse(BaseModel):
     label: str
     status: str
     created_at: datetime
+    token_expires_at: datetime | None
     last_seen_at: datetime | None
 
 
@@ -2851,6 +2854,7 @@ def _kiosk_device_response(device: KioskDevice) -> KioskDeviceResponse:
         label=device.label,
         status=device.status,
         created_at=device.created_at,
+        token_expires_at=device.token_expires_at,
         last_seen_at=device.last_seen_at,
     )
 
@@ -4514,6 +4518,26 @@ def revoke_kiosk_device_endpoint(
     except KioskDeviceNotFound as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     return _kiosk_device_response(device)
+
+
+@app.post(
+    "/admin/kiosk/devices/{device_id}/rotate-token",
+    response_model=KioskDeviceCreatedResponse,
+    tags=["access administration"],
+)
+def rotate_kiosk_device_endpoint(
+    device_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("settings.manage"))],
+) -> KioskDeviceCreatedResponse:
+    try:
+        device, token = rotate_kiosk_device(session, device_id)
+    except KioskDeviceNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except KioskDeviceRevoked as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    response = _kiosk_device_response(device)
+    return KioskDeviceCreatedResponse(**response.model_dump(), token=token)
 
 
 @app.get("/admin/dashboard", response_model=DashboardResponse, tags=["dashboard"])

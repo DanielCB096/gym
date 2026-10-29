@@ -277,6 +277,7 @@ type KioskDevice = {
   label: string;
   status: "active" | "revoked";
   created_at: string;
+  token_expires_at: string | null;
   last_seen_at: string | null;
 };
 
@@ -3453,7 +3454,7 @@ function StatusBadge({ state, detail }: { state: AccessState | string; detail?: 
     ? "status-good"
     : state === "Manual" || state === "Por vencer" || state === "Pago pendiente" || state === "Congelada"
       ? "status-warn"
-      : state === "Denegado" || state === "Vencida" || state === "Baja" || state === "Suspendida" || state === "Cancelada" || state === "Cancelado"
+      : state === "Denegado" || state === "Vencida" || state === "Baja" || state === "Suspendida" || state === "Cancelada" || state === "Cancelado" || state === "Caducado"
         ? "status-bad"
         : "status-neutral";
   return <span className={`status-badge ${statusClass}`} title={detail}><i />{state}</span>;
@@ -3519,6 +3520,8 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
   const [newToken, setNewToken] = useState<string | null>(null);
   const [createdLabel, setCreatedLabel] = useState("");
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [rotatingId, setRotatingId] = useState<string | null>(null);
+  const [confirmRotateId, setConfirmRotateId] = useState<string | null>(null);
   const [plans, setPlans] = useState<BackendPlan[] | null>(null);
   const [planDrafts, setPlanDrafts] = useState<Record<string, string>>({});
   const [savingPlanId, setSavingPlanId] = useState<string | null>(null);
@@ -3646,6 +3649,29 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
     }
   };
 
+  const rotateDevice = async (device: KioskDevice) => {
+    setConfirmRotateId(null);
+    setRotatingId(device.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/kiosk/devices/${encodeURIComponent(device.id)}/rotate-token`, { method: "POST" });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as KioskDeviceCreated & { detail?: string };
+      if (!response.ok) throw new Error(payload.detail || "No se pudo rotar el token.");
+      setDevices((current) => current?.map((item) => (item.id === device.id ? payload : item)) ?? current);
+      setNewToken(payload.token);
+      setCreatedLabel(payload.label);
+      onToast(`Token de ${device.label} rotado. Captúralo en el kiosco ahora.`);
+    } catch (rotateError) {
+      setError(rotateError instanceof Error ? rotateError.message : "No se pudo rotar el token.");
+    } finally {
+      setRotatingId(null);
+    }
+  };
+
   const copyToken = async () => {
     if (!newToken) return;
     try {
@@ -3745,8 +3771,9 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
         </div>
         <p className="panel-hint">
           Cada tablet de recepción valida el código de seis dígitos que muestra la app del socio.
-          El token se muestra una sola vez al crear el dispositivo; guárdalo en la pantalla de
-          configuración del kiosco y revócalo si el equipo se retira.
+          El token se muestra una sola vez al crear el dispositivo o al rotarlo; guárdalo en la
+          pantalla de configuración del kiosco y revócalo si el equipo se retira. Los tokens
+          caducan a los 90 días: rota el token antes de que venza.
         </p>
         {error && <div className="login-error" role="alert">{error}</div>}
         <form className="inline-form" onSubmit={createDevice}>
@@ -3776,7 +3803,7 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
           </div>
           <p className="panel-hint">
             Captúralo en la pantalla de configuración del kiosco «{createdLabel}». Si lo pierdes,
-            revoca el dispositivo y crea otro.
+            rota el token del dispositivo: el anterior deja de funcionar.
           </p>
           <div className="kiosk-token-row">
             <code className="kiosk-token">{newToken}</code>
@@ -3787,6 +3814,26 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
       )}
 
       <section className="panel full-panel">
+        {confirmRotateId && (() => {
+          const target = (devices ?? []).find((device) => device.id === confirmRotateId);
+          if (!target) return null;
+          return (
+            <div className="kiosk-rotate-confirm" role="alert">
+              <p>
+                ¿Rotar el token de «{target.label}»? El token actual dejará de funcionar de
+                inmediato y la tablet volverá a su pantalla de configuración.
+              </p>
+              <div className="pos-row-actions">
+                <button type="button" className="button button-primary" disabled={rotatingId === target.id} onClick={() => void rotateDevice(target)}>
+                  {rotatingId === target.id ? "Rotando…" : "Confirmar rotación"}
+                </button>
+                <button type="button" className="button button-secondary" disabled={rotatingId === target.id} onClick={() => setConfirmRotateId(null)}>
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          );
+        })()}
         <div className="table-scroll">
           <table className="data-table">
             <thead>
@@ -3794,16 +3841,21 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
                 <th>KIOSCO</th>
                 <th>ESTADO</th>
                 <th>ALTA</th>
+                <th>TOKEN VENCE</th>
                 <th>ÚLTIMA ACTIVIDAD</th>
                 <th />
               </tr>
             </thead>
             <tbody>
-              {loading && devices === null ? <tr><td colSpan={5} className="empty-row">Cargando kioscos…</td></tr>
-                : devices === null ? <tr><td colSpan={5} className="empty-row">No se pudieron cargar los kioscos.</td></tr>
-                : devices.length === 0 ? <tr><td colSpan={5} className="empty-row">Aún no hay kioscos registrados.</td></tr>
+              {loading && devices === null ? <tr><td colSpan={6} className="empty-row">Cargando kioscos…</td></tr>
+                : devices === null ? <tr><td colSpan={6} className="empty-row">No se pudieron cargar los kioscos.</td></tr>
+                : devices.length === 0 ? <tr><td colSpan={6} className="empty-row">Aún no hay kioscos registrados.</td></tr>
                 : devices.map((device) => {
-                  const busy = revokingId === device.id;
+                  const busy = revokingId === device.id || rotatingId === device.id;
+                  const expiry = kioskTokenExpiry(device.token_expires_at);
+                  const state = device.status === "revoked"
+                    ? "Revocado"
+                    : expiry.expired ? "Caducado" : expiry.soon ? "Por vencer" : "Activo";
                   return (
                     <tr key={device.id}>
                       <td>
@@ -3815,14 +3867,20 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
                           </span>
                         </div>
                       </td>
-                      <td><StatusBadge state={device.status === "active" ? "Activo" : "Revocado"} /></td>
+                      <td><StatusBadge state={state} /></td>
                       <td className="time-cell">{formatSessionTime(device.created_at)}</td>
+                      <td className="time-cell">{expiry.label}</td>
                       <td className="time-cell">{device.last_seen_at ? formatSessionTime(device.last_seen_at) : "Sin uso"}</td>
                       <td>
                         {device.status === "active" && (
-                          <button type="button" className="button button-secondary" disabled={busy} onClick={() => void revokeDevice(device)}>
-                            {busy ? "Revocando…" : "Revocar"}
-                          </button>
+                          <div className="pos-row-actions">
+                            <button type="button" className="button button-secondary" disabled={busy} onClick={() => setConfirmRotateId(device.id)}>
+                              Rotar token
+                            </button>
+                            <button type="button" className="button button-secondary" disabled={busy} onClick={() => void revokeDevice(device)}>
+                              {revokingId === device.id ? "Revocando…" : "Revocar"}
+                            </button>
+                          </div>
                         )}
                       </td>
                     </tr>
@@ -3989,6 +4047,16 @@ function formatSessionTime(value: string | null): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+}
+
+function kioskTokenExpiry(value: string | null): { label: string; expired: boolean; soon: boolean } {
+  if (!value) return { label: "Sin caducidad", expired: false, soon: false };
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return { label: "Sin caducidad", expired: false, soon: false };
+  const days = Math.ceil((date.getTime() - Date.now()) / 86_400_000);
+  if (days <= 0) return { label: `Caducó el ${formatRenewalDate(value)}`, expired: true, soon: false };
+  if (days <= 15) return { label: `Vence en ${days} ${days === 1 ? "día" : "días"}`, expired: false, soon: true };
+  return { label: formatRenewalDate(value), expired: false, soon: false };
 }
 
 function shiftDayLabel(value: string): string {
