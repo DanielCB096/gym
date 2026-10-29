@@ -114,8 +114,9 @@ CORS_ORIGINS=http://localhost:8081,http://127.0.0.1:8081
 
 1. La tarjeta «Acceso habilitado» del inicio abre `AccessCodeScreen` y la pantalla pide `POST /member/access/code` con el Bearer del socio.
 2. El backend exige membresía vigente y devuelve un código de seis dígitos con cinco minutos de vida; emitir otro invalida el anterior. La app solo lo mantiene en memoria y muestra la cuenta regresiva.
-3. El socio dicta o muestra el código en recepción y la tablet lo valida con `POST /kiosk/check-in`; la app no sabe si se usó, así que el contador sigue hasta el vencimiento.
-4. Al vencer, «Generar nuevo código» pide otro; un `401` cierra la sesión y vuelve al inicio de sesión.
+3. Mientras el código sigue vigente, la pantalla consulta `GET /member/access/code` cada 4 segundos y el backend responde si sigue sirviendo (`active`), si el kiosco ya lo consumió (`consumed`) o si venció (`expired`); nunca devuelve los dígitos.
+4. Cuando la tablet lo valida, la pantalla cambia a «Código usado» con el aviso de que recepción ya lo registró y el botón para pedir otro; deja de sondear. Si falla la red, mantiene el código y reintenta en el siguiente sondeo.
+5. Al vencer, «Generar nuevo código» pide otro; un `401` cierra la sesión y vuelve al inicio de sesión.
 
 ## Flujo de clases
 

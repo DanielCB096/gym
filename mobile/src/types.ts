@@ -47,6 +47,13 @@ export type MemberAccessCode = {
   expires_in_seconds: number;
 };
 
+export type MemberAccessCodeStatus = {
+  status: "none" | "active" | "consumed" | "expired";
+  issued_at: string | null;
+  expires_at: string | null;
+  consumed_at: string | null;
+};
+
 export type MemberClassReservation = {
   id: string;
   session_id: string;

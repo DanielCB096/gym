@@ -23,6 +23,7 @@ El riesgo principal de un código es que se comparta: un socio podría enviar un
 - **La app muestra el código, no lo guarda.** `AccessCodeScreen` pide un código al abrirse, lo pinta agrupado (`397 969`), muestra la cuenta regresiva y un botón para generar otro cuando vence. La tarjeta «Acceso habilitado» del inicio ahora es un botón («Ver mi código →») y se deshabilita si `access_enabled` es falso. La pantalla no persiste el código ni lo deja en el historial de la app; el código vive en memoria hasta que se cierra.
 - **El kiosco es una PWA estática y dependency-free.** `kiosk/` contiene `index.html`, `styles.css`, `app.js`, `manifest.webmanifest`, `sw.js` e `icon.svg`, servidos por cualquier servidor estático (`python -m http.server 8090 --directory kiosk`). La configuración (`apiUrl`, `token`, `label`) se guarda en `localStorage` y se valida con un ping a `/health` antes de guardar; si el backend responde `401` en un check-in, el token se borra y la pantalla vuelve a configuración con el mensaje de token revocado. El service worker cachea **solo el shell**: no hay validación offline ni cola de check-ins, porque un código de cinco minutos no tiene sentido sin red y el kiosco no debe decidir acceso con datos viejos.
 - **El panel administra dispositivos, no códigos.** La página «Kiosco» (visible con `settings.manage`) lista etiqueta, estado, alta y última actividad, crea dispositivos, muestra el token una sola vez con botón de copiar y revoca con confirmación. El personal no puede ver ni emitir códigos de socios desde el panel: el código nace en la app del socio.
+- **Actualización 2026-10-29 — la app refleja el consumo.** `GET /member/access/code` (Bearer del socio) devuelve el estado del código **más reciente** (`none`, `active`, `consumed` o `expired`) con `issued_at`, `expires_at` y `consumed_at`, sin los dígitos: la app conserva los que ya muestra y solo pregunta si siguen sirviendo. El sondeo es cada 4 segundos mientras el código está vigente y se detiene al consumirse o vencer; el estado refleja también la supersesión de una emisión nueva. Sin tabla ni migración.
 - **Actualización 2026-10-28 — la tablet también muestra la flota no disponible.** `GET /kiosk/equipment` usa el mismo `X-Kiosk-Token`, refresca `last_seen_at` igual que el check-in y devuelve nombre, ubicación, estado y etiqueta de los equipos en `maintenance`/`out_of_service`. La PWA los lista bajo el teclado («Equipos no disponibles hoy») y refresca al arrancar, al recuperar la red y cada minuto. Es un aviso de solo lectura: no participa en `evaluate_access`, no consume intentos y un `401` devuelve a configuración como el check-in.
 
 ## Consecuencias y límites
@@ -43,10 +44,10 @@ El riesgo principal de un código es que se comparta: un socio podría enviar un
 
 ## Referencias
 
-- `backend/src/app/modules/access/kiosk.py` (`issue_member_access_code`, `create_kiosk_device`, `list_kiosk_devices`, `revoke_kiosk_device`, `authenticate_kiosk_device`, `check_in_with_code`)
+- `backend/src/app/modules/access/kiosk.py` (`issue_member_access_code`, `latest_member_access_code_status`, `create_kiosk_device`, `list_kiosk_devices`, `revoke_kiosk_device`, `authenticate_kiosk_device`, `check_in_with_code`)
 - `backend/src/app/modules/access/models.py` (`KioskDevice`, `MemberAccessCode`, `KioskAttempt`), `backend/alembic/versions/20261028_0042_kiosk_access.py`
-- `backend/src/app/main.py` (`POST /member/access/code`, `POST /kiosk/check-in`, `GET/POST /admin/kiosk/devices`, `POST /admin/kiosk/devices/{id}/revoke`)
-- `backend/tests/test_kiosk_access_api.py` (4 pruebas)
+- `backend/src/app/main.py` (`POST`/`GET /member/access/code`, `POST /kiosk/check-in`, `GET/POST /admin/kiosk/devices`, `POST /admin/kiosk/devices/{id}/revoke`)
+- `backend/tests/test_kiosk_access_api.py` (11 pruebas)
 - `mobile/src/screens/AccessCodeScreen.tsx`, `mobile/src/api.ts` (`requestMemberAccessCode`), `mobile/src/types.ts`, `mobile/App.tsx`, `mobile/src/screens/HomeScreen.tsx`
 - `kiosk/` (`app.js`, `index.html`, `styles.css`, `sw.js`, `manifest.webmanifest`), `web/src/app/page.tsx` (`KioskView`), `web/src/app/api/admin/kiosk/devices/*`
 - ADR-004 (hardware de acceso), ADR-007 (caché local de acceso), ADR-009 (autenticación del socio)

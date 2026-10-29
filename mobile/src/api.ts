@@ -4,6 +4,7 @@ import { API_URL, REQUEST_TIMEOUT_MS } from "./config";
 import type {
   CodeRequestResult,
   MemberAccessCode,
+  MemberAccessCodeStatus,
   MemberAccount,
   MemberBillableOriginPage,
   MemberClassPage,
@@ -139,6 +140,12 @@ export function requestMemberAccessCode(token: string): Promise<MemberAccessCode
     method: "POST",
     token,
   });
+}
+
+export function getMemberAccessCodeStatus(
+  token: string,
+): Promise<MemberAccessCodeStatus> {
+  return request<MemberAccessCodeStatus>("/member/access/code", { token });
 }
 
 export function logoutMember(token: string): Promise<void> {

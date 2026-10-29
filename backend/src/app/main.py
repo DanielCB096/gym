@@ -40,6 +40,7 @@ from app.modules.access.kiosk import (
     check_in_with_code,
     create_kiosk_device,
     issue_member_access_code,
+    latest_member_access_code_status,
     list_kiosk_devices,
     list_kiosk_equipment_notices,
     revoke_kiosk_device,
@@ -2688,6 +2689,13 @@ class MemberAccessCodeResponse(BaseModel):
     expires_in_seconds: int
 
 
+class MemberAccessCodeStatusResponse(BaseModel):
+    status: str
+    issued_at: datetime | None
+    expires_at: datetime | None
+    consumed_at: datetime | None
+
+
 class KioskDeviceResponse(BaseModel):
     id: UUID
     label: str
@@ -3018,6 +3026,24 @@ def member_access_code(
         code=result.code,
         expires_at=result.expires_at,
         expires_in_seconds=result.expires_in_seconds,
+    )
+
+
+@app.get(
+    "/member/access/code",
+    response_model=MemberAccessCodeStatusResponse,
+    tags=["member self-service"],
+)
+def member_access_code_status(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberAccessCodeStatusResponse:
+    status = latest_member_access_code_status(session, member.member_id)
+    return MemberAccessCodeStatusResponse(
+        status=status.status,
+        issued_at=status.issued_at,
+        expires_at=status.expires_at,
+        consumed_at=status.consumed_at,
     )
 
 

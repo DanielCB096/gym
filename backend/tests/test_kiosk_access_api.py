@@ -18,6 +18,7 @@ from app.modules.access.kiosk import (
     check_in_with_code,
     create_kiosk_device,
     issue_member_access_code,
+    latest_member_access_code_status,
 )
 from app.modules.access.models import (
     AccessDecision,
@@ -25,6 +26,7 @@ from app.modules.access.models import (
     AccessReason,
     KioskAttempt,
     KioskDevice,
+    utc_now,
 )
 from app.modules.access.service import (
     count_member_entries_today,
@@ -257,6 +259,78 @@ def test_kiosk_device_provisioning_and_code_check_in(monkeypatch) -> None:
             listed = client.get("/admin/kiosk/devices", headers=owner).json()["items"]
             assert len(listed) == 1
             assert listed[0]["status"] == "revoked"
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
+def test_member_access_code_status_tracks_consumption(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            assert client.get("/member/access/code").status_code == 401
+
+            with Session(engine) as session:
+                assert latest_member_access_code_status(session, ids["ana"]).status == "none"
+
+            member_headers = _login_member(client, "ana@example.com")
+            owner = _login_staff(client, "owner@example.com", "owner-strong-password")
+            device = _create_device(client, owner)
+            kiosk_headers = {"X-Kiosk-Token": device["token"]}
+
+            issued = client.post("/member/access/code", headers=member_headers)
+            assert issued.status_code == 201, issued.text
+            code = issued.json()["code"]
+
+            active = client.get("/member/access/code", headers=member_headers)
+            assert active.status_code == 200, active.text
+            active_body = active.json()
+            assert active_body["status"] == "active"
+            assert active_body["consumed_at"] is None
+            assert datetime.fromisoformat(active_body["issued_at"]) <= datetime.now(
+                timezone.utc
+            )
+            assert (
+                datetime.fromisoformat(active_body["expires_at"])
+                == datetime.fromisoformat(issued.json()["expires_at"])
+            )
+
+            granted = client.post(
+                "/kiosk/check-in", headers=kiosk_headers, json={"code": code}
+            )
+            assert granted.status_code == 200, granted.text
+            assert granted.json()["authorized"] is True
+
+            consumed = client.get("/member/access/code", headers=member_headers).json()
+            assert consumed["status"] == "consumed"
+            assert datetime.fromisoformat(consumed["consumed_at"]) > datetime.fromisoformat(
+                consumed["issued_at"]
+            )
+
+            refreshed = client.post("/member/access/code", headers=member_headers)
+            assert refreshed.status_code == 201
+            assert (
+                client.get("/member/access/code", headers=member_headers).json()["status"]
+                == "active"
+            )
+
+            with Session(engine) as session:
+                later = latest_member_access_code_status(
+                    session, ids["ana"], now=utc_now() + timedelta(minutes=6)
+                )
+            assert later.status == "expired"
+            assert later.consumed_at is None
+            assert later.expires_at is not None
     finally:
         app.dependency_overrides.pop(get_session, None)
         engine.dispose()

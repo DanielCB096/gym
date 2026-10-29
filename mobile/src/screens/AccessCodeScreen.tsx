@@ -8,7 +8,7 @@ import {
   View,
 } from "react-native";
 
-import { ApiError, requestMemberAccessCode } from "../api";
+import { ApiError, getMemberAccessCodeStatus, requestMemberAccessCode } from "../api";
 import { describeError } from "../errors";
 import { colors, radius, sharedStyles, spacing } from "../theme";
 import type { MemberAccessCode } from "../types";
@@ -18,6 +18,8 @@ type Props = {
   onBack: () => void;
   onSessionExpired: () => void;
 };
+
+const STATUS_POLL_MS = 4000;
 
 function secondsUntil(expiresAt: string): number {
   const target = new Date(expiresAt).getTime();
@@ -42,10 +44,12 @@ export function AccessCodeScreen({ token, onBack, onSessionExpired }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [remaining, setRemaining] = useState(0);
+  const [consumed, setConsumed] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setConsumed(false);
     try {
       const next = await requestMemberAccessCode(token);
       setAccessCode(next);
@@ -78,6 +82,39 @@ export function AccessCodeScreen({ token, onBack, onSessionExpired }: Props) {
   }, [accessCode]);
 
   const expired = accessCode !== null && remaining <= 0;
+
+  useEffect(() => {
+    if (!accessCode || consumed || expired) {
+      return;
+    }
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const status = await getMemberAccessCodeStatus(token);
+        if (cancelled) {
+          return;
+        }
+        if (status.status === "consumed") {
+          setConsumed(true);
+        } else if (status.status === "expired") {
+          setRemaining(0);
+        }
+      } catch (checkError) {
+        if (checkError instanceof ApiError && checkError.status === 401) {
+          onSessionExpired();
+        }
+        // Cualquier otro fallo se ignora: el código sigue visible y el
+        // siguiente sondeo vuelve a intentarlo.
+      }
+    };
+    const timer = setInterval(() => void check(), STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [accessCode, consumed, expired, onSessionExpired, token]);
+
+  const unusable = consumed || expired;
 
   return (
     <ScrollView
@@ -131,20 +168,22 @@ export function AccessCodeScreen({ token, onBack, onSessionExpired }: Props) {
       {accessCode ? (
         <View style={[sharedStyles.card, styles.codeCard]}>
           <Text style={styles.codeLabel}>
-            {expired ? "Código vencido" : "Código vigente"}
+            {consumed ? "Código usado" : expired ? "Código vencido" : "Código vigente"}
           </Text>
           <Text
             accessibilityLabel={`Código de acceso ${accessCode.code}`}
-            style={[styles.code, expired && styles.codeExpired]}
+            style={[styles.code, unusable && styles.codeExpired]}
           >
             {groupCode(accessCode.code)}
           </Text>
-          <Text style={expired ? styles.expiredHint : styles.countdown}>
-            {expired
-              ? "Pide uno nuevo para registrar tu entrada."
-              : `Vence en ${formatCountdown(remaining)}`}
+          <Text style={unusable ? styles.expiredHint : styles.countdown}>
+            {consumed
+              ? "Recepción ya registró este código. Si no entraste, genera otro o pasa a recepción."
+              : expired
+                ? "Pide uno nuevo para registrar tu entrada."
+                : `Vence en ${formatCountdown(remaining)}`}
           </Text>
-          {expired ? (
+          {unusable ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Generar nuevo código"

@@ -33,10 +33,12 @@ Este módulo cubre el control de acceso al gimnasio, validación de membresía, 
 ### Flujo implementado: código rotativo en el kiosco
 1. El socio abre «Acceso habilitado» en la app y pulsa «Ver mi código».
 2. La app pide `POST /member/access/code`; el backend exige socio activo y membresía vigente y devuelve un código de seis dígitos con cinco minutos de vida. Emitir otro invalida el anterior.
-3. El socio dicta o muestra el código en recepción; la tablet del kiosco lo captura en el teclado numérico.
-4. El kiosco envía `POST /kiosk/check-in` con `X-Kiosk-Token` y el código. El backend autentica el dispositivo, consume el código de forma atómica y evalúa la membresía con el motor de acceso, incluidos el límite diario del plan y el control de duplicados del club si están configurados.
-5. La pantalla muestra «Acceso concedido» con el nombre abreviado o el motivo del rechazo («Código inválido o vencido.», «Membresía vencida. Pasa a recepción.», «Ya usaste tus entradas de hoy.», «Entrada duplicada. Espera un momento.» o «Demasiados intentos. Espera un momento.»).
-6. La decisión queda en `access_events` con origen `reader` y lector «Kiosco <etiqueta>», y aparece en la bitácora del panel. Un código usado no se puede repetir.
+3. Mientras el código está vigente, la app consulta `GET /member/access/code` cada 4 segundos para saber si sigue sirviendo (`active`), ya se usó (`consumed`) o venció (`expired`).
+4. El socio dicta o muestra el código en recepción; la tablet del kiosco lo captura en el teclado numérico.
+5. El kiosco envía `POST /kiosk/check-in` con `X-Kiosk-Token` y el código. El backend autentica el dispositivo, consume el código de forma atómica y evalúa la membresía con el motor de acceso, incluidos el límite diario del plan y el control de duplicados del club si están configurados.
+6. La pantalla muestra «Acceso concedido» con el nombre abreviado o el motivo del rechazo («Código inválido o vencido.», «Membresía vencida. Pasa a recepción.», «Ya usaste tus entradas de hoy.», «Entrada duplicada. Espera un momento.» o «Demasiados intentos. Espera un momento.»).
+7. En cuanto la consulta ve el código consumido, la app cambia el rótulo a «Código usado», explica que recepción ya lo registró y ofrece «Generar nuevo código»; deja de sondear. El estado es del código más reciente del socio, así que también aparece como usado el código que otra emisión invalidó.
+8. La decisión queda en `access_events` con origen `reader` y lector «Kiosco <etiqueta>», y aparece en la bitácora del panel. Un código usado no se puede repetir.
 
 ### Flujo implementado: alta de un kiosco
 1. El dueño entra al panel con `settings.manage` y abre «Kiosco».
@@ -243,7 +245,7 @@ Implementación inicial del motor offline y del kiosco de recepción con código
 ## 15. Implementación actual y límites
 
 - El kiosco de recepción es una PWA estática en `kiosk/` que captura el código de seis dígitos, lo valida con `POST /kiosk/check-in` mediante un token de dispositivo y muestra el resultado en pantalla.
-- El código se emite desde la app (`POST /member/access/code`), dura cinco minutos, es de un solo uso, se guarda como HMAC-SHA256 y emitir otro invalida el anterior. Hay 6 emisiones por socio cada 10 minutos y 10 intentos por kiosco cada minuto; los intentos inválidos quedan en `kiosk_attempts` sin guardar el código.
+- El código se emite desde la app (`POST /member/access/code`), dura cinco minutos, es de un solo uso, se guarda como HMAC-SHA256 y emitir otro invalida el anterior. Hay 6 emisiones por socio cada 10 minutos y 10 intentos por kiosco cada minuto; los intentos inválidos quedan en `kiosk_attempts` sin guardar el código. `GET /member/access/code` informa el estado del código más reciente (`none`, `active`, `consumed` o `expired`) con sus fechas, sin devolver los dígitos, para que la pantalla deje de mostrar un código que el kiosco ya consumió y ofrezca otro.
 - Los dispositivos se administran desde el panel con `settings.manage`: alta con token de una sola vista, fecha de vencimiento, rotación y revocación inmediata. El token se guarda como SHA-256 y la tableta lo conserva en `localStorage`.
 - El token vive **90 días** desde el alta o la última rotación (`KIOSK_TOKEN_LIFETIME`). `POST /admin/kiosk/devices/{id}/rotate-token` reemplaza el hash, reinicia la fecha y devuelve el token nuevo una sola vez; el anterior deja de servir en la siguiente petición y un dispositivo revocado responde `409`. Un token vencido o revocado produce el mismo `401` genérico, así que el kiosco y el cartel borran su token y vuelven a configuración con «El token del kiosco no es válido, fue revocado o caducó. Captura uno nuevo.»; la recuperación es presencial (ADR-027).
 - El kiosco reutiliza `evaluate_access` y escribe la decisión en `access_events` con origen `reader`; la bitácora del panel ya muestra lector «Kiosco <etiqueta>».

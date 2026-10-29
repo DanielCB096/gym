@@ -109,6 +109,14 @@ class AccessCodeResult:
 
 
 @dataclass(frozen=True)
+class AccessCodeStatus:
+    status: str
+    issued_at: datetime | None
+    expires_at: datetime | None
+    consumed_at: datetime | None
+
+
+@dataclass(frozen=True)
 class KioskCheckInResult:
     authorized: bool
     reason: str
@@ -198,6 +206,44 @@ def issue_member_access_code(
         code=code,
         expires_at=expires_at,
         expires_in_seconds=int(ACCESS_CODE_LIFETIME.total_seconds()),
+    )
+
+
+def latest_member_access_code_status(
+    session: Session,
+    member_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> AccessCodeStatus:
+    """Report whether the member's newest code is still usable.
+
+    Only the digest is stored, so the app cannot be handed its code again; it
+    keeps the digits it already shows and asks here whether the kiosk consumed
+    them.
+    """
+
+    occurred_at = _as_utc(now or utc_now())
+    code = session.exec(
+        select(MemberAccessCode)
+        .where(MemberAccessCode.member_id == member_id)
+        .order_by(MemberAccessCode.created_at.desc(), MemberAccessCode.id.desc())
+    ).first()
+    if code is None:
+        return AccessCodeStatus("none", None, None, None)
+
+    expires_at = _as_utc(code.expires_at)
+    consumed_at = _as_utc(code.consumed_at) if code.consumed_at is not None else None
+    if consumed_at is not None:
+        status = "consumed"
+    elif expires_at <= occurred_at:
+        status = "expired"
+    else:
+        status = "active"
+    return AccessCodeStatus(
+        status=status,
+        issued_at=_as_utc(code.created_at),
+        expires_at=expires_at,
+        consumed_at=consumed_at,
     )
 
 

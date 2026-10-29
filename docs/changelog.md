@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-29 · La app refleja el código ya usado en el kiosco
+
+- **API**: `GET /member/access/code` (Bearer del socio) responde `status` (`none`, `active`, `consumed` o `expired`), `issued_at`, `expires_at` y `consumed_at` del código **más reciente** del socio. No devuelve los dígitos: solo se guarda el HMAC y la app conserva los que ya muestra. Sin migración ni columnas nuevas.
+- **Servicio**: `latest_member_access_code_status` en `access/kiosk.py` ordena por `created_at` y clasifica con el mismo reloj UTC que el check-in; un código consumido por supersesión (emitir otro invalida el anterior) también aparece como `consumed`, porque en ambos casos ya no sirve.
+- **App**: `AccessCodeScreen` consulta el estado cada 4 segundos mientras el código está vigente. Al consumirlo el kiosco, el rótulo pasa a «CÓDIGO USADO», los dígitos se atenúan, el mensaje explica que recepción ya lo registró y aparece «Generar nuevo código»; el sondeo se detiene con el código vencido o usado. Un `401` cierra la sesión como en el resto de la app y un fallo de red se ignora hasta el siguiente intento.
+- **Pruebas**: 1 nueva en `backend/tests/test_kiosk_access_api.py` (`401` sin sesión, `none` sin códigos, `active` con `issued_at`/`expires_at`, `consumed` tras el check-in del kiosco, `active` de nuevo al emitir otro y `expired` pasados cinco minutos). La suite del backend queda en **208 pruebas** y el archivo del kiosco en 11.
+- **Verificación en navegador** (backend `127.0.0.1:8000`, app Expo web `localhost:8081`): la pantalla mostró «CÓDIGO VIGENTE 073 254 / Vence en 4:59»; al consumir ese código por `POST /kiosk/check-in` con un dispositivo temporal, la pantalla cambió sola a «CÓDIGO USADO / Recepción ya registró este código…» con el botón, y al pulsarlo emitió «471 364» en estado vigente. El dispositivo de prueba se revocó y el backend, el panel y el kiosco quedaron en marcha.
+- **Documentación**: módulo de control de acceso, seguridad y privacidad, ADR-024 (nota de actualización), deuda técnica, plan de pruebas y README del backend y de la app.
+
 ## 2026-10-28 · Caducidad y rotación del token del kiosco
 
 - **Modelo y migración**: `kiosk_devices.token_expires_at` (`TIMESTAMP WITH TIME ZONE`, nulo = sin caducidad) con la migración `20261028_0045_kiosk_token_expiry.py`, que rellena las filas existentes con `now() + INTERVAL '90 days'` para no cortar una tablet en turno; la vista previa agrega la columna y hace el mismo relleno en `preview_patch.py`.
