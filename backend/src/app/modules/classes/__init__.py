@@ -5,6 +5,7 @@ from app.modules.classes.models import (
     ClassType,
 )
 from app.modules.classes.service import (
+    ClassChargeFailed,
     ClassRoomItem,
     ClassRoomNotFound,
     ClassRoster,
@@ -44,6 +45,7 @@ from app.modules.classes.service import (
 )
 
 __all__ = [
+    "ClassChargeFailed",
     "ClassReservation",
     "ClassRoom",
     "ClassRoomItem",

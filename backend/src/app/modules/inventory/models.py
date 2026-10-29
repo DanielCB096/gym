@@ -214,6 +214,7 @@ class Sale(SQLModel, table=True):
         Index("ix_sales_cash_session", "cash_session_id"),
         Index("ix_sales_member_sold", "member_id", "sold_at"),
         Index("ix_sales_origin", "origin"),
+        Index("ix_sales_class_reservation", "class_reservation_id"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -250,6 +251,16 @@ class Sale(SQLModel, table=True):
         sa_column=Column(String(16), nullable=False, server_default=text("'online'")),
     )
     client_reference: str | None = Field(default=None, max_length=64)
+    # A premium class charge is a sale whose paid line is a service. The link
+    # back to the reservation lets the club see which seat was charged and
+    # refund it when the member cancels.
+    class_reservation_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("class_reservations.id", ondelete="RESTRICT"),
+        ),
+    )
     note: str | None = Field(default=None, max_length=200)
     sold_at: datetime = Field(
         default_factory=utc_now,
@@ -274,8 +285,11 @@ class SaleItem(SQLModel, table=True):
     sale_id: UUID = Field(
         sa_column=Column(Uuid(as_uuid=True), ForeignKey("sales.id", ondelete="RESTRICT"), nullable=False)
     )
-    product_id: UUID = Field(
-        sa_column=Column(Uuid(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False)
+    # ``None`` marks a service line (a premium class): it has no stock, so a
+    # sale or return of it never touches the inventory ledger.
+    product_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")),
     )
     product_name: str = Field(max_length=160)
     sku: str = Field(max_length=60)
@@ -370,8 +384,9 @@ class SaleReturnItem(SQLModel, table=True):
     sale_item_id: UUID = Field(
         sa_column=Column(Uuid(as_uuid=True), ForeignKey("sale_items.id", ondelete="RESTRICT"), nullable=False)
     )
-    product_id: UUID = Field(
-        sa_column=Column(Uuid(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False)
+    product_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT")),
     )
     product_name: str = Field(max_length=160)
     sku: str = Field(max_length=60)

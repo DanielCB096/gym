@@ -65,6 +65,10 @@ from app.timezone import DEFAULT_TIMEZONE, club_timezone, local_midnight
 DEFAULT_PERIOD_DAYS = 30
 MAX_PERIOD_DAYS = 730
 
+# Category used for sale lines without a product (a premium class charge), so
+# the category breakdown never loses that revenue.
+SERVICE_CATEGORY = "Servicios"
+
 # Plans shorter than this are day passes. They are left out of the recurring
 # value: normalising a one-day plan to a month would inflate the figure.
 MIN_RECURRING_PLAN_DAYS = 7
@@ -262,7 +266,7 @@ class PlanTotal:
 
 @dataclass(frozen=True)
 class ProductTotal:
-    product_id: UUID
+    product_id: UUID | None
     name: str
     sku: str
     quantity: int
@@ -685,11 +689,11 @@ def _sold_category_totals(session: Session, period: ReportPeriod) -> dict[str, l
         str(category): [_int(quantity), _int(amount)]
         for category, quantity, amount in session.exec(
             select(
-                Product.category,
+                func.coalesce(Product.category, SERVICE_CATEGORY),
                 func.coalesce(func.sum(SaleItem.quantity), 0),
                 func.coalesce(func.sum(SaleItem.line_total_cents), 0),
             )
-            .join(SaleItem, SaleItem.product_id == Product.id)
+            .outerjoin(Product, Product.id == SaleItem.product_id)
             .join(Sale, Sale.id == SaleItem.sale_id)
             .where(Sale.sold_at >= period.start_at, Sale.sold_at < period.end_at)
             .group_by(Product.category)
@@ -704,11 +708,11 @@ def _returned_category_totals(session: Session, period: ReportPeriod) -> dict[st
         str(category): [_int(quantity), _int(amount)]
         for category, quantity, amount in session.exec(
             select(
-                Product.category,
+                func.coalesce(Product.category, SERVICE_CATEGORY),
                 func.coalesce(func.sum(SaleReturnItem.quantity), 0),
                 func.coalesce(func.sum(SaleReturnItem.line_refund_cents), 0),
             )
-            .join(SaleReturnItem, SaleReturnItem.product_id == Product.id)
+            .outerjoin(Product, Product.id == SaleReturnItem.product_id)
             .join(SaleReturn, SaleReturn.id == SaleReturnItem.return_id)
             .where(
                 SaleReturn.returned_at >= period.start_at,
@@ -719,12 +723,16 @@ def _returned_category_totals(session: Session, period: ReportPeriod) -> dict[st
     }
 
 
-def _product_totals(session: Session, period: ReportPeriod) -> dict[UUID, dict]:
-    """Net quantity and money per product: sales minus refunds paid in the period."""
+def _product_totals(session: Session, period: ReportPeriod) -> dict[UUID | None, dict]:
+    """Net quantity and money per product: sales minus refunds paid in the period.
 
-    totals: dict[UUID, dict] = {}
+    A service line (a premium class) has no product id; it is grouped under
+    ``None`` and keeps its own description, so the report still balances.
+    """
 
-    def bucket(product_id: UUID, name: object, sku: object) -> dict:
+    totals: dict[UUID | None, dict] = {}
+
+    def bucket(product_id: UUID | None, name: object, sku: object) -> dict:
         return totals.setdefault(
             product_id,
             {"name": str(name), "sku": str(sku), "quantity": 0, "amount_cents": 0},

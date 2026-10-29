@@ -12,9 +12,13 @@ The rules that keep the schedule sane live here:
 * a cancellation outside the configured window is still allowed but flagged
   ``late_cancellation`` so the penalty can be applied once billing exists.
 
-Money stays in integer cents; a premium class carries ``extra_price_cents`` but
-the first increment does **not** charge it (same deliberate shortcut as the
-membership activation, which is audited and pending the real gateway).
+Money stays in integer cents. A premium class is charged when the member is
+marked as attending, not when they reserve: the seat is free until the class
+happens, and a promoted waitlist reservation shows a pending charge until then.
+The charge is a regular sale with a service line, so it reaches the cash close,
+the member account, the revenue report and invoicing without a parallel ledger.
+Cancelling a charged reservation (or marking it as a no-show) refunds that sale
+in the method it was paid with.
 """
 
 from dataclasses import dataclass
@@ -39,6 +43,13 @@ from app.modules.classes.models import (
     utc_now,
 )
 from app.modules.identity.models import Employee
+from app.modules.inventory.models import Sale
+from app.modules.inventory.service import (
+    InventoryError,
+    refund_service_sale,
+    register_service_sale,
+    service_sale_for_reservation,
+)
 from app.modules.memberships.models import Member
 from app.modules.notifications import notify_waitlist_promoted
 
@@ -96,6 +107,10 @@ class DuplicateReservation(ClassesError):
 
 class MemberNotAvailable(ClassesError):
     pass
+
+
+class ClassChargeFailed(ClassesError):
+    """The premium charge or its refund could not be registered."""
 
 
 class ReservationNotFound(ClassesError):
@@ -193,6 +208,13 @@ class ReservationItem:
     created_at: datetime
     cancelled_at: datetime | None
     marked_at: datetime | None
+    # The premium charge linked to this seat, if any. ``charge_status`` is
+    # ``completed`` while the sale is live and ``refunded`` once it was returned.
+    charge_sale_id: UUID | None = None
+    charge_cents: int | None = None
+    charge_payment_method: str | None = None
+    charge_folio: str | None = None
+    charge_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -678,6 +700,13 @@ def cancel_class_session(
         reservation.cancelled_by = actor_id
         reservation.updated_at = occurred
         session.add(reservation)
+        _refund_premium_charge(
+            session,
+            reservation,
+            reason="La clase se canceló",
+            actor_id=actor_id,
+            now=occurred,
+        )
 
     session.commit()
     return _session_item_by_id(session, session_id)
@@ -741,7 +770,13 @@ def list_class_sessions(
 # --------------------------------------------------------------------------- #
 
 
-def _reservation_item(reservation: ClassReservation, *, member_name: str, member_email: str | None) -> ReservationItem:
+def _reservation_item(
+    reservation: ClassReservation,
+    *,
+    member_name: str,
+    member_email: str | None,
+    charge: Sale | None = None,
+) -> ReservationItem:
     return ReservationItem(
         id=reservation.id,
         session_id=reservation.session_id,
@@ -756,7 +791,29 @@ def _reservation_item(reservation: ClassReservation, *, member_name: str, member
         created_at=reservation.created_at,
         cancelled_at=reservation.cancelled_at,
         marked_at=reservation.marked_at,
+        charge_sale_id=charge.id if charge is not None else None,
+        charge_cents=charge.total_cents if charge is not None else None,
+        charge_payment_method=charge.payment_method if charge is not None else None,
+        charge_folio=charge.folio if charge is not None else None,
+        charge_status=charge.status if charge is not None else None,
     )
+
+
+def _charges_by_reservation(session: Session, reservation_ids: list[UUID]) -> dict[UUID, Sale]:
+    """Latest charge per reservation, in a single query for the whole roster."""
+
+    if not reservation_ids:
+        return {}
+    rows = session.exec(
+        select(Sale)
+        .where(Sale.class_reservation_id.in_(reservation_ids))
+        .order_by(Sale.sold_at.desc(), Sale.created_at.desc())
+    ).all()
+    charges: dict[UUID, Sale] = {}
+    for sale in rows:
+        if sale.class_reservation_id is not None:
+            charges.setdefault(sale.class_reservation_id, sale)
+    return charges
 
 
 def list_session_reservations(session: Session, session_id: UUID) -> ClassRoster:
@@ -777,11 +834,13 @@ def list_session_reservations(session: Session, session_id: UUID) -> ClassRoster
         )
         .order_by(status_order, ClassReservation.waitlist_position, ClassReservation.created_at)
     ).all()
+    charges = _charges_by_reservation(session, [reservation.id for reservation, _ in rows])
     items = [
         _reservation_item(
             reservation,
             member_name=_member_name(member),
             member_email=member.email if member is not None else None,
+            charge=charges.get(reservation.id),
         )
         for reservation, member in rows
     ]
@@ -877,7 +936,11 @@ def cancel_reservation(
     actor_id: UUID | None = None,
     now: datetime | None = None,
 ) -> ReservationItem:
-    reservation = session.get(ClassReservation, reservation_id)
+    reservation = session.exec(
+        select(ClassReservation)
+        .where(ClassReservation.id == reservation_id)
+        .with_for_update()
+    ).first()
     if reservation is None:
         raise ReservationNotFound("La reserva no existe")
     if reservation.status not in SEATED_RESERVATION_STATUSES + ("waitlist",):
@@ -898,6 +961,14 @@ def cancel_reservation(
     session.add(reservation)
     session.flush()
 
+    _refund_premium_charge(
+        session,
+        reservation,
+        reason="Cancelación de reserva de clase",
+        actor_id=actor_id,
+        now=occurred,
+    )
+
     if (
         was_seated
         and class_session is not None
@@ -910,7 +981,12 @@ def cancel_reservation(
     member_email = member.email if member is not None else None
     session.commit()
     session.refresh(reservation)
-    return _reservation_item(reservation, member_name=member_name, member_email=member_email)
+    return _reservation_item(
+        reservation,
+        member_name=member_name,
+        member_email=member_email,
+        charge=service_sale_for_reservation(session, reservation.id),
+    )
 
 
 def mark_attendance(
@@ -918,16 +994,40 @@ def mark_attendance(
     reservation_id: UUID,
     *,
     attended: bool,
+    payment_method: str | None = None,
     actor_id: UUID | None = None,
     now: datetime | None = None,
 ) -> ReservationItem:
-    reservation = session.get(ClassReservation, reservation_id)
+    reservation = session.exec(
+        select(ClassReservation)
+        .where(ClassReservation.id == reservation_id)
+        .with_for_update()
+    ).first()
     if reservation is None:
         raise ReservationNotFound("La reserva no existe")
     if reservation.status not in SEATED_RESERVATION_STATUSES + ("no_show",):
         raise InvalidReservationState("Solo se puede marcar asistencia de una reserva confirmada")
 
     occurred = _as_utc(now or utc_now())
+    class_session = session.get(ClassSession, reservation.session_id)
+    if attended:
+        _charge_premium_attendance(
+            session,
+            reservation,
+            class_session,
+            payment_method=payment_method,
+            actor_id=actor_id,
+            now=occurred,
+        )
+    else:
+        _refund_premium_charge(
+            session,
+            reservation,
+            reason="La reserva se marcó como inasistencia",
+            actor_id=actor_id,
+            now=occurred,
+        )
+
     reservation.status = "attended" if attended else "no_show"
     reservation.marked_by = actor_id
     reservation.marked_at = occurred
@@ -939,7 +1039,68 @@ def mark_attendance(
     member_email = member.email if member is not None else None
     session.commit()
     session.refresh(reservation)
-    return _reservation_item(reservation, member_name=member_name, member_email=member_email)
+    return _reservation_item(
+        reservation,
+        member_name=member_name,
+        member_email=member_email,
+        charge=service_sale_for_reservation(session, reservation.id),
+    )
+
+
+def _charge_premium_attendance(
+    session: Session,
+    reservation: ClassReservation,
+    class_session: ClassSession | None,
+    *,
+    payment_method: str | None,
+    actor_id: UUID | None,
+    now: datetime,
+) -> Sale | None:
+    """Charge the extra price of a premium class when the member shows up.
+
+    An already charged seat is never charged twice: re-marking attendance is
+    how the staff fixes a mistake, not a second sale.
+    """
+    if class_session is None or class_session.access_type != "premium":
+        return None
+    price_cents = class_session.extra_price_cents
+    if price_cents <= 0:
+        return None
+    existing = service_sale_for_reservation(session, reservation.id)
+    if existing is not None and existing.status == "completed":
+        return existing
+    if payment_method is None:
+        raise ClassChargeFailed("Selecciona la forma de pago para cobrar la clase premium")
+    try:
+        return register_service_sale(
+            session,
+            member_id=reservation.member_id,
+            description=f"Clase premium: {class_session.title}"[:160],
+            amount_cents=price_cents,
+            payment_method=payment_method,
+            cashier_id=actor_id,
+            class_reservation_id=reservation.id,
+            now=now,
+        )
+    except InventoryError as error:
+        raise ClassChargeFailed(str(error)) from error
+
+
+def _refund_premium_charge(
+    session: Session,
+    reservation: ClassReservation,
+    *,
+    reason: str,
+    actor_id: UUID | None,
+    now: datetime,
+) -> None:
+    sale = service_sale_for_reservation(session, reservation.id)
+    if sale is None or sale.status != "completed":
+        return
+    try:
+        refund_service_sale(session, sale.id, reason=reason, actor_id=actor_id, now=now)
+    except InventoryError as error:
+        raise ClassChargeFailed(str(error)) from error
 
 
 def _promote_next_waitlist(

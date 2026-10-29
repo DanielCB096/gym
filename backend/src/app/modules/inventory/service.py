@@ -56,6 +56,8 @@ PRODUCT_STATES = ("active", "low", "out", "inactive")
 # account instead of collecting money at the counter.
 PAYMENT_METHODS = ("cash", "card", "transfer")
 SALE_PAYMENT_METHODS = (*PAYMENT_METHODS, "account")
+# Service lines (a premium class) share the sales ledger but never touch stock.
+SERVICE_SKU = "CLASE"
 MANUAL_MOVEMENT_TYPES = ("intake", "adjustment", "waste")
 
 # Areas/state labels used by the panel.
@@ -223,7 +225,7 @@ class ProductPage:
 @dataclass(frozen=True)
 class SaleLine:
     sale_item_id: UUID
-    product_id: UUID
+    product_id: UUID | None
     product_name: str
     sku: str
     quantity: int
@@ -307,7 +309,7 @@ class OfflineSaleSync:
 @dataclass(frozen=True)
 class SaleReturnLine:
     sale_item_id: UUID
-    product_id: UUID
+    product_id: UUID | None
     product_name: str
     sku: str
     quantity: int
@@ -1057,6 +1059,108 @@ def register_sale(
     return _sale_view(session, sale, lines)
 
 
+def register_service_sale(
+    session: Session,
+    *,
+    member_id: UUID,
+    description: str,
+    amount_cents: int,
+    payment_method: str,
+    cashier_id: UUID | None = None,
+    note: str | None = None,
+    class_reservation_id: UUID | None = None,
+    now: datetime | None = None,
+) -> Sale:
+    """Charge a service (a premium class) as a regular sale.
+
+    The sale carries a single line with ``product_id = None``: a service has no
+    stock, so it never touches the inventory ledger, but it lands in the same
+    sales table as any other charge. That keeps the cash close, the member
+    account, the revenue report and invoicing working without a parallel
+    ledger.
+
+    The caller owns the transaction: this function never commits, so marking a
+    class attendance and charging it for it succeed or fail together.
+    """
+    if payment_method not in SALE_PAYMENT_METHODS:
+        raise InvalidCart("Forma de pago no válida")
+    if amount_cents <= 0:
+        raise InvalidCart("El importe del cobro debe ser mayor a cero")
+    normalized = (description or "").strip()
+    if not normalized:
+        raise InvalidCart("El cobro necesita un concepto")
+    if len(normalized) > 160:
+        raise InvalidCart("El concepto del cobro es demasiado largo")
+    normalized_note = (note or "").strip() or None
+    if normalized_note is not None and len(normalized_note) > 200:
+        raise InvalidCart("La nota del cobro es demasiado larga")
+
+    member = session.get(Member, member_id)
+    if member is None:
+        raise MemberUnavailable("Socio no encontrado")
+    if member.status == "inactive":
+        raise MemberUnavailable("El socio está inactivo y no puede pagar servicios")
+
+    cash_session = _find_open_cash_session(session)
+    if cash_session is None:
+        raise NoOpenCashSession("Abre el turno de caja antes de cobrar la clase")
+
+    if payment_method == "account" and member.credit_limit_cents is not None:
+        balance = member_account_balance(session, member.id)
+        available = member.credit_limit_cents - balance
+        if amount_cents > available:
+            raise CreditLimitExceeded(
+                "El cobro excede el crédito disponible del socio: "
+                f"disponible {_money(max(available, 0))} "
+                f"de {_money(member.credit_limit_cents)}"
+            )
+
+    occurred_at = _as_utc(now or utc_now())
+    sale = Sale(
+        folio=_build_folio(occurred_at),
+        cash_session_id=cash_session.id,
+        member_id=member.id,
+        cashier_id=cashier_id,
+        subtotal_cents=amount_cents,
+        discount_cents=0,
+        tax_cents=0,
+        total_cents=amount_cents,
+        payment_method=payment_method,
+        status="completed",
+        origin="online",
+        class_reservation_id=class_reservation_id,
+        note=normalized_note,
+        sold_at=occurred_at,
+    )
+    session.add(sale)
+    session.add(
+        SaleItem(
+            sale_id=sale.id,
+            product_id=None,
+            product_name=normalized,
+            sku=SERVICE_SKU,
+            location=DEFAULT_LOCATION,
+            quantity=1,
+            unit_price_cents=amount_cents,
+            line_total_cents=amount_cents,
+        )
+    )
+    return sale
+
+
+def service_sale_for_reservation(session: Session, reservation_id: UUID) -> Sale | None:
+    """Return the charge linked to a class reservation, if it was ever charged.
+
+    A reservation may accumulate more than one sale if a charge is refunded and
+    the member is later charged again, so the latest one wins.
+    """
+    return session.exec(
+        select(Sale)
+        .where(Sale.class_reservation_id == reservation_id)
+        .order_by(Sale.sold_at.desc(), Sale.created_at.desc())
+    ).first()
+
+
 def sync_offline_sales(
     session: Session,
     entries: list[OfflineSaleEntry],
@@ -1352,6 +1456,10 @@ def register_sale_return(
         sale_item = items_by_id.get(sale_item_id)
         if sale_item is None:
             raise SaleItemNotFound("La línea no pertenece a la venta")
+        if sale_item.product_id is None:
+            raise InvalidReturn(
+                "La línea es un servicio: su reembolso se registra desde la reserva de la clase"
+            )
         available = sale_item.quantity - already_refunded.get(sale_item.id, 0)
         if quantity > available:
             raise ReturnExceedsSold("La cantidad devuelta supera lo vendido de ese producto")
@@ -1450,6 +1558,101 @@ def register_sale_return(
 
     session.commit()
     session.refresh(sale_return)
+    return _sale_return_view(session, sale_return, return_lines, sale=sale)
+
+
+def refund_service_sale(
+    session: Session,
+    sale_id: UUID,
+    *,
+    reason: str,
+    actor_id: UUID | None = None,
+    now: datetime | None = None,
+) -> SaleReturnView | None:
+    """Refund a service sale (the charge of a premium class).
+
+    The refund mirrors the charge: the service line goes back in ``write_off``
+    because nothing returns to stock, and the sale flips to ``refunded``. A cash
+    refund needs an open register shift because the money leaves the drawer;
+    card, transfer and account refunds are recorded without a shift since they
+    never touch it. Returns ``None`` when the sale was already refunded, so a
+    repeated cancellation is harmless.
+
+    The caller owns the transaction: this function never commits.
+    """
+    normalized_reason = (reason or "").strip()
+    if not normalized_reason:
+        raise InvalidReturn("El motivo del reembolso es obligatorio")
+    if len(normalized_reason) > 200:
+        raise InvalidReturn("El motivo del reembolso es demasiado largo")
+
+    sale = session.exec(
+        select(Sale).where(Sale.id == sale_id).with_for_update()
+    ).first()
+    if sale is None:
+        raise SaleNotFound("Venta no encontrada")
+    if sale.class_reservation_id is None:
+        raise InvalidReturn("La venta no corresponde a una reserva de clase")
+    if sale.status == "refunded":
+        return None
+
+    method = "account" if sale.payment_method == "account" else sale.payment_method
+    if method not in SALE_PAYMENT_METHODS:
+        raise InvalidReturn("Forma de reembolso no válida")
+    cash_session = _find_open_cash_session(session)
+    if method == "cash" and cash_session is None:
+        raise NoOpenCashSession("Abre el turno de caja para reembolsar el efectivo")
+
+    sale_items = session.exec(select(SaleItem).where(SaleItem.sale_id == sale.id)).all()
+    service_items = [item for item in sale_items if item.product_id is None]
+    if not service_items:
+        raise InvalidReturn("La venta no tiene una línea de servicio que reembolsar")
+
+    occurred_at = _as_utc(now or utc_now())
+    sale_return = SaleReturn(
+        folio=_build_return_folio(occurred_at),
+        sale_id=sale.id,
+        cash_session_id=cash_session.id if cash_session is not None else None,
+        member_id=sale.member_id,
+        actor_id=actor_id,
+        refund_method=method,
+        total_refund_cents=sale.total_cents,
+        reason=normalized_reason,
+        returned_at=occurred_at,
+    )
+    session.add(sale_return)
+
+    return_lines: list[SaleReturnLine] = []
+    for item in service_items:
+        line_refund_cents = item.line_total_cents
+        session.add(
+            SaleReturnItem(
+                return_id=sale_return.id,
+                sale_item_id=item.id,
+                product_id=None,
+                product_name=item.product_name,
+                sku=item.sku,
+                quantity=item.quantity,
+                unit_price_cents=item.unit_price_cents,
+                line_refund_cents=line_refund_cents,
+                disposition="write_off",
+            )
+        )
+        return_lines.append(
+            SaleReturnLine(
+                sale_item_id=item.id,
+                product_id=None,
+                product_name=item.product_name,
+                sku=item.sku,
+                quantity=item.quantity,
+                unit_price_cents=item.unit_price_cents,
+                line_refund_cents=line_refund_cents,
+                disposition="write_off",
+            )
+        )
+
+    sale.status = "refunded"
+    session.add(sale)
     return _sale_return_view(session, sale_return, return_lines, sale=sale)
 
 
@@ -2695,9 +2898,13 @@ def _refunded_cents_by_sale(session: Session, sale_ids: list[UUID]) -> dict[UUID
 
 
 def _cash_session_totals(session: Session, cash_session_id: UUID) -> dict[str, int]:
+    # Every sale rung up in the shift counts, even after a full return flips it
+    # to ``refunded``: the cash did enter the drawer here, and the return rows
+    # (linked to the shift that paid them) already subtract the outflow. Filtering
+    # by status would erase the inflow and count the refund twice.
     rows = session.exec(
         select(Sale.payment_method, func.count(Sale.id), func.coalesce(func.sum(Sale.total_cents), 0))
-        .where(Sale.cash_session_id == cash_session_id, Sale.status == "completed")
+        .where(Sale.cash_session_id == cash_session_id)
         .group_by(Sale.payment_method)
     ).all()
     totals = {

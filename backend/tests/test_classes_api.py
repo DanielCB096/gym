@@ -116,6 +116,8 @@ def _create_session(
     starts_at: datetime = FUTURE,
     waitlist_enabled: bool = True,
     title: str = "Spinning 6am",
+    access_type: str = "included",
+    extra_price_cents: int = 0,
 ):
     payload = {
         "title": title,
@@ -124,6 +126,8 @@ def _create_session(
         "ends_at": _iso(starts_at + timedelta(hours=1)),
         "capacity": capacity,
         "waitlist_enabled": waitlist_enabled,
+        "access_type": access_type,
+        "extra_price_cents": extra_price_cents,
     }
     if room_id is not None:
         payload["room_id"] = room_id

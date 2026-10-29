@@ -27,6 +27,7 @@ ADDED_COLUMNS = {
     "sales": {
         "origin": "VARCHAR(16) NOT NULL DEFAULT 'online'",
         "client_reference": "VARCHAR(64)",
+        "class_reservation_id": "CHAR(32)",
     },
     "members": {"credit_limit_cents": "BIGINT"},
     "plans": {"daily_entry_limit": "INTEGER"},
@@ -174,6 +175,14 @@ ADDED_CONSTRAINTS = {
     ),
 }
 
+# Columns that stopped being NOT NULL. SQLite cannot alter a column in place,
+# so the table is rebuilt the same way as for a CHECK change. Alembic does the
+# real ``ALTER COLUMN`` in production.
+RELAXED_COLUMNS = {
+    "sale_items": ("product_id",),
+    "sale_return_items": ("product_id",),
+}
+
 MAINTENANCE_TABLES = (
     "maintenance_checklists",
     "maintenance_records",
@@ -218,6 +227,49 @@ def seed_preview_permissions(connection: sqlite3.Connection) -> None:
                 (role[0], permission_id),
             )
         print(f"Granted {code} to {', '.join(role_codes)}")
+
+
+def relax_columns(connection: sqlite3.Connection, table: str, columns: tuple[str, ...]) -> None:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?", (table,)
+    ).fetchone()
+    if row is None or row[0] is None:
+        return
+    create_sql = row[0]
+    changed = False
+    for column in columns:
+        for quoted in (f'"{column}"', column):
+            old = f"{quoted} CHAR(32) NOT NULL"
+            if old in create_sql:
+                create_sql = create_sql.replace(old, f"{quoted} CHAR(32)")
+                changed = True
+                break
+    if not changed:
+        print(f"{table}: no NOT NULL to relax")
+        return
+
+    index_sql = [
+        item[0]
+        for item in connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name = ? AND sql IS NOT NULL",
+            (table,),
+        ).fetchall()
+    ]
+    temporary = f"{table}__upgrade"
+    create_sql = create_sql.replace(
+        f'CREATE TABLE "{table}" ', f'CREATE TABLE "{temporary}" ', 1
+    )
+    if f"CREATE TABLE {table} " in create_sql:
+        create_sql = create_sql.replace(
+            f"CREATE TABLE {table} ", f"CREATE TABLE {temporary} ", 1
+        )
+    connection.execute(create_sql)
+    connection.execute(f"INSERT INTO {temporary} SELECT * FROM {table}")
+    connection.execute(f"DROP TABLE {table}")
+    connection.execute(f"ALTER TABLE {temporary} RENAME TO {table}")
+    for statement in index_sql:
+        connection.execute(statement)
+    print(f"{table}: rebuilt without NOT NULL on {', '.join(columns)}")
 
 
 def upgrade_checks(
@@ -308,6 +360,10 @@ def main(reset_maintenance: bool) -> None:
                 "WHERE token_expires_at IS NULL"
             )
 
+        for table, columns in RELAXED_COLUMNS.items():
+            if table in tables:
+                relax_columns(connection, table, columns)
+
         for table, replacements in CHECK_UPGRADES.items():
             if table in tables:
                 upgrade_checks(
@@ -330,6 +386,10 @@ def main(reset_maintenance: bool) -> None:
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS ix_sales_origin ON sales (origin)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS ix_sales_class_reservation "
+                "ON sales (class_reservation_id)"
             )
         if "payments" in tables:
             connection.execute(

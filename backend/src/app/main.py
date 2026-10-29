@@ -67,6 +67,7 @@ from app.modules.access.service import (
     update_access_settings,
 )
 from app.modules.classes import (
+    ClassChargeFailed,
     ClassRoomItem,
     ClassRoomNotFound,
     ClassSessionItem,
@@ -884,7 +885,7 @@ class StockMovementRequest(BaseModel):
 
 class SaleLineResponse(BaseModel):
     sale_item_id: UUID
-    product_id: UUID
+    product_id: UUID | None
     product_name: str
     sku: str
     quantity: int
@@ -938,7 +939,7 @@ class SaleDirectoryResponse(BaseModel):
 
 class SaleReturnLineResponse(BaseModel):
     sale_item_id: UUID
-    product_id: UUID
+    product_id: UUID | None
     product_name: str
     sku: str
     quantity: int
@@ -1443,6 +1444,11 @@ class ReservationResponse(BaseModel):
     created_at: datetime
     cancelled_at: datetime | None
     marked_at: datetime | None
+    charge_sale_id: UUID | None = None
+    charge_cents: int | None = None
+    charge_payment_method: str | None = None
+    charge_folio: str | None = None
+    charge_status: str | None = None
 
 
 class ClassRosterResponse(BaseModel):
@@ -1452,6 +1458,8 @@ class ClassRosterResponse(BaseModel):
 
 class MarkAttendanceRequest(BaseModel):
     attended: bool
+    # Required the first time a premium seat is charged; ignored otherwise.
+    payment_method: Literal["cash", "card", "transfer", "account"] | None = None
 
 
 class ExerciseResponse(BaseModel):
@@ -2325,7 +2333,7 @@ class ReportPlanRowResponse(BaseModel):
 
 
 class ReportProductRowResponse(BaseModel):
-    product_id: UUID
+    product_id: UUID | None
     name: str
     sku: str
     quantity: int
@@ -5873,6 +5881,7 @@ _CLASSES_ERROR_STATUS: tuple[tuple[type[ClassesError], int], ...] = (
     (InvalidSessionState, status.HTTP_409_CONFLICT),
     (InvalidReservationState, status.HTTP_409_CONFLICT),
     (MemberClassNotAllowed, status.HTTP_409_CONFLICT),
+    (ClassChargeFailed, status.HTTP_409_CONFLICT),
 )
 
 
@@ -5950,6 +5959,11 @@ def _reservation_response(item: ReservationItem) -> ReservationResponse:
         created_at=item.created_at,
         cancelled_at=item.cancelled_at,
         marked_at=item.marked_at,
+        charge_sale_id=item.charge_sale_id,
+        charge_cents=item.charge_cents,
+        charge_payment_method=item.charge_payment_method,
+        charge_folio=item.charge_folio,
+        charge_status=item.charge_status,
     )
 
 
@@ -6222,6 +6236,7 @@ def mark_attendance_endpoint(
             session,
             reservation_id,
             attended=request.attended,
+            payment_method=request.payment_method,
             actor_id=principal.user_id,
         )
     except ClassesError as error:

@@ -418,7 +418,7 @@ type ProductDirectory = {
 
 type BackendSaleLine = {
   sale_item_id: string;
-  product_id: string;
+  product_id: string | null;
   product_name: string;
   sku: string;
   quantity: number;
@@ -1187,7 +1187,7 @@ type OfflineSaleSync = {
 
 type SaleReturnLine = {
   sale_item_id: string;
-  product_id: string;
+  product_id: string | null;
   product_name: string;
   sku: string;
   quantity: number;
@@ -1542,6 +1542,11 @@ type BackendReservation = {
   created_at: string;
   cancelled_at: string | null;
   marked_at: string | null;
+  charge_sale_id: string | null;
+  charge_cents: number | null;
+  charge_payment_method: string | null;
+  charge_folio: string | null;
+  charge_status: "completed" | "refunded" | null;
 };
 
 type ClassRoster = {
@@ -2182,7 +2187,7 @@ type ReportAccessDay = { day: string; total: number; denied: number };
 type ReportClassDay = { day: string; sessions: number; attended: number };
 type ReportEventDay = { day: string; activations: number; terminations: number };
 type ReportPlanRow = { plan_id: string; name: string; price_cents: number; duration_days: number; active_count: number; monthly_cents: number; recurring: boolean };
-type ReportProductRow = { product_id: string; name: string; sku: string; quantity: number; amount_cents: number };
+type ReportProductRow = { product_id: string | null; name: string; sku: string; quantity: number; amount_cents: number };
 type ReportEquipmentRow = { equipment_id: string; name: string; category: string; location: string | null; status: string; records_count: number; cost_cents: number; open_tickets: number };
 
 type ReportOverview = {
@@ -7290,7 +7295,7 @@ function ClassesView({ permissions, onUnauthorized, onToast }: { permissions: st
       <div className="staff-tabs pos-tabs">
         {tabButton("agenda", "Agenda")}
         {tabButton("catalogo", "Catálogo")}
-        <span className="staff-tabs-note"><ShieldCheck size={14} />Las clases premium todavía no generan cobro</span>
+        <span className="staff-tabs-note"><ShieldCheck size={14} />Las clases premium se cobran al marcar la asistencia</span>
       </div>
 
       {tab === "agenda" && (
@@ -7394,7 +7399,7 @@ function ClassesView({ permissions, onUnauthorized, onToast }: { permissions: st
       {canManage && typeModalOpen && <ClassTypeModal onClose={() => setTypeModalOpen(false)} onSaved={(message) => { setTypeModalOpen(false); reload(); onToast(message); }} onUnauthorized={onUnauthorized} />}
       {canManage && roomModalOpen && <ClassRoomModal onClose={() => setRoomModalOpen(false)} onSaved={(message) => { setRoomModalOpen(false); reload(); onToast(message); }} onUnauthorized={onUnauthorized} />}
 
-      <footer className="page-footer"><span>Centro Fit · Clases y reservaciones</span><span>DATOS DEL BACKEND · CLASES PREMIUM SIN COBRO EN ESTA VERSIÓN</span></footer>
+      <footer className="page-footer"><span>Centro Fit · Clases y reservaciones</span><span>DATOS DEL BACKEND · CLASES PREMIUM CON COBRO EN RECEPCIÓN</span></footer>
     </>
   );
 }
@@ -7519,7 +7524,7 @@ function ClassSessionModal({
             <label className="form-field"><span>Acceso</span><select value={accessType} onChange={(event) => setAccessType(event.target.value as "included" | "premium")}><option value="included">Incluida en la membresía</option><option value="premium">Premium (pago extra)</option></select></label>
             <label className="form-field"><span>Precio extra (opcional)</span><input value={extraPrice} onChange={(event) => setExtraPrice(event.target.value)} placeholder="0.00" inputMode="decimal" disabled={accessType !== "premium"} /></label>
           </div>
-          {accessType === "premium" && <div className="modal-note"><ShieldCheck size={16} /><span>El cobro de clases premium todavía no se ejecuta; se documenta el precio y queda pendiente la pasarela.</span></div>}
+          {accessType === "premium" && <div className="modal-note"><ShieldCheck size={16} /><span>El precio extra se cobra al marcar al socio como «Asistió» en la lista de la clase, con la forma de pago que elija en recepción.</span></div>}
           <label className="form-field form-check"><span><input type="checkbox" checked={waitlist} onChange={(event) => setWaitlist(event.target.checked)} />Permitir lista de espera cuando el salón esté lleno</span></label>
           <label className="form-field"><span>Notas (opcional)</span><input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Material, indicaciones…" maxLength={500} /></label>
           {error && <div className="login-error" role="alert">{error}</div>}
@@ -7552,6 +7557,7 @@ function ClassRosterModal({
   const [memberResults, setMemberResults] = useState<BackendMember[]>([]);
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<"cash" | "card" | "transfer" | "account">("cash");
 
   const load = async () => {
     setLoading(true);
@@ -7621,11 +7627,14 @@ function ClassRosterModal({
     try {
       const response = await fetch(`/api/admin/classes/reservations/${reservation.id}/cancel`, { method: "POST" });
       if (response.status === 401) { onUnauthorized(); return; }
-      const payload = await response.json().catch(() => ({})) as { detail?: string; late_cancellation?: boolean };
+      const payload = await response.json().catch(() => ({})) as { detail?: string; late_cancellation?: boolean; charge_status?: string | null; charge_cents?: number | null; charge_payment_method?: string | null };
       if (!response.ok) { onToast(payload.detail || "No se pudo cancelar la reserva."); return; }
       await load();
       onChanged();
-      onToast(payload.late_cancellation ? "Reserva cancelada fuera de la ventana (penalización pendiente)." : "Reserva cancelada.");
+      const refunded = payload.charge_status === "refunded" && payload.charge_cents
+        ? ` Se reembolsaron ${formatMoney(payload.charge_cents)} (${paymentMethodLabels[payload.charge_payment_method ?? ""] ?? payload.charge_payment_method}).`
+        : "";
+      onToast(payload.late_cancellation ? `Reserva cancelada fuera de la ventana (penalización pendiente).${refunded}` : `Reserva cancelada.${refunded}`);
     } catch {
       onToast("No se pudo conectar con el backend.");
     } finally {
@@ -7639,14 +7648,24 @@ function ClassRosterModal({
       const response = await fetch(`/api/admin/classes/reservations/${reservation.id}/attendance`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attended }),
+        body: JSON.stringify({ attended, payment_method: attended && isPremium ? paymentMethod : null }),
       });
       if (response.status === 401) { onUnauthorized(); return; }
-      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      const payload = await response.json().catch(() => ({})) as { detail?: string; charge_status?: string | null; charge_cents?: number | null; charge_payment_method?: string | null; charge_folio?: string | null };
       if (!response.ok) { onToast(payload.detail || "No se pudo marcar la asistencia."); return; }
       await load();
       onChanged();
-      onToast(attended ? "Asistencia registrada." : "Inasistencia registrada.");
+      if (attended) {
+        const charged = payload.charge_status === "completed" && payload.charge_cents
+          ? ` Cobro de ${formatMoney(payload.charge_cents)} (${paymentMethodLabels[payload.charge_payment_method ?? ""] ?? payload.charge_payment_method}) · folio ${payload.charge_folio}.`
+          : "";
+        onToast(`Asistencia registrada.${charged}`);
+      } else {
+        const refunded = payload.charge_status === "refunded" && payload.charge_cents
+          ? ` Se reembolsaron ${formatMoney(payload.charge_cents)}.`
+          : "";
+        onToast(`Inasistencia registrada.${refunded}`);
+      }
     } catch {
       onToast("No se pudo conectar con el backend.");
     } finally {
@@ -7656,6 +7675,7 @@ function ClassRosterModal({
 
   const current = roster?.session ?? session;
   const reservations = roster?.reservations ?? [];
+  const isPremium = current.access_type === "premium" && current.extra_price_cents > 0;
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -7664,6 +7684,19 @@ function ClassRosterModal({
         <p className="section-kicker">LISTA DE LA CLASE</p>
         <h2 id="class-roster-title">{current.title}</h2>
         <p className="modal-subtitle">{formatClassDay(current.starts_at)} · {formatClassClock(current.starts_at)}–{formatClassClock(current.ends_at)} · {current.reserved_count}/{current.capacity} confirmadas · {current.waitlist_count} en espera</p>
+
+        {isPremium && (
+          <div className="modal-note">
+            <ShieldCheck size={16} />
+            <span>Clase premium · {formatMoney(current.extra_price_cents)} por asistente. Al marcar «Asistió» se cobra en la forma de pago elegida; al cancelar se reembolsa.</span>
+            <select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as "cash" | "card" | "transfer" | "account")} disabled={busy}>
+              <option value="cash">Efectivo</option>
+              <option value="card">Tarjeta</option>
+              <option value="transfer">Transferencia</option>
+              <option value="account">Cuenta del socio</option>
+            </select>
+          </div>
+        )}
 
         {canManage && current.status === "scheduled" && (
           <div className="class-roster-search">
@@ -7695,10 +7728,11 @@ function ClassRosterModal({
                     <tr key={reservation.id}>
                       <td><div className="person-cell"><span className={`person-avatar ${memberAvatarColor(reservation.member_id)}`}>{reservation.member_name.slice(0, 2).toUpperCase()}</span><span><strong>{reservation.member_name}</strong><small>{reservation.member_email ?? "Sin correo"}{reservation.waitlist_position ? ` · turno ${reservation.waitlist_position}` : ""}</small></span></div></td>
                       <td>{reservation.origin === "reception" ? "Recepción" : reservation.origin === "app" ? "App" : "Web"}</td>
-                      <td><span className={`status-badge ${classReservationBadge(reservation.status)}`}><i />{classReservationLabels[reservation.status]}</span>{reservation.late_cancellation && <small className="pos-min"> · cancelación tardía</small>}</td>
+                      <td><span className={`status-badge ${classReservationBadge(reservation.status)}`}><i />{classReservationLabels[reservation.status]}</span>{reservation.late_cancellation && <small className="pos-min"> · cancelación tardía</small>}{isPremium && (reservation.charge_status === "completed" && reservation.charge_cents !== null ? <small className="pos-min"> · pagado {formatMoney(reservation.charge_cents)}</small> : reservation.charge_status === "refunded" && reservation.charge_cents !== null ? <small className="pos-min"> · reembolsado {formatMoney(reservation.charge_cents)}</small> : reservation.status === "reserved" ? <small className="pos-min"> · cobro pendiente {formatMoney(current.extra_price_cents)}</small> : null)}</td>
                       {canManage && (
                         <td><div className="pos-row-actions">
-                          {(reservation.status === "reserved") && <><button type="button" className="text-button" disabled={busy} onClick={() => mark(reservation, true)}>Asistió</button><button type="button" className="text-button" disabled={busy} onClick={() => mark(reservation, false)}>No asistió</button></>}
+                          {reservation.status === "reserved" && <button type="button" className="text-button" disabled={busy} onClick={() => mark(reservation, true)}>Asistió</button>}
+                          {(reservation.status === "reserved" || reservation.status === "attended") && <button type="button" className="text-button" disabled={busy} onClick={() => mark(reservation, false)}>No asistió</button>}
                           {(reservation.status === "reserved" || reservation.status === "waitlist") && <button type="button" className="text-button" disabled={busy} onClick={() => cancelReservation(reservation)}>Cancelar</button>}
                         </div></td>
                       )}
