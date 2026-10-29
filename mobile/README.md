@@ -115,8 +115,11 @@ CORS_ORIGINS=http://localhost:8081,http://127.0.0.1:8081
 1. La tarjeta «Acceso habilitado» del inicio abre `AccessCodeScreen` y la pantalla pide `POST /member/access/code` con el Bearer del socio.
 2. El backend exige membresía vigente y devuelve un código de seis dígitos con cinco minutos de vida; emitir otro invalida el anterior. La app solo lo mantiene en memoria y muestra la cuenta regresiva.
 3. Mientras el código sigue vigente, la pantalla consulta `GET /member/access/code` cada 4 segundos y el backend responde si sigue sirviendo (`active`), si el kiosco ya lo consumió (`consumed`) o si venció (`expired`); nunca devuelve los dígitos.
-4. Cuando la tablet lo valida, la pantalla cambia a «Código usado» con el aviso de que recepción ya lo registró y el botón para pedir otro; deja de sondear. Si falla la red, mantiene el código y reintenta en el siguiente sondeo.
-5. Al vencer, «Generar nuevo código» pide otro; un `401` cierra la sesión y vuelve al inicio de sesión.
+4. Esa misma consulta trae el consumo del día (`entries_today` y `daily_entry_limit` del plan) y la pantalla lo muestra en la tarjeta «Entradas hoy»: «1 de 2» con cuántas quedan, o solo el total cuando el plan no tiene límite. Se refresca en cada sondeo y tras generar un código nuevo, sin pedir otra ruta.
+5. Cuando la tablet lo valida, la pantalla cambia a «Código usado» con el aviso de que recepción ya lo registró y el botón para pedir otro; deja de sondear. Si falla la red, mantiene el código y reintenta en el siguiente sondeo.
+6. Al vencer, «Generar nuevo código» pide otro; un `401` cierra la sesión y vuelve al inicio de sesión.
+
+El conteo refleja las entradas ya registradas, no la decisión del kiosco: si el socio llega sin entradas disponibles, el código se consume igual y la app lo verá como «usado» mientras la tablet lo rechaza por límite diario (ADR-029).
 
 ## Flujo de clases
 
@@ -224,7 +227,7 @@ mobile/
 - Series objetivo por sesión, series por tiempo o distancia y métricas de volumen por ejercicio.
 - Cerrar el pendiente de revisión desde la app del entrenador: hoy el entrenador **sí recibe** `workout_pending_review` en la campana del panel (ADR-017), pero el aviso no se cierra al revisar y la app del socio no tiene vista de entrenador.
 - Fotos de progreso: edición de ángulo, fecha o nota (corregir exige borrar y volver a subir), carga múltiple, revocación del consentimiento desde la app, compresión/miniaturas y almacenamiento de objetos con respaldo. Los permisos nativos de cámara y fotos todavía no se declaran en `app.json` con el config plugin de `expo-image-picker`, así que hay que agregarlo antes de una compilación de tienda.
-- El aviso de equipo fuera de servicio **no enlaza con lo afectado**: la app no tiene pantalla de equipos y el detalle del plan todavía no renderiza `equipment_status`, así que el socio lee el aviso sin ver marcado el ejercicio cuya máquina se paró. Tampoco hay aviso cuando el equipo vuelve a estar operativo.
+- El aviso de equipo fuera de servicio solo se ve en el detalle del plan, donde el ejercicio afectado queda marcado con su `equipment_status`; la app no tiene pantalla de equipos, así que el socio no puede consultar el estado desde otro lugar ni hay aviso cuando el equipo vuelve a estar operativo.
 - Pago en línea y detalle de la venta detrás de cada cargo (hoy se consulta el movimiento). Las facturas se descargan y se solicitan desde la app, pero la lista pide solo la primera página (20), no hay historial de descargas, la solicitud no se timbra desde la app, no se puede elegir PPD ni se avisa cuando cambia el estado de la factura.
 - Cobro del precio extra de las clases premium desde la app.
 - Notificaciones push y recordatorios programados (renovación, clase, cobranza): la bandeja ya existe, pero el aviso solo se ve cuando el socio abre la app.

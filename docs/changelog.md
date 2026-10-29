@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-29 · El socio ve cuántas entradas le quedan hoy
+
+- **API**: `GET /member/access/code` suma `entries_today` y `daily_entry_limit` a la respuesta del estado del código. El conteo reutiliza `count_member_entries_today` (entradas autorizadas del día del club, incluidas las manuales de recepción) y el límite sale del plan de la membresía más reciente (`_latest_membership` + `Plan`), el mismo par que usa el kiosco; `null` significa sin límite. No hay permiso nuevo, migración ni columna: el dato ya existía en el kiosco y solo se expone.
+- **App**: `AccessCodeScreen` pinta una tarjeta «Entradas hoy» bajo el código con «N de M» (o el número solo cuando el plan no tiene tope) y el mensaje «Te queda 1 entrada hoy.», «Te quedan N entradas hoy.» o «Ya usaste tus entradas de hoy: la tablet no registrará otra hasta mañana.». El sondeo se ejecuta una vez al mostrarse el código y luego cada 4 segundos, así que el número aparece al instante y se actualiza en vivo.
+- **Pruebas**: 1 nueva en `backend/tests/test_kiosk_access_api.py` (estado sin códigos con `0` de `2`, consumo que pasa a `1` de `2`, el mismo número que `count_member_entries_today`, y plan sin límite que conserva el conteo con `daily_entry_limit: null`). La suite del backend queda en **210 pruebas** y el archivo del kiosco en 13.
+- **Verificación en navegador** (backend `127.0.0.1:8000`, app Expo web `localhost:8081`): con el plan Premium en `2` al día, la pantalla mostró «ENTRADAS HOY / 1 de 2 / Te queda 1 entrada hoy.»; tras registrar una segunda entrada en la base de vista previa, el siguiente sondeo la cambió sola a «2 de 2 / Ya usaste tus entradas de hoy…», y un kiosco temporal comprobó que el código vigente se rechaza con `authorized=false`, `reason="daily_limit"` y el mismo mensaje. Al terminar se borraron el kiosco, su evento denegado y la entrada de prueba, se retiró el límite del plan y la app quedó mostrando «1 / Tu plan no tiene límite diario de entradas.».
+- **Documentación**: nuevo ADR-029, módulo de control de acceso, deuda técnica, plan de pruebas, README de documentación, del backend y de la app.
+
 ## 2026-10-29 · La campana avisa cuando el token de un kiosco va a vencer
 
 - **Servicio**: `warn_expiring_kiosk_tokens` (`access/kiosk.py`) recorre los kioscos `active` con `token_expires_at` no nulo y a 15 días o menos (`KIOSK_TOKEN_WARNING`), y escribe un `kiosk_token_expiring` por cada cuenta activa cuyo rol concede `settings.manage` —la misma audiencia que puede rotar—. Un token ya vencido genera un texto distinto («caducó el …») y la fase forma parte de la deduplicación, así que el aviso de la ventana no silencia el de la caducidad. Las filas sin fecha no avisan.

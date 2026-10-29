@@ -2695,6 +2695,8 @@ class MemberAccessCodeStatusResponse(BaseModel):
     issued_at: datetime | None
     expires_at: datetime | None
     consumed_at: datetime | None
+    entries_today: int
+    daily_entry_limit: int | None
 
 
 class KioskDeviceResponse(BaseModel):
@@ -3045,6 +3047,8 @@ def member_access_code_status(
         issued_at=status.issued_at,
         expires_at=status.expires_at,
         consumed_at=status.consumed_at,
+        entries_today=status.entries_today,
+        daily_entry_limit=status.daily_entry_limit,
     )
 
 

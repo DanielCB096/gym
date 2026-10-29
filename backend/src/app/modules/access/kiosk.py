@@ -116,6 +116,8 @@ class AccessCodeStatus:
     issued_at: datetime | None
     expires_at: datetime | None
     consumed_at: datetime | None
+    entries_today: int
+    daily_entry_limit: int | None
 
 
 @dataclass(frozen=True)
@@ -221,17 +223,35 @@ def latest_member_access_code_status(
 
     Only the digest is stored, so the app cannot be handed its code again; it
     keeps the digits it already shows and asks here whether the kiosk consumed
-    them.
+    them. The same answer carries the member's daily consumption, so the app can
+    warn that the kiosk will refuse the next entry before the member walks to
+    the tablet.
     """
 
     occurred_at = _as_utc(now or utc_now())
+    membership = _latest_membership(session, member_id)
+    plan = session.get(Plan, membership.plan_id) if membership is not None else None
+    daily_entry_limit = plan.daily_entry_limit if plan is not None else None
+    entries_today = count_member_entries_today(
+        session,
+        member_id,
+        timezone_name=os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE),
+        now=occurred_at,
+    )
     code = session.exec(
         select(MemberAccessCode)
         .where(MemberAccessCode.member_id == member_id)
         .order_by(MemberAccessCode.created_at.desc(), MemberAccessCode.id.desc())
     ).first()
     if code is None:
-        return AccessCodeStatus("none", None, None, None)
+        return AccessCodeStatus(
+            status="none",
+            issued_at=None,
+            expires_at=None,
+            consumed_at=None,
+            entries_today=entries_today,
+            daily_entry_limit=daily_entry_limit,
+        )
 
     expires_at = _as_utc(code.expires_at)
     consumed_at = _as_utc(code.consumed_at) if code.consumed_at is not None else None
@@ -246,6 +266,8 @@ def latest_member_access_code_status(
         issued_at=_as_utc(code.created_at),
         expires_at=expires_at,
         consumed_at=consumed_at,
+        entries_today=entries_today,
+        daily_entry_limit=daily_entry_limit,
     )
 
 

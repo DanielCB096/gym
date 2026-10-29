@@ -336,6 +336,71 @@ def test_member_access_code_status_tracks_consumption(monkeypatch) -> None:
         engine.dispose()
 
 
+def test_member_access_code_status_reports_daily_consumption(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+        plan = session.get(Plan, ids["plan"])
+        plan.daily_entry_limit = 2
+        session.add(plan)
+        session.commit()
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            member_headers = _login_member(client, "ana@example.com")
+            owner = _login_staff(client, "owner@example.com", "owner-strong-password")
+            device = _create_device(client, owner)
+            kiosk_headers = {"X-Kiosk-Token": device["token"]}
+
+            # Sin códigos emitidos el estado ya informa el consumo del día.
+            fresh = client.get("/member/access/code", headers=member_headers).json()
+            assert fresh["status"] == "none"
+            assert fresh["entries_today"] == 0
+            assert fresh["daily_entry_limit"] == 2
+
+            issued = client.post("/member/access/code", headers=member_headers)
+            assert issued.status_code == 201, issued.text
+            granted = client.post(
+                "/kiosk/check-in", headers=kiosk_headers, json={"code": issued.json()["code"]}
+            )
+            assert granted.status_code == 200, granted.text
+            assert granted.json()["authorized"] is True
+
+            # El sondeo que detecta el consumo trae también la entrada recién
+            # registrada, que es la que cuenta para el límite del plan.
+            after = client.get("/member/access/code", headers=member_headers).json()
+            assert after["status"] == "consumed"
+            assert after["entries_today"] == 1
+            assert after["daily_entry_limit"] == 2
+
+            assert (
+                count_member_entries_today(
+                    Session(engine), ids["ana"], timezone_name="UTC"
+                )
+                == 1
+            )
+
+            # Un plan sin límite sigue informando el consumo, sin tope.
+            with Session(engine) as session:
+                plan = session.get(Plan, ids["plan"])
+                plan.daily_entry_limit = None
+                session.add(plan)
+                session.commit()
+            unlimited = client.get("/member/access/code", headers=member_headers).json()
+            assert unlimited["entries_today"] == 1
+            assert unlimited["daily_entry_limit"] is None
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
 def test_kiosk_token_expiry_is_announced_to_settings_managers(monkeypatch) -> None:
     monkeypatch.setenv("PREVIEW_MODE", "true")
     engine = _build_engine()

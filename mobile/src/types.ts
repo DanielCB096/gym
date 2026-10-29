@@ -52,6 +52,8 @@ export type MemberAccessCodeStatus = {
   issued_at: string | null;
   expires_at: string | null;
   consumed_at: string | null;
+  entries_today: number;
+  daily_entry_limit: number | null;
 };
 
 export type MemberClassReservation = {

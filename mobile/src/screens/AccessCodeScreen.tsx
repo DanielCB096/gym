@@ -45,11 +45,15 @@ export function AccessCodeScreen({ token, onBack, onSessionExpired }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [remaining, setRemaining] = useState(0);
   const [consumed, setConsumed] = useState(false);
+  const [today, setToday] = useState<{ entries: number; limit: number | null } | null>(
+    null,
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     setConsumed(false);
+    setToday(null);
     try {
       const next = await requestMemberAccessCode(token);
       setAccessCode(next);
@@ -94,6 +98,7 @@ export function AccessCodeScreen({ token, onBack, onSessionExpired }: Props) {
         if (cancelled) {
           return;
         }
+        setToday({ entries: status.entries_today, limit: status.daily_entry_limit });
         if (status.status === "consumed") {
           setConsumed(true);
         } else if (status.status === "expired") {
@@ -107,6 +112,7 @@ export function AccessCodeScreen({ token, onBack, onSessionExpired }: Props) {
         // siguiente sondeo vuelve a intentarlo.
       }
     };
+    void check();
     const timer = setInterval(() => void check(), STATUS_POLL_MS);
     return () => {
       cancelled = true;
@@ -202,6 +208,32 @@ export function AccessCodeScreen({ token, onBack, onSessionExpired }: Props) {
           )}
         </View>
       ) : null}
+
+      {today ? (
+        <View style={[sharedStyles.card, styles.todayCard]}>
+          <Text style={styles.todayLabel}>Entradas hoy</Text>
+          <Text style={styles.todayValue}>
+            {today.limit === null
+              ? today.entries
+              : `${today.entries} de ${today.limit}`}
+          </Text>
+          <Text
+            style={
+              today.limit !== null && today.entries >= today.limit
+                ? styles.todayExhausted
+                : sharedStyles.hint
+            }
+          >
+            {today.limit === null
+              ? "Tu plan no tiene límite diario de entradas."
+              : today.entries >= today.limit
+                ? "Ya usaste tus entradas de hoy: la tablet no registrará otra hasta mañana."
+                : today.limit - today.entries === 1
+                  ? "Te queda 1 entrada hoy."
+                  : `Te quedan ${today.limit - today.entries} entradas hoy.`}
+          </Text>
+        </View>
+      ) : null}
     </ScrollView>
   );
 }
@@ -270,5 +302,26 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "600",
     textAlign: "center",
+  },
+  todayCard: {
+    gap: spacing.xs,
+  },
+  todayLabel: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 1.1,
+    textTransform: "uppercase",
+  },
+  todayValue: {
+    color: colors.text,
+    fontSize: 26,
+    fontWeight: "800",
+  },
+  todayExhausted: {
+    color: colors.warning,
+    fontSize: 13,
+    fontWeight: "600",
+    lineHeight: 19,
   },
 });
