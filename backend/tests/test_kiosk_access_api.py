@@ -32,12 +32,14 @@ from app.modules.access.models import (
     utc_now,
 )
 from app.modules.access.service import (
+    count_current_occupancy,
     count_member_entries_today,
     last_member_entry_at,
     read_antipassback_seconds,
+    read_occupancy_policy,
     record_access_event,
     replace_plan_access_windows,
-    update_antipassback_seconds,
+    update_access_settings,
 )
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.memberships.models import Member, Membership, Plan
@@ -843,13 +845,31 @@ def test_antipassback_window_blocks_repeated_kiosk_entries(monkeypatch) -> None:
 
             assert client.get(settings_path, headers=reception).status_code == 403
             assert client.patch(
-                settings_path, headers=reception, json={"antipassback_seconds": 60}
+                settings_path,
+                headers=reception,
+                json={
+                    "antipassback_seconds": 60,
+                    "max_occupancy": None,
+                    "occupancy_window_seconds": 7200,
+                },
             ).status_code == 403
             assert client.patch(
-                settings_path, headers=owner, json={"antipassback_seconds": -1}
+                settings_path,
+                headers=owner,
+                json={
+                    "antipassback_seconds": -1,
+                    "max_occupancy": None,
+                    "occupancy_window_seconds": 7200,
+                },
             ).status_code == 422
             assert client.patch(
-                settings_path, headers=owner, json={"antipassback_seconds": 3601}
+                settings_path,
+                headers=owner,
+                json={
+                    "antipassback_seconds": 3601,
+                    "max_occupancy": None,
+                    "occupancy_window_seconds": 7200,
+                },
             ).status_code == 422
 
             initial = client.get(settings_path, headers=owner)
@@ -857,7 +877,13 @@ def test_antipassback_window_blocks_repeated_kiosk_entries(monkeypatch) -> None:
             assert initial.json()["antipassback_seconds"] == 0
 
             enabled = client.patch(
-                settings_path, headers=owner, json={"antipassback_seconds": 600}
+                settings_path,
+                headers=owner,
+                json={
+                    "antipassback_seconds": 600,
+                    "max_occupancy": None,
+                    "occupancy_window_seconds": 7200,
+                },
             )
             assert enabled.status_code == 200, enabled.text
             assert enabled.json()["antipassback_seconds"] == 600
@@ -884,12 +910,214 @@ def test_antipassback_window_blocks_repeated_kiosk_entries(monkeypatch) -> None:
             assert denied.json()["message"] == "Entrada duplicada. Espera un momento."
 
             disabled = client.patch(
-                settings_path, headers=owner, json={"antipassback_seconds": 0}
+                settings_path,
+                headers=owner,
+                json={
+                    "antipassback_seconds": 0,
+                    "max_occupancy": None,
+                    "occupancy_window_seconds": 7200,
+                },
             )
             assert disabled.status_code == 200, disabled.text
             assert disabled.json()["antipassback_seconds"] == 0
 
             issued_again = client.post("/member/access/code", headers=member_headers)
+            assert issued_again.status_code == 201, issued_again.text
+            granted = client.post(
+                "/kiosk/check-in",
+                headers=kiosk_headers,
+                json={"code": issued_again.json()["code"]},
+            )
+            assert granted.status_code == 200, granted.text
+            assert granted.json()["authorized"] is True
+
+            events = client.get("/admin/access-events", headers=owner).json()
+            assert events["total"] == 3
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
+def test_occupancy_estimate_counts_entries_inside_the_window() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+
+        def add_event(
+            member_id: UUID,
+            occurred_at: datetime,
+            *,
+            authorized: bool = True,
+            direction: AccessDirection = AccessDirection.ENTRY,
+            reason: AccessReason = AccessReason.ENTRY_ALLOWED,
+            source: str = "reader",
+        ) -> None:
+            record_access_event(
+                session,
+                AccessDecision(
+                    event_id=uuid4(),
+                    member_id=member_id,
+                    authorized=authorized,
+                    reason=reason,
+                    direction=direction,
+                    occurred_at=occurred_at,
+                    offline=False,
+                ),
+                reader_id="Prueba",
+                source=source,
+            )
+
+        now = datetime(2026, 10, 28, 18, 0, tzinfo=timezone.utc)
+        window = 2 * 60 * 60
+        assert count_current_occupancy(session, window_seconds=window, now=now) == 0
+
+        # Ana's only entry is older than the window: the estimate assumes she left.
+        add_event(ids["ana"], now - timedelta(hours=4))
+        add_event(ids["beto"], now - timedelta(minutes=30))
+        # Denied entries and exits never count as being inside.
+        add_event(
+            ids["carla"],
+            now - timedelta(hours=1),
+            authorized=False,
+            reason=AccessReason.OCCUPANCY_FULL,
+        )
+        add_event(
+            ids["carla"],
+            now - timedelta(minutes=10),
+            direction=AccessDirection.EXIT,
+            reason=AccessReason.EXIT_ALLOWED,
+        )
+        assert count_current_occupancy(session, window_seconds=window, now=now) == 1
+        # An entry in the future is not inside yet.
+        assert count_current_occupancy(
+            session, window_seconds=window, now=now - timedelta(hours=1)
+        ) == 0
+
+        # Scanning again refreshes the visit instead of adding a person.
+        add_event(ids["ana"], now - timedelta(minutes=5))
+        assert count_current_occupancy(session, window_seconds=window, now=now) == 2
+
+        # A manual entry from reception also means the member came in.
+        add_event(
+            ids["carla"],
+            now - timedelta(minutes=2),
+            reason=AccessReason.MANUAL_OVERRIDE,
+            source="manual",
+        )
+        assert count_current_occupancy(session, window_seconds=window, now=now) == 3
+        # The estimate follows whatever window the club configures.
+        assert count_current_occupancy(session, window_seconds=10 * 60, now=now) == 2
+    engine.dispose()
+
+
+def test_kiosk_denies_entries_when_the_club_is_at_capacity(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+        now = datetime.now(timezone.utc)
+        dora = Member(
+            first_name="Dora", last_name="Vega", email="dora@example.com", status="active"
+        )
+        session.add(dora)
+        session.flush()
+        session.add(
+            Membership(
+                member_id=dora.id,
+                plan_id=ids["plan"],
+                status="active",
+                starts_at=now - timedelta(days=1),
+                ends_at=now + timedelta(days=29),
+            )
+        )
+        session.commit()
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            owner = _login_staff(client, "owner@example.com", "owner-strong-password")
+            reception = _login_staff(client, "reception@example.com", "reception-strong-password")
+            device = _create_device(client, owner)
+            kiosk_headers = {"X-Kiosk-Token": device["token"]}
+            settings_path = "/admin/access/settings"
+
+            initial = client.get(settings_path, headers=owner)
+            assert initial.status_code == 200, initial.text
+            assert initial.json()["max_occupancy"] is None
+            assert initial.json()["occupancy_window_seconds"] == 7200
+
+            assert client.patch(
+                settings_path,
+                headers=reception,
+                json={
+                    "antipassback_seconds": 0,
+                    "max_occupancy": 5,
+                    "occupancy_window_seconds": 7200,
+                },
+            ).status_code == 403
+            for invalid in (
+                {"antipassback_seconds": 0, "max_occupancy": 0, "occupancy_window_seconds": 7200},
+                {"antipassback_seconds": 0, "max_occupancy": 10001, "occupancy_window_seconds": 7200},
+                {"antipassback_seconds": 0, "max_occupancy": 5, "occupancy_window_seconds": 299},
+                {"antipassback_seconds": 0, "max_occupancy": 5, "occupancy_window_seconds": 86401},
+            ):
+                assert client.patch(
+                    settings_path, headers=owner, json=invalid
+                ).status_code == 422, invalid
+
+            enabled = client.patch(
+                settings_path,
+                headers=owner,
+                json={
+                    "antipassback_seconds": 0,
+                    "max_occupancy": 1,
+                    "occupancy_window_seconds": 7200,
+                },
+            )
+            assert enabled.status_code == 200, enabled.text
+            assert enabled.json()["max_occupancy"] == 1
+
+            # One member comes in through reception; the club is now full.
+            manual = client.post(
+                "/admin/access-events/manual",
+                headers=reception,
+                json={"member_id": str(ids["ana"]), "note": "Cortesía"},
+            )
+            assert manual.status_code == 201, manual.text
+            assert manual.json()["authorized"] is True
+
+            dora_headers = _login_member(client, "dora@example.com")
+            issued = client.post("/member/access/code", headers=dora_headers)
+            assert issued.status_code == 201, issued.text
+            denied = client.post(
+                "/kiosk/check-in",
+                headers=kiosk_headers,
+                json={"code": issued.json()["code"]},
+            )
+            assert denied.status_code == 200, denied.text
+            assert denied.json()["authorized"] is False
+            assert denied.json()["reason"] == "occupancy_full"
+            assert denied.json()["message"] == "El club está lleno en este momento."
+
+            cleared = client.patch(
+                settings_path,
+                headers=owner,
+                json={
+                    "antipassback_seconds": 0,
+                    "max_occupancy": None,
+                    "occupancy_window_seconds": 7200,
+                },
+            )
+            assert cleared.status_code == 200, cleared.text
+            assert cleared.json()["max_occupancy"] is None
+
+            issued_again = client.post("/member/access/code", headers=dora_headers)
             assert issued_again.status_code == 201, issued_again.text
             granted = client.post(
                 "/kiosk/check-in",
@@ -963,18 +1191,54 @@ def test_last_member_entry_at_includes_manual_entries() -> None:
 
         assert read_antipassback_seconds(session) == 0
         try:
-            update_antipassback_seconds(session, -1)
+            update_access_settings(
+                session,
+                antipassback_seconds=-1,
+                max_occupancy=None,
+                occupancy_window_seconds=7200,
+            )
         except ValueError:
             pass
         else:
             raise AssertionError("A negative window must be rejected")
-        assert update_antipassback_seconds(
-            session, 120, now=base
+        assert update_access_settings(
+            session,
+            antipassback_seconds=120,
+            max_occupancy=None,
+            occupancy_window_seconds=7200,
+            now=base,
         ).antipassback_seconds == 120
         assert read_antipassback_seconds(session) == 120
-        assert update_antipassback_seconds(
-            session, 0, now=base
+        assert update_access_settings(
+            session,
+            antipassback_seconds=0,
+            max_occupancy=None,
+            occupancy_window_seconds=7200,
+            now=base,
         ).antipassback_seconds == 0
+
+        assert read_occupancy_policy(session) == (None, 7200)
+        try:
+            update_access_settings(
+                session,
+                antipassback_seconds=0,
+                max_occupancy=0,
+                occupancy_window_seconds=7200,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("A zero occupancy cap must be rejected")
+        configured = update_access_settings(
+            session,
+            antipassback_seconds=0,
+            max_occupancy=40,
+            occupancy_window_seconds=5400,
+            now=base,
+        )
+        assert configured.max_occupancy == 40
+        assert configured.occupancy_window_seconds == 5400
+        assert read_occupancy_policy(session) == (40, 5400)
     engine.dispose()
 
 

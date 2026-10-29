@@ -193,6 +193,8 @@ function planScheduleSummary(windows: PlanAccessWindow[]): string {
 
 type AccessSettings = {
   antipassback_seconds: number;
+  max_occupancy: number | null;
+  occupancy_window_seconds: number;
   updated_at: string;
 };
 
@@ -3553,6 +3555,9 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
   const [accessSettings, setAccessSettings] = useState<AccessSettings | null>(null);
   const [antipassbackDraft, setAntipassbackDraft] = useState("");
   const [savingAntipassback, setSavingAntipassback] = useState(false);
+  const [maxOccupancyDraft, setMaxOccupancyDraft] = useState("");
+  const [occupancyMinutesDraft, setOccupancyMinutesDraft] = useState("120");
+  const [savingOccupancy, setSavingOccupancy] = useState(false);
   const [accessSettingsError, setAccessSettingsError] = useState("");
   const [schedulePlan, setSchedulePlan] = useState<BackendPlan | null>(null);
   const [scheduleRows, setScheduleRows] = useState<ScheduleDraftRow[]>([]);
@@ -3599,6 +3604,13 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
     }
   };
 
+  const applyAccessSettings = (payload: AccessSettings) => {
+    setAccessSettings(payload);
+    setAntipassbackDraft(String(payload.antipassback_seconds));
+    setMaxOccupancyDraft(payload.max_occupancy == null ? "" : String(payload.max_occupancy));
+    setOccupancyMinutesDraft(String(Math.round(payload.occupancy_window_seconds / 60)));
+  };
+
   const loadAccessSettings = async () => {
     setAccessSettingsError("");
     try {
@@ -3608,11 +3620,10 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
         return;
       }
       const payload = await response.json().catch(() => ({})) as AccessSettings & { detail?: string };
-      if (!response.ok) throw new Error(payload.detail || "No se pudo cargar el control de duplicados.");
-      setAccessSettings(payload);
-      setAntipassbackDraft(String(payload.antipassback_seconds));
+      if (!response.ok) throw new Error(payload.detail || "No se pudo cargar la política de acceso.");
+      applyAccessSettings(payload);
     } catch (loadError) {
-      setAccessSettingsError(loadError instanceof Error ? loadError.message : "No se pudo cargar el control de duplicados.");
+      setAccessSettingsError(loadError instanceof Error ? loadError.message : "No se pudo cargar la política de acceso.");
     }
   };
 
@@ -3746,6 +3757,7 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
   };
 
   const saveAntipassback = async () => {
+    if (accessSettings == null) return;
     const raw = antipassbackDraft.trim();
     const seconds = Number(raw);
     if (!Number.isInteger(seconds) || seconds < 0 || seconds > 3600) {
@@ -3757,7 +3769,11 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
       const response = await fetch("/api/admin/access/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ antipassback_seconds: seconds }),
+        body: JSON.stringify({
+          antipassback_seconds: seconds,
+          max_occupancy: accessSettings.max_occupancy,
+          occupancy_window_seconds: accessSettings.occupancy_window_seconds,
+        }),
       });
       if (response.status === 401) {
         onUnauthorized();
@@ -3765,8 +3781,7 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
       }
       const payload = await response.json().catch(() => ({})) as AccessSettings & { detail?: string };
       if (!response.ok) throw new Error(payload.detail || "No se pudo guardar el control de duplicados.");
-      setAccessSettings(payload);
-      setAntipassbackDraft(String(payload.antipassback_seconds));
+      applyAccessSettings(payload);
       onToast(payload.antipassback_seconds === 0
         ? "Control de duplicados desactivado."
         : `Control de duplicados activo: ${payload.antipassback_seconds} segundos.`);
@@ -3774,6 +3789,47 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
       onToast(saveError instanceof Error ? saveError.message : "No se pudo guardar el control de duplicados.");
     } finally {
       setSavingAntipassback(false);
+    }
+  };
+
+  const saveOccupancy = async () => {
+    if (accessSettings == null) return;
+    const raw = maxOccupancyDraft.trim();
+    const max = raw === "" ? null : Number(raw);
+    if (max !== null && (!Number.isInteger(max) || max < 1 || max > 10000)) {
+      onToast("El aforo debe ser un entero entre 1 y 10000, o quedar vacío para no limitar.");
+      return;
+    }
+    const minutes = Number(occupancyMinutesDraft.trim());
+    if (!Number.isInteger(minutes) || minutes < 5 || minutes > 1440) {
+      onToast("El tiempo de estancia debe ser un entero entre 5 y 1440 minutos.");
+      return;
+    }
+    setSavingOccupancy(true);
+    try {
+      const response = await fetch("/api/admin/access/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          antipassback_seconds: accessSettings.antipassback_seconds,
+          max_occupancy: max,
+          occupancy_window_seconds: minutes * 60,
+        }),
+      });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as AccessSettings & { detail?: string };
+      if (!response.ok) throw new Error(payload.detail || "No se pudo guardar el aforo.");
+      applyAccessSettings(payload);
+      onToast(payload.max_occupancy == null
+        ? "Aforo desactivado: el kiosco no limita la ocupación."
+        : `Aforo del club: ${payload.max_occupancy} socios; cada entrada cuenta ${Math.round(payload.occupancy_window_seconds / 60)} minutos.`);
+    } catch (saveError) {
+      onToast(saveError instanceof Error ? saveError.message : "No se pudo guardar el aforo.");
+    } finally {
+      setSavingOccupancy(false);
     }
   };
 
@@ -4157,6 +4213,85 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
             onClick={() => void saveAntipassback()}
           >
             {savingAntipassback ? "Guardando…" : "Guardar"}
+          </button>
+        </div>
+      </section>
+
+      <section className="panel full-panel">
+        <div className="panel-header access-list-heading">
+          <div>
+            <p className="section-kicker">POLÍTICA DE ACCESO</p>
+            <h2>Aforo del club</h2>
+          </div>
+          <span className="role-count">
+            {accessSettings == null
+              ? "…"
+              : accessSettings.max_occupancy == null
+                ? "Off"
+                : `${accessSettings.max_occupancy} socios`}
+          </span>
+        </div>
+        <p className="panel-hint">
+          El kiosco niega la entrada cuando la ocupación estimada alcanza el aforo. Cuenta como
+          «dentro» a cada socio cuya última entrada autorizada —del kiosco o de recepción— cae
+          dentro del tiempo de estancia; si vuelve a entrar, su visita se renueva. Deja el aforo
+          vacío para no limitarlo. La estimación no sustituye un registro de salidas: quien se
+          queda más tiempo se cuenta como que ya salió.
+        </p>
+        <div className="kiosk-occupancy-row">
+          <label htmlFor="max-occupancy">Aforo máximo</label>
+          <input
+            id="max-occupancy"
+            className="kiosk-limit-input"
+            type="number"
+            min={1}
+            max={10000}
+            step={1}
+            inputMode="numeric"
+            placeholder="Sin límite"
+            value={maxOccupancyDraft}
+            disabled={savingOccupancy || accessSettings == null}
+            onChange={(event) => setMaxOccupancyDraft(event.target.value)}
+          />
+          <span className="kiosk-antipassback-state">
+            {accessSettings == null
+              ? "Cargando…"
+              : accessSettings.max_occupancy == null
+                ? "Desactivado: no se limita la ocupación."
+                : `Activo: hasta ${accessSettings.max_occupancy} socios dentro del club.`}
+          </span>
+        </div>
+        <div className="kiosk-occupancy-row">
+          <label htmlFor="occupancy-minutes">Tiempo de estancia (minutos)</label>
+          <input
+            id="occupancy-minutes"
+            className="kiosk-limit-input"
+            type="number"
+            min={5}
+            max={1440}
+            step={5}
+            inputMode="numeric"
+            value={occupancyMinutesDraft}
+            disabled={savingOccupancy || accessSettings == null}
+            onChange={(event) => setOccupancyMinutesDraft(event.target.value)}
+          />
+          <span className="kiosk-antipassback-state">
+            {accessSettings == null
+              ? "Cargando…"
+              : `Cada entrada cuenta ${Math.round(accessSettings.occupancy_window_seconds / 60)} minutos.`}
+          </span>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={
+              savingOccupancy
+              || accessSettings == null
+              || (maxOccupancyDraft === (accessSettings.max_occupancy == null ? "" : String(accessSettings.max_occupancy))
+                && occupancyMinutesDraft === String(Math.round(accessSettings.occupancy_window_seconds / 60)))
+            }
+            onClick={() => void saveOccupancy()}
+          >
+            {savingOccupancy ? "Guardando…" : "Guardar"}
           </button>
         </div>
       </section>

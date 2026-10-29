@@ -75,7 +75,6 @@ def test_valid_offline_entry_is_authorized_and_persisted(tmp_path) -> None:
         ({"membership_status": "frozen"}, {}, AccessReason.MEMBERSHIP_NOT_ACTIVE),
         ({"blocking_debt": True}, {}, AccessReason.BLOCKING_DEBT),
         ({}, {"current_occupancy": 80}, AccessReason.OCCUPANCY_FULL),
-        ({}, {"max_occupancy": 0}, AccessReason.OCCUPANCY_FULL),
         (
             {"allowed_windows": (AccessWindow(3, time(9), time(10)),)},
             {},
@@ -96,6 +95,17 @@ def test_entry_denies_invalid_or_stale_conditions(
 
     assert decision.authorized is False
     assert decision.reason == expected_reason
+
+
+def test_zero_occupancy_cap_means_the_club_has_no_limit() -> None:
+    decision = evaluate_access(
+        make_snapshot(antipassback_seconds=0),
+        make_request(current_occupancy=500, max_occupancy=0),
+        timezone_name="America/Mexico_City",
+    )
+
+    assert decision.authorized is True
+    assert decision.reason == AccessReason.ENTRY_ALLOWED
 
 
 def test_schedule_uses_gym_local_timezone_and_supports_overnight_window() -> None:

@@ -50,7 +50,11 @@ from app.modules.access.kiosk import (
 from app.modules.access.offline_store import SQLiteAccessStore
 from app.modules.access.service import (
     MAX_ANTIPASSBACK_SECONDS,
+    MAX_OCCUPANCY,
+    MAX_OCCUPANCY_WINDOW_SECONDS,
     MAX_PLAN_ACCESS_WINDOWS,
+    MIN_OCCUPANCY,
+    MIN_OCCUPANCY_WINDOW_SECONDS,
     InvalidAccessWindow,
     access_event_item,
     access_today_summary,
@@ -60,7 +64,7 @@ from app.modules.access.service import (
     record_access_event,
     record_manual_access,
     replace_plan_access_windows,
-    update_antipassback_seconds,
+    update_access_settings,
 )
 from app.modules.classes import (
     ClassRoomItem,
@@ -2743,11 +2747,19 @@ class KioskDeviceCreateRequest(BaseModel):
 
 class AccessSettingsResponse(BaseModel):
     antipassback_seconds: int
+    max_occupancy: int | None
+    occupancy_window_seconds: int
     updated_at: datetime
 
 
 class AccessSettingsRequest(BaseModel):
     antipassback_seconds: int = Field(ge=0, le=MAX_ANTIPASSBACK_SECONDS)
+    max_occupancy: int | None = Field(
+        default=None, ge=MIN_OCCUPANCY, le=MAX_OCCUPANCY
+    )
+    occupancy_window_seconds: int = Field(
+        ge=MIN_OCCUPANCY_WINDOW_SECONDS, le=MAX_OCCUPANCY_WINDOW_SECONDS
+    )
 
 
 class KioskCheckInRequest(BaseModel):
@@ -4531,6 +4543,8 @@ def kiosk_equipment(
 def _access_settings_response(settings: AccessSettings) -> AccessSettingsResponse:
     return AccessSettingsResponse(
         antipassback_seconds=settings.antipassback_seconds,
+        max_occupancy=settings.max_occupancy,
+        occupancy_window_seconds=settings.occupancy_window_seconds,
         updated_at=settings.updated_at,
     )
 
@@ -4557,7 +4571,12 @@ def update_access_settings_endpoint(
     session: SessionDependency,
     _: Annotated[AuthenticatedUser, Depends(require_api_permission("settings.manage"))],
 ) -> AccessSettingsResponse:
-    settings = update_antipassback_seconds(session, request.antipassback_seconds)
+    settings = update_access_settings(
+        session,
+        antipassback_seconds=request.antipassback_seconds,
+        max_occupancy=request.max_occupancy,
+        occupancy_window_seconds=request.occupancy_window_seconds,
+    )
     return _access_settings_response(settings)
 
 

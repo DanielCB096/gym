@@ -43,6 +43,10 @@ ADDED_COLUMNS = {
     },
     "progress_photos": {"origin": "VARCHAR(8) NOT NULL DEFAULT 'staff'"},
     "kiosk_devices": {"token_expires_at": "DATETIME"},
+    "access_settings": {
+        "max_occupancy": "INTEGER",
+        "occupancy_window_seconds": "INTEGER NOT NULL DEFAULT 7200",
+    },
     "invoices": {
         "global_year": "INTEGER",
         "global_month": "INTEGER",

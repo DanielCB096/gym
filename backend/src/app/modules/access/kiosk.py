@@ -34,11 +34,13 @@ from app.modules.access.models import (
     utc_now,
 )
 from app.modules.access.service import (
+    count_current_occupancy,
     count_member_entries_today,
     evaluate_access,
     last_member_entry_at,
     plan_access_windows,
     read_antipassback_seconds,
+    read_occupancy_policy,
     record_access_event,
 )
 from app.modules.memberships.models import Member, Membership, Plan
@@ -540,6 +542,16 @@ def _decide(
     plan = session.get(Plan, membership.plan_id) if membership is not None else None
     timezone_name = os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE)
     antipassback_seconds = read_antipassback_seconds(session)
+    max_occupancy, occupancy_window_seconds = read_occupancy_policy(session)
+    current_occupancy = (
+        count_current_occupancy(
+            session,
+            window_seconds=occupancy_window_seconds,
+            now=occurred_at,
+        )
+        if max_occupancy is not None
+        else 0
+    )
     schedule_windows = (
         plan_access_windows(session, plan.id) if plan is not None else ()
     )
@@ -583,11 +595,12 @@ def _decide(
         reader_id=reader_id,
         direction=AccessDirection.ENTRY,
         occurred_at=occurred_at,
-        # Occupancy and debt blocking are not wired yet; the kiosk enforces
-        # membership state, the plan's schedule, the plan's daily entry limit
-        # and the club-wide antipassback window.
-        current_occupancy=0,
-        max_occupancy=1,
+        # The kiosk enforces membership state, the plan's schedule, the plan's
+        # daily entry limit, the club-wide antipassback window and the club's
+        # estimated occupancy; debt blocking is not wired yet. A ``0`` cap means
+        # the club does not limit occupancy, so the engine skips that rule.
+        current_occupancy=current_occupancy,
+        max_occupancy=max_occupancy or 0,
         offline=False,
     )
     return evaluate_access(

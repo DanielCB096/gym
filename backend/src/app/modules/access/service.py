@@ -29,6 +29,11 @@ MAX_ACCESS_PAGE_SIZE = 100
 ACCESS_STATES = ("authorized", "denied", "manual")
 DEFAULT_ANTIPASSBACK_SECONDS = 0
 MAX_ANTIPASSBACK_SECONDS = 3600
+DEFAULT_OCCUPANCY_WINDOW_SECONDS = 2 * 60 * 60
+MIN_OCCUPANCY_WINDOW_SECONDS = 5 * 60
+MAX_OCCUPANCY_WINDOW_SECONDS = 24 * 60 * 60
+MIN_OCCUPANCY = 1
+MAX_OCCUPANCY = 10000
 MAX_PLAN_ACCESS_WINDOWS = 28
 SECONDS_PER_DAY = 24 * 60 * 60
 
@@ -82,7 +87,9 @@ def evaluate_access(
     ):
         return _decision(request, False, AccessReason.ANTIPASSBACK)
 
-    if request.max_occupancy <= 0 or request.current_occupancy >= request.max_occupancy:
+    # A max_occupancy of 0 means the club has no cap configured; only a positive
+    # value can fill the club.
+    if request.max_occupancy > 0 and request.current_occupancy >= request.max_occupancy:
         return _decision(request, False, AccessReason.OCCUPANCY_FULL)
 
     return _decision(request, True, AccessReason.ENTRY_ALLOWED)
@@ -450,10 +457,46 @@ def count_member_entries_today(
     return int(session.exec(statement).one() or 0)
 
 
+def count_current_occupancy(
+    session: Session,
+    *,
+    window_seconds: int,
+    now: datetime | None = None,
+) -> int:
+    """Estimate how many members are inside the club right now.
+
+    The kiosk never records exits, so a visit is assumed to last
+    ``window_seconds``: a member counts as inside while their latest authorized
+    entry —kiosk or manual— is still inside that window, and scanning again
+    refreshes it. A member who stays longer is counted as already gone, which is
+    the known error of this estimate.
+    """
+    moment = _as_utc(now or utc_now())
+    since = moment - timedelta(seconds=window_seconds)
+    statement = select(func.count(func.distinct(AccessEvent.member_id))).where(
+        AccessEvent.authorized.is_(True),
+        AccessEvent.direction == AccessDirection.ENTRY.value,
+        AccessEvent.occurred_at >= since,
+        AccessEvent.occurred_at <= moment,
+    )
+    return int(session.exec(statement).one() or 0)
+
+
 def read_antipassback_seconds(session: Session) -> int:
     """Return the club's antipassback window without creating the settings row."""
     settings = session.get(AccessSettings, 1)
     return settings.antipassback_seconds if settings is not None else DEFAULT_ANTIPASSBACK_SECONDS
+
+
+def read_occupancy_policy(session: Session) -> tuple[int | None, int]:
+    """Return the club's occupancy cap and visit window without creating the row.
+
+    ``None`` as the cap means the club does not limit occupancy.
+    """
+    settings = session.get(AccessSettings, 1)
+    if settings is None:
+        return None, DEFAULT_OCCUPANCY_WINDOW_SECONDS
+    return settings.max_occupancy, settings.occupancy_window_seconds
 
 
 def get_access_settings(session: Session) -> AccessSettings:
@@ -467,22 +510,34 @@ def get_access_settings(session: Session) -> AccessSettings:
     return settings
 
 
-def update_antipassback_seconds(
+def update_access_settings(
     session: Session,
-    seconds: int,
     *,
+    antipassback_seconds: int,
+    max_occupancy: int | None,
+    occupancy_window_seconds: int,
     now: datetime | None = None,
 ) -> AccessSettings:
-    """Set the club's antipassback window; ``0`` disables the rule."""
-    if not 0 <= seconds <= MAX_ANTIPASSBACK_SECONDS:
+    """Replace the club's access policy; ``0``/``None`` disable their rules."""
+    if not 0 <= antipassback_seconds <= MAX_ANTIPASSBACK_SECONDS:
         raise ValueError(
             f"antipassback_seconds must be between 0 and {MAX_ANTIPASSBACK_SECONDS}"
         )
+    if max_occupancy is not None and not MIN_OCCUPANCY <= max_occupancy <= MAX_OCCUPANCY:
+        raise ValueError(
+            f"max_occupancy must be between {MIN_OCCUPANCY} and {MAX_OCCUPANCY}, or None"
+        )
+    if not MIN_OCCUPANCY_WINDOW_SECONDS <= occupancy_window_seconds <= MAX_OCCUPANCY_WINDOW_SECONDS:
+        raise ValueError(
+            "occupancy_window_seconds must be between "
+            f"{MIN_OCCUPANCY_WINDOW_SECONDS} and {MAX_OCCUPANCY_WINDOW_SECONDS}"
+        )
     settings = session.get(AccessSettings, 1)
     if settings is None:
-        settings = AccessSettings(id=1, antipassback_seconds=seconds)
-    else:
-        settings.antipassback_seconds = seconds
+        settings = AccessSettings(id=1)
+    settings.antipassback_seconds = antipassback_seconds
+    settings.max_occupancy = max_occupancy
+    settings.occupancy_window_seconds = occupancy_window_seconds
     settings.updated_at = now or utc_now()
     session.add(settings)
     session.commit()

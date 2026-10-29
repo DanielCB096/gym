@@ -178,9 +178,11 @@ class AccessSettings(SQLModel, table=True):
     """Single-row club policy for access rules that do not belong to a member.
 
     ``antipassback_seconds`` is the minimum gap between two authorized entries
-    of the same member; ``0`` disables the rule. The row is created with id 1
-    by the migration and lazily by the service when a preview database starts
-    empty.
+    of the same member; ``0`` disables the rule. ``max_occupancy`` caps how many
+    members the kiosk counts as inside (``NULL`` disables the cap) and
+    ``occupancy_window_seconds`` decides how long an entry keeps counting as
+    "inside". The row is created with id 1 by the migration and lazily by the
+    service when a preview database starts empty.
     """
 
     __tablename__ = "access_settings"
@@ -189,10 +191,20 @@ class AccessSettings(SQLModel, table=True):
             "antipassback_seconds >= 0 AND antipassback_seconds <= 3600",
             name="ck_access_settings_antipassback_range",
         ),
+        CheckConstraint(
+            "max_occupancy IS NULL OR (max_occupancy >= 1 AND max_occupancy <= 10000)",
+            name="ck_access_settings_max_occupancy",
+        ),
+        CheckConstraint(
+            "occupancy_window_seconds >= 300 AND occupancy_window_seconds <= 86400",
+            name="ck_access_settings_occupancy_window",
+        ),
     )
 
     id: int = Field(default=1, primary_key=True)
     antipassback_seconds: int = Field(default=0)
+    max_occupancy: int | None = Field(default=None)
+    occupancy_window_seconds: int = Field(default=7200)
     updated_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(
