@@ -336,6 +336,92 @@ def test_member_access_code_status_tracks_consumption(monkeypatch) -> None:
         engine.dispose()
 
 
+def test_kiosk_token_expiry_is_announced_to_settings_managers(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed(session)
+        now = utc_now()
+        # A full 90-day token issued 80 days ago is ten days from expiring, and
+        # one issued 95 days ago already lapsed.
+        soon, _ = create_kiosk_device(
+            session, label="Recepción", now=now - timedelta(days=80)
+        )
+        soon_id = soon.id
+        create_kiosk_device(
+            session, label="Recepción bodega", now=now - timedelta(days=95)
+        )
+        session.add(
+            KioskDevice(label="Sin caducidad", token_sha256="0" * 64, token_expires_at=None)
+        )
+        session.commit()
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            owner = _login_staff(client, "owner@example.com", "owner-strong-password")
+            reception = _login_staff(
+                client, "reception@example.com", "reception-strong-password"
+            )
+
+            # The bell poll is what materialises the notices: no scheduler.
+            assert (
+                client.get("/admin/notifications/unread-count", headers=owner).json()[
+                    "unread"
+                ]
+                == 2
+            )
+            inbox = client.get("/admin/notifications", headers=owner).json()
+            assert inbox["total"] == 2
+            bodies = {item["body"] for item in inbox["items"]}
+            assert all(item["kind"] == "kiosk_token_expiring" for item in inbox["items"])
+            assert any(
+                "«Recepción»" in body and "faltan 10 días" in body for body in bodies
+            )
+            assert any("«Recepción bodega»" in body and "caducó el" in body for body in bodies)
+            assert not any("Sin caducidad" in body for body in bodies)
+            assert {item["ref_id"] for item in inbox["items"]} != {None}
+
+            # Reading again does not duplicate the same alert.
+            client.get("/admin/notifications", headers=owner)
+            assert client.get("/admin/notifications", headers=owner).json()["total"] == 2
+
+            # Only the accounts that can rotate receive it.
+            assert client.get("/admin/notifications", headers=reception).json()["total"] == 0
+            assert (
+                client.get(
+                    "/admin/notifications/unread-count", headers=reception
+                ).json()["unread"]
+                == 0
+            )
+
+            # A rotation moves the expiry date, so the next window alerts again.
+            rotated = client.post(
+                f"/admin/kiosk/devices/{soon_id}/rotate-token", headers=owner
+            )
+            assert rotated.status_code == 200, rotated.text
+            with Session(engine) as session:
+                stored = session.get(KioskDevice, soon_id)
+                stored.token_expires_at = utc_now() + timedelta(days=5)
+                session.add(stored)
+                session.commit()
+
+            assert client.get("/admin/notifications", headers=owner).json()["total"] == 3
+            newest = client.get("/admin/notifications", headers=owner).json()["items"]
+            assert any(
+                item["ref_id"] == str(soon_id) and "faltan 5 días" in item["body"]
+                for item in newest
+            )
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
 def test_kiosk_token_rotation_replaces_the_device_token(monkeypatch) -> None:
     monkeypatch.setenv("PREVIEW_MODE", "true")
     engine = _build_engine()

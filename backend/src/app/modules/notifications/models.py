@@ -108,6 +108,7 @@ class MemberNotification(SQLModel, table=True):
 STAFF_NOTIFICATION_KINDS = (
     "workout_pending_review",
     "maintenance_ticket_assigned",
+    "kiosk_token_expiring",
 )
 
 
@@ -117,7 +118,8 @@ class StaffNotification(SQLModel, table=True):
     __tablename__ = "staff_notifications"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('workout_pending_review', 'maintenance_ticket_assigned')",
+            "kind IN ('workout_pending_review', 'maintenance_ticket_assigned', "
+            "'kiosk_token_expiring')",
             name="ck_staff_notifications_kind",
         ),
         CheckConstraint(

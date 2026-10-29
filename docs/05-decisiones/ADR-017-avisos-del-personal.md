@@ -18,6 +18,8 @@ No se eligieron avisos que exigieran un programador (recordatorio semanal, ausen
 
 - **Se agrega `staff_notifications`** (migración `20261027_0036_staff_notifications.py`) con la misma forma que `member_notifications` pero dirigida a una **cuenta del panel**: `user_id` (FK `app_users.id`, `RESTRICT`), `kind`, `title`, `body`, `ref_id`, `dedupe_key`, `created_at`, `read_at`, y los índices `(user_id, created_at)`, `(user_id, read_at)` y el único parcial sobre `dedupe_key`. Razón de ser: el destinatario es quien inicia sesión en el panel, y ese sujeto es `app_users`, no `employees`.
 - **Los dos `kind` son `workout_pending_review` y `maintenance_ticket_assigned`**, restringidos por `CHECK ck_staff_notifications_kind`. No se crearon tipos que dependan de un job inexistente.
+
+> _Actualización 2026-10-29: el `CHECK` admite un tercer tipo, `kiosk_token_expiring`, que no lo emite un servicio de dominio sino la propia lectura de la bandeja (`warn_expiring_kiosk_tokens`) y se dirige a las cuentas con `settings.manage` en lugar de a un empleado. Ver ADR-028._
 - **La audiencia se resuelve en un solo lugar**: `staff_user_for_employee(session, employee_id)` devuelve la cuenta **activa** vinculada al empleado o `None`. Los módulos de `routines` y `maintenance` solo pasan el `employee_id` que ya tienen en su modelo (`RoutineAssignment.trainer_id` y `MaintenanceTicket.assigned_to`, ambos FK a `employees.id`); nunca consultan `app_users` por su cuenta. La dirección de dependencia sigue siendo una sola —los módulos importan `notifications`, nunca al revés—, ahora con un tercer importador.
 - **Un aviso sin destinatario se omite en silencio**, no falla. `notify_trainer_pending_workout` y `notify_technician_ticket_assigned` devuelven `None` si el empleado no tiene cuenta o está desactivada: el entrenamiento se registra y el ticket se asigna igual. Una cuenta mal dada no puede bloquear la operación.
 - **Solo el origen `app` avisa al entrenador.** `log_workout` emite el aviso dentro de su transacción cuando `origin == "app"` y con el entrenador de la asignación; un entrenamiento que captura el personal ya está siendo mirado por él, así que avisarle sería ruido.
@@ -51,3 +53,5 @@ No se eligieron avisos que exigieran un programador (recordatorio semanal, ausen
 - `backend/tests/test_staff_notifications_api.py`
 - `web/src/app/api/admin/notifications/**` (BFF) y `web/src/app/page.tsx` (campana)
 - ADR-016 (bandeja del socio), ADR-008 (autenticación y RBAC), ADR-013 (registro desde la app)
+- `backend/src/app/modules/identity/service.py` (`user_ids_with_permission`, añadido con ADR-028)
+- `backend/src/app/modules/access/kiosk.py` (`warn_expiring_kiosk_tokens`, añadido con ADR-028)

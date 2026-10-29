@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from hashlib import sha256
 import hmac
+import math
 import os
 import re
 import secrets
@@ -41,7 +42,7 @@ from app.modules.access.service import (
 )
 from app.modules.memberships.models import Member, Membership, Plan
 from app.modules.portal.service import signing_secret
-from app.timezone import DEFAULT_TIMEZONE
+from app.timezone import DEFAULT_TIMEZONE, to_club_timezone
 
 ACCESS_CODE_LIFETIME = timedelta(minutes=5)
 ACCESS_CODE_REQUEST_WINDOW = timedelta(minutes=10)
@@ -49,6 +50,7 @@ ACCESS_CODE_MAX_REQUESTS = 6
 KIOSK_ATTEMPT_WINDOW = timedelta(minutes=1)
 KIOSK_ATTEMPT_LIMIT = 10
 KIOSK_TOKEN_LIFETIME = timedelta(days=90)
+KIOSK_TOKEN_WARNING = timedelta(days=15)
 LAST_SEEN_REFRESH = timedelta(minutes=1)
 
 REASON_MESSAGES: dict[str, str] = {
@@ -315,6 +317,81 @@ def rotate_kiosk_device(
     session.commit()
     session.refresh(device)
     return device, raw_token
+
+
+def warn_expiring_kiosk_tokens(
+    session: Session,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Tell the accounts that can rotate a token that it is about to expire.
+
+    There is no scheduler, so the notice is materialised when the panel reads its
+    inbox, mirroring the member's expiring-membership reminder. Only
+    ``settings.manage`` holders can rotate, so they are the audience. The dedupe
+    key ties the notice to the device, the expiry date, the phase and the
+    account: each token produces at most one "por vencer" and one "caducó"
+    notice, and a rotation — which moves the expiry date — can announce itself
+    again. Devices without an expiry date never alert.
+    """
+    occurred_at = _as_utc(now or utc_now())
+    devices = session.exec(
+        select(KioskDevice).where(
+            KioskDevice.status == "active",
+            KioskDevice.token_expires_at.is_not(None),
+            KioskDevice.token_expires_at <= occurred_at + KIOSK_TOKEN_WARNING,
+        )
+    ).all()
+    if not devices:
+        return 0
+
+    # Imported lazily so the access module keeps its own dependency graph.
+    from app.modules.identity.service import user_ids_with_permission
+    from app.modules.notifications.service import create_staff_notification
+
+    recipients = user_ids_with_permission(session, "settings.manage", now=occurred_at)
+    if not recipients:
+        return 0
+
+    written = 0
+    for device in devices:
+        expires_at = _as_utc(device.token_expires_at)
+        days_remaining = math.ceil((expires_at - occurred_at).total_seconds() / 86400)
+        expires_local = to_club_timezone(expires_at)
+        label = device.label.strip() or "kiosco"
+        if days_remaining <= 0:
+            phase = "expired"
+            title = "El token de un kiosco caducó"
+            body = (
+                f"El token de «{label}» caducó el {expires_local:%d/%m/%Y}. La tablet "
+                "ya no puede validar códigos: rótalo desde la página Kiosco y captura "
+                "el token nuevo en el dispositivo."
+            )
+        else:
+            phase = "soon"
+            title = "El token de un kiosco está por vencer"
+            body = (
+                f"El token de «{label}» vence el {expires_local:%d/%m/%Y} (faltan "
+                f"{days_remaining} {'día' if days_remaining == 1 else 'días'}). Rótalo "
+                "desde la página Kiosco para no dejar la tablet sin acceso."
+            )
+        for user_id in recipients:
+            create_staff_notification(
+                session,
+                user_id=user_id,
+                kind="kiosk_token_expiring",
+                title=title,
+                body=body,
+                ref_id=device.id,
+                dedupe_key=(
+                    f"kiosk_token_expiring:{device.id}:"
+                    f"{expires_local.date().isoformat()}:{phase}:{user_id}"
+                ),
+                now=occurred_at,
+            )
+            written += 1
+    session.commit()
+    return written
 
 
 def authenticate_kiosk_device(

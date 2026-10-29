@@ -49,7 +49,7 @@ Este módulo cubre el control de acceso al gimnasio, validación de membresía, 
 
 ### Flujo implementado: rotar o recuperar un token vencido
 1. La página «Kiosco» muestra en «TOKEN VENCE» la fecha de cada dispositivo, «Vence en N días» en ámbar cuando faltan 15 o menos y «Caducado» cuando ya pasó.
-2. Antes de que venza —o cuando la tablet ya volvió a configuración con «El token del kiosco no es válido, fue revocado o caducó»— el dueño pulsa «Rotar token» y confirma en el aviso en línea.
+2. Antes de que venza —la campana del panel avisa a quien puede rotar en los últimos 15 días y otra vez al caducar (ADR-028)— o cuando la tablet ya volvió a configuración con «El token del kiosco no es válido, fue revocado o caducó», el dueño pulsa «Rotar token» y confirma en el aviso en línea.
 3. El backend genera un token nuevo, reinicia la fecha a 90 días y lo devuelve **una sola vez**; el anterior deja de servir en la siguiente petición. Un kiosco revocado responde `409`: para recuperarlo hay que crear uno nuevo.
 4. Alguien frente a la tablet captura el token nuevo en el formulario y prueba la conexión. La rotación no borra el dispositivo ni su historial de eventos.
 
@@ -241,6 +241,7 @@ Implementación inicial del motor offline y del kiosco de recepción con código
 - 2026-10-28: el límite diario de entradas deja de ser una regla del motor sin datos y pasa a configurarse por plan (`plans.daily_entry_limit`) desde el panel; el kiosco cuenta las entradas autorizadas del día del club, incluidas las manuales, y deniega con «Ya usaste tus entradas de hoy.» (ADR-025).
 - 2026-10-28: el antipassback deja de ser una regla sin datos y pasa a configurarse como ventana del club (`access_settings.antipassback_seconds`, `0` desactivado) desde la página «Kiosco»; el kiosco consulta la última entrada autorizada del socio —también las manuales— y deniega el código siguiente con «Entrada duplicada. Espera un momento.» (ADR-026).
 - 2026-10-28: el token del kiosco caduca a los 90 días y se puede rotar desde el panel sin crear otro dispositivo; el token anterior deja de servir al instante, un vencido o revocado responde el mismo `401` y el kiosco y el cartel vuelven a configuración (ADR-027).
+- 2026-10-29: la campana del panel avisa a las cuentas con `settings.manage` cuando al token de un kiosco le quedan 15 días o menos y otra vez al caducar, calculado al leer la bandeja y deduplicado por kiosco, fecha, fase y cuenta (ADR-028).
 
 ## 15. Implementación actual y límites
 

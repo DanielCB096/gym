@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-29 · La campana avisa cuando el token de un kiosco va a vencer
+
+- **Servicio**: `warn_expiring_kiosk_tokens` (`access/kiosk.py`) recorre los kioscos `active` con `token_expires_at` no nulo y a 15 días o menos (`KIOSK_TOKEN_WARNING`), y escribe un `kiosk_token_expiring` por cada cuenta activa cuyo rol concede `settings.manage` —la misma audiencia que puede rotar—. Un token ya vencido genera un texto distinto («caducó el …») y la fase forma parte de la deduplicación, así que el aviso de la ventana no silencia el de la caducidad. Las filas sin fecha no avisan.
+- **Materialización diferida**: se llama al inicio de `GET /admin/notifications` y `GET /admin/notifications/unread-count`, el mismo patrón que el recordatorio de membresía: sin job ni worker, el hecho se calcula con el reloj del servidor al mirar la campana y lo deduplica el índice único parcial con `dedupe_key = kiosk_token_expiring:<kiosco>:<fecha de vencimiento>:<soon|expired>:<cuenta>`. Rotar reinicia la fecha y por tanto vuelve a anunciarse.
+- **Identidad**: `user_ids_with_permission(session, "settings.manage")` resuelve las cuentas por `user_role_assignments` (no revocada y dentro de su ventana) y `role_permissions`; es la primera consulta de audiencia por permiso y no por empleado.
+- **Modelo y migración**: `kiosk_token_expiring` se suma a `STAFF_NOTIFICATION_KINDS` y al `CHECK ck_staff_notifications_kind` con `20261029_0046_staff_notification_kiosk_token.py`; el downgrade borra las filas del tipo y restaura el `CHECK` de dos valores. `preview_patch.py` reconstruye `staff_notifications` en la vista previa (ya aplicado a `gym_preview.db`).
+- **Pruebas**: 1 nueva en `backend/tests/test_kiosk_access_api.py` (un kiosco a 10 días y otro ya vencido generan un aviso cada uno con etiqueta y días correctos, una fila sin fecha no avisa, releer no duplica, recepción no recibe nada, y tras rotar y mover la fecha a 5 días aparece el tercer aviso con su `ref_id`). La suite del backend queda en **209 pruebas** y el archivo del kiosco en 12.
+- **Verificación en navegador** (backend `127.0.0.1:8000`, panel `localhost:3000`): con el vencimiento del kiosco «Recepción» movido a 5 días, la campana mostró «El token de un kiosco está por vencer / El token de «Recepción» vence el 03/11/2026 (faltan 5 días). Rótalo desde la página Kiosco para no dejar la tablet sin acceso.» y el endpoint devolvió `unread: 1`. Al terminar se restauró la fecha original del dispositivo y se borraron los avisos de la prueba.
+- **Documentación**: nuevo ADR-028, módulo de avisos, ADR-017 (nota de actualización), deuda técnica, plan de pruebas, README de documentación, del backend y roadmap.
+
 ## 2026-10-29 · La app refleja el código ya usado en el kiosco
 
 - **API**: `GET /member/access/code` (Bearer del socio) responde `status` (`none`, `active`, `consumed` o `expired`), `issued_at`, `expires_at` y `consumed_at` del código **más reciente** del socio. No devuelve los dígitos: solo se guarda el HMAC y la app conserva los que ya muestra. Sin migración ni columnas nuevas.

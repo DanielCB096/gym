@@ -680,6 +680,42 @@ def require_permission(principal: AuthenticatedUser, permission_code: str) -> Au
     return principal
 
 
+def user_ids_with_permission(
+    session: Session,
+    permission_code: str,
+    *,
+    now: datetime | None = None,
+) -> list[UUID]:
+    """Return the active panel accounts whose roles currently grant a permission.
+
+    Used by producers that must address the people able to act (for example the
+    ``settings.manage`` holders behind the kiosk tokens) instead of a single
+    named employee. Mirrors the assignment window that builds a principal at
+    login, so an account never gets a notice for a permission it cannot use.
+    """
+    occurred_at = _as_utc(now or utc_now())
+    return list(
+        session.exec(
+            select(AppUser.id)
+            .join(UserRoleAssignment, UserRoleAssignment.user_id == AppUser.id)
+            .join(RolePermission, RolePermission.role_id == UserRoleAssignment.role_id)
+            .join(Permission, Permission.id == RolePermission.permission_id)
+            .where(
+                AppUser.status == "active",
+                Permission.code == permission_code,
+                UserRoleAssignment.revoked_at.is_(None),
+                UserRoleAssignment.assigned_at <= occurred_at,
+                or_(
+                    UserRoleAssignment.expires_at.is_(None),
+                    UserRoleAssignment.expires_at > occurred_at,
+                ),
+            )
+            .distinct()
+            .order_by(AppUser.id)
+        ).all()
+    )
+
+
 def list_roles_and_permissions(session: Session) -> list[dict[str, object]]:
     roles = session.exec(select(Role).order_by(Role.name)).all()
     result: list[dict[str, object]] = []

@@ -130,6 +130,15 @@ CHECK_UPGRADES = {
             "'invoice_cancelled'))",
         ),
     ),
+    "staff_notifications": (
+        (
+            "CONSTRAINT ck_staff_notifications_kind CHECK (kind IN "
+            "('workout_pending_review', 'maintenance_ticket_assigned'))",
+            "CONSTRAINT ck_staff_notifications_kind CHECK (kind IN "
+            "('workout_pending_review', 'maintenance_ticket_assigned', "
+            "'kiosk_token_expiring'))",
+        ),
+    ),
 }
 
 # Constraints added to an existing table. The first value is a marker used to

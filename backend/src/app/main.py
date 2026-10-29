@@ -45,6 +45,7 @@ from app.modules.access.kiosk import (
     list_kiosk_equipment_notices,
     revoke_kiosk_device,
     rotate_kiosk_device,
+    warn_expiring_kiosk_tokens,
 )
 from app.modules.access.offline_store import SQLiteAccessStore
 from app.modules.access.service import (
@@ -3716,6 +3717,7 @@ def staff_notifications(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> StaffNotificationPageResponse:
+    warn_expiring_kiosk_tokens(session)
     inbox = list_staff_notifications(session, principal.user_id, page=page, page_size=page_size)
     return StaffNotificationPageResponse(
         items=[_staff_notification_response(item) for item in inbox.items],
@@ -3736,6 +3738,7 @@ def staff_notifications_unread(
     principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
     session: SessionDependency,
 ) -> StaffNotificationCountResponse:
+    warn_expiring_kiosk_tokens(session)
     return StaffNotificationCountResponse(
         unread=unread_staff_notification_count(session, principal.user_id)
     )
