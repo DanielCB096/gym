@@ -51,7 +51,7 @@ from app.modules.inventory.service import (
     service_sale_for_reservation,
 )
 from app.modules.memberships.models import Member
-from app.modules.notifications import notify_waitlist_promoted
+from app.modules.notifications import notify_class_reserved, notify_waitlist_promoted
 
 DEFAULT_SESSION_PAGE_SIZE = 25
 MAX_SESSION_PAGE_SIZE = 100
@@ -858,6 +858,7 @@ def reserve_seat(
     origin: str = "reception",
     note: str | None = None,
     actor_id: UUID | None = None,
+    notify_member: bool = True,
     now: datetime | None = None,
 ) -> ReservationItem:
     if origin not in RESERVATION_ORIGINS:
@@ -924,6 +925,17 @@ def reserve_seat(
 
     session.add(reservation)
     try:
+        session.flush()
+        if notify_member and reservation.status == "reserved":
+            notify_class_reserved(
+                session,
+                member_id=member_id,
+                reservation_id=reservation.id,
+                class_title=class_session.title,
+                starts_at=_as_utc(class_session.starts_at),
+                booked_by_staff=origin == "reception",
+                now=occurred,
+            )
         session.commit()
     except IntegrityError as error:
         session.rollback()

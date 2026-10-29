@@ -32,6 +32,7 @@ El recordatorio planteado en la sección 8 era «30 minutos antes de la clase».
 - **Promover en la subida de aforo puede sorprender.** Quien esperaba un lugar recibe el aviso sin que nadie haya cancelado; es el resultado buscado, pero la recepción debe saber que editar el cupo mueve la fila. La promoción se detiene en el aforo: si el nuevo cupo no alcanza para toda la fila, el resto conserva su posición.
 - **La clase cancelada sigue sin avisar a nadie.** `cancel_class_session` cancela las reservas vivas (incluidas las de la fila) y no escribe avisos; queda documentado como pendiente. Tampoco se avisa del cambio de horario ni de la confirmación de la reserva propia.
 - **El recordatorio no se cobra ni reserva nada.** Una clase premium promovida o recordada sigue cobrándose al marcar la asistencia (ADR-033); el aviso no crea venta.
+- **Actualización (2026-10-29):** la confirmación de la reserva propia ya se avisa con `class_reserved`, escrito dentro de la transacción de `reserve_seat` (ADR-036). Sigue pendiente el aviso de clase cancelada o reprogramada.
 
 ## Referencias
 
@@ -42,4 +43,4 @@ El recordatorio planteado en la sección 8 era «30 minutos antes de la clase».
 - `backend/tests/test_class_notifications.py`, `backend/tests/test_member_notifications_api.py`
 - `mobile/src/format.ts`, `mobile/src/screens/NotificationsScreen.tsx`, `mobile/App.tsx`
 - `docs/02-modulos/notificaciones-del-socio.md`, `docs/02-modulos/clases-y-reservaciones.md`
-- ADR-016, ADR-033
+- ADR-016, ADR-033, ADR-036

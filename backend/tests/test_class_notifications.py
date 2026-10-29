@@ -24,7 +24,11 @@ from app.modules.classes import (
     update_class_session,
 )
 from app.modules.memberships.models import Member
-from app.modules.notifications import list_member_notifications, unread_notification_count
+from app.modules.notifications import (
+    MemberNotificationItem,
+    list_member_notifications,
+    unread_notification_count,
+)
 
 NOW = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)
 
@@ -86,8 +90,17 @@ def _class_session(
     return item.id
 
 
-def _reserve(session: Session, session_id: UUID, member_id: UUID) -> UUID:
-    return reserve_seat(session, session_id, member_id=member_id, origin="app").id
+def _reserve(
+    session: Session,
+    session_id: UUID,
+    member_id: UUID,
+    *,
+    origin: str = "app",
+    now: datetime = NOW,
+) -> UUID:
+    return reserve_seat(
+        session, session_id, member_id=member_id, origin=origin, now=now
+    ).id
 
 
 def _reservation(session: Session, reservation_id: UUID) -> ClassReservation:
@@ -99,6 +112,10 @@ def _reservation(session: Session, reservation_id: UUID) -> ClassReservation:
 def _kinds(session: Session, member_id: UUID) -> list[str]:
     page = list_member_notifications(session, member_id)
     return [item.kind for item in page.items]
+
+
+def _notices(session: Session, member_id: UUID) -> list[MemberNotificationItem]:
+    return list_member_notifications(session, member_id, now=NOW).items
 
 
 def test_reminder_is_written_once_per_window_and_never_for_past_or_cancelled() -> None:
@@ -121,11 +138,12 @@ def test_reminder_is_written_once_per_window_and_never_for_past_or_cancelled() -
         cancel_reservation(session, cancelled_seat, now=NOW)
 
         # The badge counts the reminders before the inbox was ever opened.
-        assert unread_notification_count(session, ana, now=NOW) == 2
+        assert unread_notification_count(session, ana, now=NOW) == 7
 
         first = list_member_notifications(session, ana, now=NOW)
-        assert [item.kind for item in first.items] == ["class_reminder", "class_reminder"]
-        by_ref = {item.ref_id: item for item in first.items}
+        reminders = [item for item in first.items if item.kind == "class_reminder"]
+        assert len(reminders) == 2
+        by_ref = {item.ref_id: item for item in reminders}
         assert set(by_ref) == {seat_soon, seat_imminent}
         assert "Spinning 6am" in by_ref[seat_soon].body
         assert "menos de 24 horas" in by_ref[seat_soon].body
@@ -133,17 +151,19 @@ def test_reminder_is_written_once_per_window_and_never_for_past_or_cancelled() -
         assert all(item.read_at is None for item in first.items)
 
         # Reopening inside the same window changes nothing.
-        assert list_member_notifications(session, ana, now=NOW).total == 2
+        assert list_member_notifications(session, ana, now=NOW).total == 7
 
         # Closer to the class, the same seat warns again in the tighter window.
         later = NOW + timedelta(hours=19)
         page = list_member_notifications(session, ana, now=later)
-        assert page.total == 3
+        assert page.total == 8
         assert sum("menos de 2 horas" in item.body for item in page.items) == 2
-        assert list_member_notifications(session, ana, now=later).total == 3
+        assert list_member_notifications(session, ana, now=later).total == 8
 
-        # A cancelled reservation is not reminded later either.
-        assert cancelled_seat not in {item.ref_id for item in page.items}
+        # A cancelled reservation is not reminded later either, though its
+        # confirmation stays in the inbox as history.
+        reminder_refs = {item.ref_id for item in page.items if item.kind == "class_reminder"}
+        assert cancelled_seat not in reminder_refs
 
 
 def test_free_seats_seat_the_queue_only_while_the_class_can_be_attended() -> None:
@@ -204,3 +224,47 @@ def test_free_seats_seat_the_queue_only_while_the_class_can_be_attended() -> Non
             "class_waitlist_promoted",
             "class_waitlist_promoted",
         ]
+
+
+def test_reservation_confirms_the_seat_only_when_it_is_held() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ana = _member(session, "Ana")
+        beto = _member(session, "Beto")
+        type_id, room_id = _catalog(session)
+        class_id = _class_session(
+            session, type_id, room_id, starts_in=timedelta(days=2), capacity=1
+        )
+
+        ana_seat = _reserve(session, class_id, ana)
+        ana_notices = _notices(session, ana)
+        assert [item.kind for item in ana_notices] == ["class_reserved"]
+        assert ana_notices[0].ref_id == ana_seat
+        assert ana_notices[0].title == "Tu lugar en la clase está confirmado"
+        assert "Ya tienes tu lugar reservado" in ana_notices[0].body
+        assert "Spinning 6am" in ana_notices[0].body
+
+        # Joining the queue is not holding a seat: the position is visible in
+        # the app and the promotion will be announced when the seat opens.
+        beto_seat = _reserve(session, class_id, beto, origin="reception")
+        assert _reservation(session, beto_seat).status == "waitlist"
+        assert _notices(session, beto) == []
+
+        # Promotion is announced once and is not a confirmation of a new seat.
+        cancel_reservation(session, ana_seat, now=NOW)
+        assert _reservation(session, beto_seat).status == "reserved"
+        assert [item.kind for item in _notices(session, beto)] == ["class_waitlist_promoted"]
+
+        # A cancelled seat can be booked again: it is another reservation, so
+        # it earns its own notice, and the desk says it was the desk.
+        cancel_reservation(session, beto_seat, now=NOW)
+        ana_again = _reserve(
+            session, class_id, ana, origin="reception", now=NOW + timedelta(hours=1)
+        )
+        assert _reservation(session, ana_again).status == "reserved"
+        ana_notices = _notices(session, ana)
+        assert len(ana_notices) == 2
+        assert ana_notices[0].ref_id == ana_again
+        assert "Recepción reservó tu lugar" in ana_notices[0].body
+        assert ana_notices[1].ref_id == ana_seat

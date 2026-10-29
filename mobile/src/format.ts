@@ -115,6 +115,7 @@ const NOTIFICATION_KIND_LABELS: Record<string, string> = {
   goal_updated_by_staff: "Meta ajustada",
   class_waitlist_promoted: "Clase",
   class_reminder: "Clase",
+  class_reserved: "Clase",
   membership_expiring: "Membresía",
   equipment_out_of_service: "Equipo",
   invoice_stamped: "Factura",

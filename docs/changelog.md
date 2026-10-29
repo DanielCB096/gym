@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-29 · Confirmación de la reserva propia en la bandeja del socio
+
+- **Aviso nuevo**: `class_reserved` en `member_notifications` (migración `20261029_0052_class_reserved_notification.py`, que amplía el `CHECK` de tipos a doce; `preview_patch.py` actualiza la base de vista previa). El socio recibe «Tu lugar en la clase está confirmado» con clase, día y hora, y `ref_id` a la reserva.
+- **Nace con la reserva**: `reserve_seat` llama a `notify_class_reserved` dentro de la misma transacción, después del `flush()` que inserta la reserva y antes del `commit()`, y solo si queda `reserved`. Un lugar en lista de espera no se anuncia; la promoción conserva su propio aviso.
+- **Las dos puertas avisan**: la reserva hecha en la app y la que recepción aparta en el mostrador reciben confirmación; el cuerpo cambia a «Recepción reservó tu lugar» en el segundo caso. Sin `dedupe_key`: cada reserva es un hecho nuevo, y cancelar no retira el aviso, que queda como historial.
+- **Seed silencioso**: `reserve_seat` gana `notify_member` y `seed_classes.py` pasa `False`, porque reconstruye la agenda en cada corrida y acumularía confirmaciones de clases que ya no existen.
+- **App**: el aviso se etiqueta «Clase» y abre la pantalla **Clases** al tocarlo, igual que el recordatorio y la promoción.
+- **Pruebas**: un caso nuevo en `backend/tests/test_class_notifications.py` (reserva sentada avisa, lista de espera calla, la promoción conserva su aviso y la reserva desde recepción usa su propia redacción) y dos ajustes en pruebas existentes por el aviso extra. Suite en **228 pruebas** (224 pasan y las 4 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`).
+- **Documentación**: nuevo ADR-036, módulo de notificaciones, módulo de clases, deuda técnica, plan de pruebas y README del backend, de la app y de documentación.
+
 ## 2026-10-29 · Recordatorio de la clase próxima y lista de espera que ocupa los lugares liberados
 
 - **Aviso nuevo**: `class_reminder` en `member_notifications` (migración `20261029_0051_class_reminder_notification.py`, que amplía el `CHECK` de tipos; `preview_patch.py` actualiza la base de vista previa). El socio recibe «Tu clase empieza pronto» con título, día, hora y horas restantes a **24 h y 2 h** del inicio, con `ref_id` a la reserva.

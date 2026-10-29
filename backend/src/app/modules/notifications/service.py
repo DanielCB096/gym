@@ -360,6 +360,43 @@ def notify_waitlist_promoted(
     )
 
 
+def notify_class_reserved(
+    session: Session,
+    *,
+    member_id: UUID,
+    reservation_id: UUID,
+    class_title: str,
+    starts_at: datetime,
+    booked_by_staff: bool = False,
+    now: datetime | None = None,
+) -> MemberNotification:
+    """Confirm a seat the member now holds.
+
+    Written for both doors: the member who books in the app sees the screen, but
+    the inbox is the only record that survives it, and a seat booked at the
+    counter would otherwise never be announced. The body says who booked so the
+    member is not surprised by a reservation they did not make.
+    """
+    local = to_club_timezone(starts_at)
+    lead = (
+        "Recepción reservó tu lugar en"
+        if booked_by_staff
+        else "Ya tienes tu lugar reservado en"
+    )
+    return create_notification(
+        session,
+        member_id=member_id,
+        kind="class_reserved",
+        title="Tu lugar en la clase está confirmado",
+        body=(
+            f"{lead} {class_title} del {local:%d/%m/%Y} a las {local:%H:%M}. "
+            "Llega unos minutos antes."
+        ),
+        ref_id=reservation_id,
+        now=now,
+    )
+
+
 def notify_equipment_out_of_service(
     session: Session,
     *,

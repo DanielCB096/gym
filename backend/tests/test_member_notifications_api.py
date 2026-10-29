@@ -236,13 +236,14 @@ def test_inbox_collects_every_member_event(monkeypatch) -> None:
                 "/member/notifications", headers=ana, params={"page_size": 50}
             ).json()
             assert sorted(item["kind"] for item in ana_inbox["items"]) == [
+                "class_reserved",
                 "goal_achieved",
                 "goal_cancelled_by_staff",
                 "goal_updated_by_staff",
                 "membership_expiring",
                 "workout_reviewed",
             ]
-            assert ana_inbox["total"] == 5
+            assert ana_inbox["total"] == 6
             # The promoted seat is a class less than a day away, so it also
             # earns the first reminder window the moment Beto opens the inbox.
             assert sorted(_kinds(client, beto)) == [
@@ -263,6 +264,9 @@ def test_inbox_collects_every_member_event(monkeypatch) -> None:
             assert by_kind["goal_cancelled_by_staff"]["ref_id"] == goal_id
             assert "cintura" in by_kind["goal_cancelled_by_staff"]["body"]
             assert "Full body" in by_kind["workout_reviewed"]["body"]
+            # Ana booked and then cancelled: the confirmation stays as history.
+            assert by_kind["class_reserved"]["ref_id"] == ana_seat.json()["id"]
+            assert "Ya tienes tu lugar reservado" in by_kind["class_reserved"]["body"]
 
             beto_inbox = client.get(
                 "/member/notifications", headers=beto, params={"page_size": 50}
@@ -275,7 +279,7 @@ def test_inbox_collects_every_member_event(monkeypatch) -> None:
 
             # Acknowledging: one at a time, then the whole inbox.
             unread = client.get("/member/notifications/unread-count", headers=ana).json()
-            assert unread["unread"] == 5
+            assert unread["unread"] == 6
             mark_one = client.post(
                 f"/member/notifications/{achieved['id']}/read", headers=ana
             )
@@ -283,15 +287,15 @@ def test_inbox_collects_every_member_event(monkeypatch) -> None:
             assert mark_one.json()["read_at"] is not None
             assert client.get(
                 "/member/notifications/unread-count", headers=ana
-            ).json()["unread"] == 4
+            ).json()["unread"] == 5
             assert client.post(
                 f"/member/notifications/{achieved['id']}/read", headers=ana
             ).status_code == 200
             assert client.get("/member/notifications/unread-count", headers=ana).json()[
                 "unread"
-            ] == 4
+            ] == 5
             assert client.post("/member/notifications/read-all", headers=ana).json() == {
-                "updated": 4
+                "updated": 5
             }
             assert client.get("/member/notifications/unread-count", headers=ana).json() == {
                 "unread": 0

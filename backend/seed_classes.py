@@ -142,8 +142,16 @@ def main() -> None:
                 continue
             if offset <= 0:
                 # Past classes: mostly attended, one no-show and one late cancellation.
+                # The seed rebuilds the agenda on every run, so it would pile up
+                # confirmations of classes that no longer exist; it stays silent.
                 for member in members:
-                    classes_service.reserve_seat(session, item.id, member_id=member.id, origin="reception")
+                    classes_service.reserve_seat(
+                        session,
+                        item.id,
+                        member_id=member.id,
+                        origin="reception",
+                        notify_member=False,
+                    )
                     reservations += 1
                 confirmed = [
                     reservation
@@ -164,7 +172,11 @@ def main() -> None:
                 take = len(members)  # deliberately overflow the small class
             for member in members[:take]:
                 result = classes_service.reserve_seat(
-                    session, item.id, member_id=member.id, origin="reception" if index % 2 == 0 else "app"
+                    session,
+                    item.id,
+                    member_id=member.id,
+                    origin="reception" if index % 2 == 0 else "app",
+                    notify_member=False,
                 )
                 reservations += 1
                 if result.status == "waitlist":
