@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-29 · Aviso de clase cancelada o reprogramada
+
+- **Avisos nuevos**: `class_cancelled` y `class_rescheduled` en `member_notifications` (migración `20261029_0053_class_change_notifications.py`, que amplía el `CHECK` de tipos a catorce; `preview_patch.py` actualiza la base de vista previa). El socio lee «Se canceló tu clase» con clase, día y hora, o «Cambió el horario de tu clase» con la ventana anterior y la nueva.
+- **Audiencia**: toda reserva viva, `reserved` o `waitlist`, resuelta por `_live_reservations`. Quien estaba en la fila también espera esa clase y, sin el aviso, seguiría aguardando un lugar que ya no existe o a una hora vieja.
+- **Cancelación**: `cancel_class_session` escribe un aviso por reserva viva antes del `commit()`, después de cancelarla y de reembolsar su cobro premium si lo tenía; si la cancelación o el reembolso fallan, el aviso revierte con ellas. `dedupe_key = class_cancelled:<clase>:<socio>`. El texto no habla de dinero porque una reserva viva normalmente no tiene cobro.
+- **Reprogramación**: `update_class_session` conserva el inicio y el fin anteriores y solo avisa si cambió alguno; editar aforo, título, salón, instructor o notas no escribe nada. La clave lleva el instante del cambio, así que mover dos veces deja dos avisos. Si el mismo `PATCH` sube la capacidad y mueve la hora, el promovido recibe su `class_waitlist_promoted` y además la reprogramación.
+- **App**: las etiquetas son «Clase cancelada» y «Clase movida», y ambas abren la pantalla **Clases** al tocarlas.
+- **Pruebas**: dos casos nuevos en `backend/tests/test_class_notifications.py` (cancelación a una reserva sentada y otra en espera, sin aviso para una reserva ya cancelada ni para la segunda cancelación; reprogramación con las dos ventanas, silencio de las ediciones que no mueven el horario y un segundo movimiento con su propio aviso). Suite en **230 pruebas** (226 pasan y las 4 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`).
+- **Documentación**: nuevo ADR-037, módulos de notificaciones y de clases, deuda técnica, plan de pruebas y README del backend, de la app y de documentación.
+
 ## 2026-10-29 · Confirmación de la reserva propia en la bandeja del socio
 
 - **Aviso nuevo**: `class_reserved` en `member_notifications` (migración `20261029_0052_class_reserved_notification.py`, que amplía el `CHECK` de tipos a doce; `preview_patch.py` actualiza la base de vista previa). El socio recibe «Tu lugar en la clase está confirmado» con clase, día y hora, y `ref_id` a la reserva.

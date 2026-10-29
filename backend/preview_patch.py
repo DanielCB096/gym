@@ -156,12 +156,13 @@ CHECK_UPGRADES = {
             "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
             "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
             "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
-            "'invoice_cancelled', 'class_reminder'))",
+            "'invoice_cancelled', 'class_reminder', 'class_reserved'))",
             "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
             "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
             "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
             "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
-            "'invoice_cancelled', 'class_reminder', 'class_reserved'))",
+            "'invoice_cancelled', 'class_reminder', 'class_reserved', "
+            "'class_cancelled', 'class_rescheduled'))",
         ),
     ),
     "staff_notifications": (

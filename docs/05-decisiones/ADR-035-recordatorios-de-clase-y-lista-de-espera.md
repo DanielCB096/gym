@@ -27,12 +27,12 @@ El recordatorio planteado en la sección 8 era «30 minutos antes de la clase».
 
 - **Sigue sin haber push ni correo.** El recordatorio se ve al abrir la app o al refrescar la insignia, y una clase que empieza sin que el socio abra la app no recibe aviso. Es el mismo límite que ya tiene la membresía por vencer.
 - **La 24 h no garantiza 24 h de antelación.** Si el socio reserva cuando falta una hora, recibe el aviso de 2 h; el de 24 h no se escribe hacia atrás. El recordatorio anuncia «menos de N horas», no una cuenta exacta.
-- **El recordatorio es un congelado.** Si el club mueve la hora de la clase después del aviso, el mensaje conserva la hora original; un cambio de horario no reenvía ni corrige el aviso (programar la clase y su aviso sigue siendo tema del programador pendiente).
+- **El recordatorio es un congelado.** Si el club mueve la hora de la clase después del aviso, el mensaje conserva la hora original; el aviso de reprogramación cuenta el cambio (ADR-037), pero el recordatorio viejo no se corrige ni se retira (programar la clase y su aviso sigue siendo tema del programador pendiente).
 - **Cancelar o liberar no borra el recordatorio recibido.** La bandeja es un historial: el socio puede ver «tu clase empieza en menos de 2 horas» de una clase que luego canceló. El estado real se ve en Clases, a donde lleva el aviso.
 - **Promover en la subida de aforo puede sorprender.** Quien esperaba un lugar recibe el aviso sin que nadie haya cancelado; es el resultado buscado, pero la recepción debe saber que editar el cupo mueve la fila. La promoción se detiene en el aforo: si el nuevo cupo no alcanza para toda la fila, el resto conserva su posición.
-- **La clase cancelada sigue sin avisar a nadie.** `cancel_class_session` cancela las reservas vivas (incluidas las de la fila) y no escribe avisos; queda documentado como pendiente. Tampoco se avisa del cambio de horario ni de la confirmación de la reserva propia.
+- **La clase cancelada sigue sin avisar a nadie.** `cancel_class_session` cancela las reservas vivas (incluidas las de la fila) y no escribe avisos; queda documentado como pendiente. Tampoco se avisa del cambio de horario ni de la confirmación de la reserva propia. _(Resuelto después: ver la actualización del final.)_
 - **El recordatorio no se cobra ni reserva nada.** Una clase premium promovida o recordada sigue cobrándose al marcar la asistencia (ADR-033); el aviso no crea venta.
-- **Actualización (2026-10-29):** la confirmación de la reserva propia ya se avisa con `class_reserved`, escrito dentro de la transacción de `reserve_seat` (ADR-036). Sigue pendiente el aviso de clase cancelada o reprogramada.
+- **Actualización (2026-10-29):** la confirmación de la reserva propia ya se avisa con `class_reserved`, escrito dentro de la transacción de `reserve_seat` (ADR-036). La cancelación y la reprogramación de la clase también se avisan desde `cancel_class_session` y `update_class_session`, a toda reserva viva (ADR-037).
 
 ## Referencias
 

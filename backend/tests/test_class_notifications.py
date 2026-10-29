@@ -1,20 +1,25 @@
-"""Class reminders and the seats that free without a cancellation.
+"""Class notices: reminders, held seats, freed seats and changes to the class.
 
 The reminder has no scheduler: it is materialised when the member reads the
 inbox or the badge, once per window. The waitlist likewise only advances by
 itself when the freed seat is still useful, so a queue is never seated into a
-class that already began.
+class that already began. A cancellation or a moved slot reaches every live
+reservation, held or queued, because both would otherwise show up at the wrong
+time.
 """
 
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import pytest
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.modules.classes import (
     ClassReservation,
+    InvalidSessionState,
+    cancel_class_session,
     cancel_reservation,
     create_class_room,
     create_class_session,
@@ -29,6 +34,7 @@ from app.modules.notifications import (
     list_member_notifications,
     unread_notification_count,
 )
+from app.timezone import to_club_timezone
 
 NOW = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)
 
@@ -268,3 +274,112 @@ def test_reservation_confirms_the_seat_only_when_it_is_held() -> None:
         assert ana_notices[0].ref_id == ana_again
         assert "Recepción reservó tu lugar" in ana_notices[0].body
         assert ana_notices[1].ref_id == ana_seat
+
+
+def test_cancellation_reaches_every_live_reservation_and_announces_once() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ana = _member(session, "Ana")
+        beto = _member(session, "Beto")
+        caro = _member(session, "Caro")
+        type_id, room_id = _catalog(session)
+        class_id = _class_session(
+            session, type_id, room_id, starts_in=timedelta(days=2), capacity=1
+        )
+
+        ana_seat = _reserve(session, class_id, ana)
+        beto_seat = _reserve(session, class_id, beto)
+        caro_seat = _reserve(session, class_id, caro)
+        cancel_reservation(session, caro_seat, now=NOW)
+
+        cancel_class_session(session, class_id, now=NOW)
+
+        starts_local = to_club_timezone(NOW + timedelta(days=2))
+        # Both the held seat and the queue are told: neither has to show up.
+        for member, seat in ((ana, ana_seat), (beto, beto_seat)):
+            assert _reservation(session, seat).status == "cancelled"
+            notices = [item for item in _notices(session, member) if item.kind == "class_cancelled"]
+            assert len(notices) == 1
+            notice = notices[0]
+            assert notice.ref_id == class_id
+            assert notice.title == "Se canceló tu clase"
+            assert "Spinning 6am" in notice.body
+            assert f"{starts_local:%d/%m/%Y}" in notice.body
+            assert f"{starts_local:%H:%M}" in notice.body
+            assert "cancelada" in notice.body
+            assert notice.read_at is None
+
+        # A seat cancelled before the class was never at risk.
+        assert _notices(session, caro) == []
+        assert len(_notices(session, ana)) == 2
+        assert len(_notices(session, beto)) == 1
+        assert unread_notification_count(session, beto, now=NOW) == 1
+
+        # Cancelling twice changes nothing and adds no second notice.
+        with pytest.raises(InvalidSessionState):
+            cancel_class_session(session, class_id, now=NOW)
+        assert len(_notices(session, ana)) == 2
+        assert len(_notices(session, beto)) == 1
+
+
+def test_reschedule_announces_both_slots_and_ignores_other_edits() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ana = _member(session, "Ana")
+        beto = _member(session, "Beto")
+        caro = _member(session, "Caro")
+        type_id, room_id = _catalog(session)
+        class_id = _class_session(
+            session, type_id, room_id, starts_in=timedelta(days=2), capacity=1
+        )
+
+        _reserve(session, class_id, ana)
+        _reserve(session, class_id, beto)
+        caro_seat = _reserve(session, class_id, caro)
+        cancel_reservation(session, caro_seat, now=NOW)
+
+        old_start = NOW + timedelta(days=2)
+        new_start = NOW + timedelta(days=3)
+        new_end = new_start + timedelta(hours=2)
+        update_class_session(
+            session, class_id, starts_at=new_start, ends_at=new_end, now=NOW
+        )
+
+        old_local = to_club_timezone(old_start)
+        new_start_local = to_club_timezone(new_start)
+        new_end_local = to_club_timezone(new_end)
+        for member in (ana, beto):
+            notices = [
+                item for item in _notices(session, member) if item.kind == "class_rescheduled"
+            ]
+            assert len(notices) == 1
+            notice = notices[0]
+            assert notice.ref_id == class_id
+            assert notice.title == "Cambió el horario de tu clase"
+            assert f"{old_local:%d/%m/%Y}" in notice.body
+            assert f"{old_local:%H:%M}" in notice.body
+            assert f"{new_start_local:%d/%m/%Y}" in notice.body
+            assert f"{new_start_local:%H:%M}" in notice.body
+            assert f"{new_end_local:%H:%M}" in notice.body
+            assert "Tu reserva sigue en pie" in notice.body
+        assert all(item.kind != "class_rescheduled" for item in _notices(session, caro))
+
+        # Capacity or title alone move nothing, so they stay silent.
+        update_class_session(session, class_id, capacity=2, title="Spinning 7am", now=NOW)
+        assert sum(
+            item.kind == "class_rescheduled" for item in _notices(session, ana)
+        ) == 1
+
+        # A later move is its own news, even when only the end moves.
+        moved_end = new_end + timedelta(minutes=30)
+        update_class_session(
+            session, class_id, ends_at=moved_end, now=NOW + timedelta(hours=1)
+        )
+        notices = [
+            item for item in _notices(session, ana) if item.kind == "class_rescheduled"
+        ]
+        assert len(notices) == 2
+        assert f"{to_club_timezone(moved_end):%H:%M}" in notices[0].body
+        assert f"{new_end_local:%H:%M}" in notices[0].body

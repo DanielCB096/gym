@@ -51,7 +51,12 @@ from app.modules.inventory.service import (
     service_sale_for_reservation,
 )
 from app.modules.memberships.models import Member
-from app.modules.notifications import notify_class_reserved, notify_waitlist_promoted
+from app.modules.notifications import (
+    notify_class_cancelled,
+    notify_class_reserved,
+    notify_class_rescheduled,
+    notify_waitlist_promoted,
+)
 
 DEFAULT_SESSION_PAGE_SIZE = 25
 MAX_SESSION_PAGE_SIZE = 100
@@ -421,6 +426,18 @@ def _count_seated(session: Session, session_id: UUID) -> int:
     return int(session.exec(statement).one() or 0)
 
 
+def _live_reservations(session: Session, session_id: UUID) -> list[ClassReservation]:
+    """Every reservation a change to the class still has to reach."""
+    return list(
+        session.exec(
+            select(ClassReservation).where(
+                ClassReservation.session_id == session_id,
+                ClassReservation.status.in_(ACTIVE_RESERVATION_STATUSES),
+            )
+        ).all()
+    )
+
+
 def _session_metrics(session: Session, session_ids: list[UUID]) -> dict[UUID, dict[str, int]]:
     metrics = {session_id: {"reserved": 0, "waitlist": 0} for session_id in session_ids}
     if not session_ids:
@@ -618,6 +635,10 @@ def update_class_session(
     if item.status != "scheduled":
         raise InvalidSessionState("No se puede editar una clase cancelada")
 
+    occurred = _as_utc(now or utc_now())
+    old_starts_at = _as_utc(item.starts_at)
+    old_ends_at = _as_utc(item.ends_at)
+
     if title is not None:
         clean_title = title.strip()
         if not clean_title:
@@ -659,11 +680,28 @@ def update_class_session(
     if notes is not UNSET:
         item.notes = notes or None
 
-    item.updated_at = _as_utc(now or utc_now())
+    item.updated_at = occurred
     session.add(item)
     session.flush()
     if capacity is not None:
-        _seat_waitlist_in_free_spots(session, session_id, now=item.updated_at)
+        _seat_waitlist_in_free_spots(session, session_id, now=occurred)
+
+    new_starts_at = _as_utc(item.starts_at)
+    new_ends_at = _as_utc(item.ends_at)
+    if new_starts_at != old_starts_at or new_ends_at != old_ends_at:
+        for reservation in _live_reservations(session, session_id):
+            notify_class_rescheduled(
+                session,
+                member_id=reservation.member_id,
+                class_session_id=session_id,
+                class_title=item.title,
+                old_starts_at=old_starts_at,
+                old_ends_at=old_ends_at,
+                starts_at=new_starts_at,
+                ends_at=new_ends_at,
+                now=occurred,
+            )
+
     session.commit()
     session.refresh(item)
     return _session_item_by_id(session, item.id)
@@ -690,12 +728,7 @@ def cancel_class_session(
     session.add(item)
     session.flush()
 
-    live = session.exec(
-        select(ClassReservation).where(
-            ClassReservation.session_id == session_id,
-            ClassReservation.status.in_(ACTIVE_RESERVATION_STATUSES),
-        )
-    ).all()
+    live = _live_reservations(session, session_id)
     for reservation in live:
         reservation.status = "cancelled"
         reservation.waitlist_position = None
@@ -708,6 +741,14 @@ def cancel_class_session(
             reservation,
             reason="La clase se canceló",
             actor_id=actor_id,
+            now=occurred,
+        )
+        notify_class_cancelled(
+            session,
+            member_id=reservation.member_id,
+            class_session_id=session_id,
+            class_title=item.title,
+            starts_at=_as_utc(item.starts_at),
             now=occurred,
         )
 

@@ -20,7 +20,13 @@ import { formatDateTime, notificationKindLabel } from "../format";
 import { colors, radius, sharedStyles, spacing } from "../theme";
 import type { MemberNotification, MemberNotificationPage } from "../types";
 
-const CLASS_KINDS = new Set(["class_reminder", "class_reserved", "class_waitlist_promoted"]);
+const CLASS_KINDS = new Set([
+  "class_reminder",
+  "class_reserved",
+  "class_cancelled",
+  "class_rescheduled",
+  "class_waitlist_promoted",
+]);
 
 type Props = {
   token: string;

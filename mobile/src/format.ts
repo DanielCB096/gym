@@ -116,6 +116,8 @@ const NOTIFICATION_KIND_LABELS: Record<string, string> = {
   class_waitlist_promoted: "Clase",
   class_reminder: "Clase",
   class_reserved: "Clase",
+  class_cancelled: "Clase cancelada",
+  class_rescheduled: "Clase movida",
   membership_expiring: "Membresía",
   equipment_out_of_service: "Equipo",
   invoice_stamped: "Factura",

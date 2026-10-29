@@ -397,6 +397,82 @@ def notify_class_reserved(
     )
 
 
+def notify_class_cancelled(
+    session: Session,
+    *,
+    member_id: UUID,
+    class_session_id: UUID,
+    class_title: str,
+    starts_at: datetime,
+    now: datetime | None = None,
+) -> MemberNotification:
+    """Tell everyone who still had a live reservation that the class is off.
+
+    Both the seated and the waitlisted are told: a queue waiting for a class
+    that no longer exists would keep checking for a seat that will never open.
+    The key is per class and member so a retried cancellation cannot duplicate
+    the notice.
+    """
+    local = to_club_timezone(starts_at)
+    return create_notification(
+        session,
+        member_id=member_id,
+        kind="class_cancelled",
+        title="Se canceló tu clase",
+        body=(
+            f"La clase {class_title} del {local:%d/%m/%Y} a las {local:%H:%M} "
+            "fue cancelada por el gimnasio. Ya no necesitas presentarte."
+        ),
+        ref_id=class_session_id,
+        dedupe_key=f"class_cancelled:{class_session_id}:{member_id}",
+        now=now,
+    )
+
+
+def notify_class_rescheduled(
+    session: Session,
+    *,
+    member_id: UUID,
+    class_session_id: UUID,
+    class_title: str,
+    old_starts_at: datetime,
+    old_ends_at: datetime,
+    starts_at: datetime,
+    ends_at: datetime,
+    now: datetime | None = None,
+) -> MemberNotification:
+    """Announce a moved class with both the old and the new slot.
+
+    The member should not have to remember where the class used to be; the body
+    carries the previous window so the change reads as a change. The key names
+    the moment of the move, so moving the class back and forth announces every
+    move instead of being silenced by an earlier notice with the same target.
+    """
+    occurred = now or utc_now()
+    old_start = to_club_timezone(old_starts_at)
+    old_end = to_club_timezone(old_ends_at)
+    new_start = to_club_timezone(starts_at)
+    new_end = to_club_timezone(ends_at)
+    return create_notification(
+        session,
+        member_id=member_id,
+        kind="class_rescheduled",
+        title="Cambió el horario de tu clase",
+        body=(
+            f"La clase {class_title} cambió de horario: era el "
+            f"{old_start:%d/%m/%Y} de {old_start:%H:%M} a {old_end:%H:%M} y ahora es el "
+            f"{new_start:%d/%m/%Y} de {new_start:%H:%M} a {new_end:%H:%M}. "
+            "Tu reserva sigue en pie."
+        ),
+        ref_id=class_session_id,
+        dedupe_key=(
+            f"class_rescheduled:{class_session_id}:{member_id}:"
+            f"{occurred:%Y%m%dT%H%M%S%f}"
+        ),
+        now=occurred,
+    )
+
+
 def notify_equipment_out_of_service(
     session: Session,
     *,

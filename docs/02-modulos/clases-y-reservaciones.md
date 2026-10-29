@@ -129,7 +129,8 @@ Este módulo cubre la programación de clases, la reserva por parte de los socio
 - Recordatorio 24 h y 2 h antes de la clase, en la bandeja de avisos del socio. Es diferido —se escribe al leer la bandeja o la insignia, sin push— y se deduplica por reserva y ventana (ADR-035).
 - Confirmación de reserva exitosa: se escribe `class_reserved` en la misma transacción que sienta la reserva, con texto distinto si la tomó recepción, y también para las reservas hechas desde la app (ADR-036).
 - Aviso a la lista de espera cuando alguien cancela, cuando sube el aforo o cuando se marca una inasistencia antes de la clase: en los tres casos se promueve a la cabeza y se avisa al promovido.
-- Notificación de clase cancelada o reprogramada (pendiente).
+- Clase cancelada: cada reserva viva —sentada o en espera— recibe `class_cancelled` dentro de la transacción de la cancelación, después de devolver su cobro premium si lo tenía (ADR-037).
+- Clase reprogramada: si el inicio o el fin cambian, cada reserva viva recibe `class_rescheduled` con la ventana anterior y la nueva; editar aforo, título, salón o instructor no avisa (ADR-037).
 - Alertas de inasistencia recurrente con política configurable.
 
 ## 9. Consideraciones de rendimiento específicas del módulo
@@ -215,7 +216,16 @@ Quinto incremento (2026-10-29): **confirmación de la reserva propia** (ADR-036)
 - **Migración**: `20261029_0052_class_reserved_notification.py` ensancha `ck_member_notifications_kind` a doce tipos, con la reconstrucción correspondiente en `preview_patch.py`.
 - Pruebas: un caso nuevo en `test_class_notifications.py` (reserva sentada avisa, lista de espera calla, la promoción conserva su aviso y la reserva desde recepción usa su propia redacción) y dos ajustes en las pruebas existentes por el aviso extra.
 
-Pendiente (documentado en `docs/deuda-tecnica.md`): aviso de clase cancelada o reprogramada, reserva premium desde la app con pasarela, reserva automática desde control de acceso y penalizaciones efectivas por inasistencia (marcar `no_show` hoy reembolsa la clase premium).
+Sexto incremento (2026-10-29): **aviso de clase cancelada o reprogramada** (ADR-037).
+
+- **La audiencia es toda reserva viva**: `_live_reservations` devuelve las reservas `reserved` y `waitlist` de la sesión; las ya canceladas o asistidas no reciben nada. Quien está en la fila también espera esa clase, así que se entera igual que quien tenía lugar.
+- **Cancelar la clase avisa a cada reserva** justo después de cancelarla y de reembolsar su cobro premium si lo había, antes del `commit()`: si la cancelación o el reembolso fallan, el aviso revierte con ellas. `dedupe_key = class_cancelled:<clase>:<socio>`. El texto no menciona dinero.
+- **Reprogramar solo avisa si el horario cambia**: `update_class_session` conserva el inicio y el fin anteriores y compara al final; un cambio de aforo, título, salón o instructor no escribe nada. La reprogramación muestra las dos ventanas en el calendario del club y su clave lleva el instante del cambio, así que mover dos veces deja dos avisos.
+- **La promoción por aforo convive con el aviso**: si el mismo `PATCH` sube la capacidad y mueve la hora, el promovido recibe su `class_waitlist_promoted` y además la reprogramación.
+- **Migración**: `20261029_0053_class_change_notifications.py` ensancha `ck_member_notifications_kind` a catorce tipos, con la reconstrucción correspondiente en `preview_patch.py`.
+- Pruebas: dos casos nuevos en `test_class_notifications.py` (cancelación a reservas sentadas y en espera, sin aviso para una reserva ya cancelada ni para la segunda cancelación; reprogramación con las dos ventanas, silencio de las ediciones que no mueven el horario y un segundo movimiento con su propio aviso).
+
+Pendiente (documentado en `docs/deuda-tecnica.md`): reserva premium desde la app con pasarela, reserva automática desde control de acceso y penalizaciones efectivas por inasistencia (marcar `no_show` hoy reembolsa la clase premium).
 
 ## 14. Estado
 

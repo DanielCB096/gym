@@ -58,7 +58,7 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
   - fecha de cancelación cuando aplica, estados vacíos, mensajes de error y actualización manual con deslizamiento para regenerar los enlaces.
 - Pantalla de avisos con:
   - contador «Tienes N avisos sin leer.» o «Estás al día.»;
-  - lista del más reciente al más antiguo con etiqueta de tipo (Membresía, Clase, Meta cumplida, Meta ajustada, Meta cancelada, Entrenamiento, Equipo), título, cuerpo y fecha con hora;
+  - lista del más reciente al más antiguo con etiqueta de tipo (Membresía, Clase, Clase cancelada, Clase movida, Meta cumplida, Meta ajustada, Meta cancelada, Entrenamiento, Equipo), título, cuerpo y fecha con hora;
   - no leídos marcados con borde y punto de color, leídos atenúados;
   - toque sobre un aviso para marcarlo como leído (inmediato, sin recargar la lista);
   - «Marcar todas como leídas», visible solo cuando hay pendientes, con confirmación de cuántos se marcaron;
@@ -183,7 +183,7 @@ La app no ofrece PPD: envía siempre la forma derivada del cobro con método PUE
 ## Flujo de avisos
 
 1. `GET /member/notifications?page=1&page_size=30` devuelve la bandeja del socio con `total`, `pages` y `unread_total`; los avisos los generan los eventos del club (revisión de un entrenamiento, meta cumplida, meta ajustada o cancelada por el personal, reserva confirmada —en la app o en recepción—, lugar liberado en lista de espera, recordatorio de la clase próxima, vencimiento próximo de la membresía, equipo de la rutina que queda fuera de servicio y estado de una factura: timbrada, fallida o cancelada).
-2. `POST /member/notifications/{id}/read` marca uno (idempotente) y `POST /member/notifications/read-all` marca todos devolviendo `{"updated": n}`. Los avisos `invoice_stamped`/`invoice_failed`/`invoice_cancelled` se etiquetan «Factura» y, al tocarlos, la app los marca leídos y abre la pantalla de Facturas; los de clase (`class_reserved`, `class_reminder` y `class_waitlist_promoted`) se etiquetan «Clase» y abren la pantalla **Clases**. El resto solo cambia el estado de lectura.
+2. `POST /member/notifications/{id}/read` marca uno (idempotente) y `POST /member/notifications/read-all` marca todos devolviendo `{"updated": n}`. Los avisos `invoice_stamped`/`invoice_failed`/`invoice_cancelled` se etiquetan «Factura» y, al tocarlos, la app los marca leídos y abre la pantalla de Facturas; los de clase (`class_reserved`, `class_reminder`, `class_waitlist_promoted`, `class_cancelled` y `class_rescheduled`) se etiquetan «Clase», «Clase cancelada» o «Clase movida» y abren la pantalla **Clases**. El resto solo cambia el estado de lectura.
 3. `GET /member/notifications/unread-count` alimenta la insignia de la pantalla de inicio; se consulta al restaurar la sesión, al iniciar sesión, al actualizar el perfil y al salir de la bandeja.
 4. Al abrir la bandeja el backend evalúa el vencimiento de la membresía (≤ 7, ≤ 3 o ≤ 1 días) y la clase próxima (≤ 24 h y ≤ 2 h), y crea el recordatorio de cada ventana una sola vez, deduplicado por `dedupe_key`.
 
