@@ -158,6 +158,12 @@ type BackendMember = {
   auto_renew: boolean | null;
 };
 
+type PlanAccessWindow = {
+  weekday: number;
+  starts_at: string;
+  ends_at: string;
+};
+
 type BackendPlan = {
   id: string;
   name: string;
@@ -165,7 +171,25 @@ type BackendPlan = {
   price_cents: number;
   currency: string;
   daily_entry_limit: number | null;
+  access_windows: PlanAccessWindow[];
 };
+
+type ScheduleDraftRow = {
+  key: string;
+  weekday: number;
+  starts_at: string;
+  ends_at: string;
+};
+
+const scheduleWeekdayLabels = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+const scheduleWeekdayShort = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+
+function planScheduleSummary(windows: PlanAccessWindow[]): string {
+  if (windows.length === 0) return "Abierto todo el día";
+  return windows
+    .map((window) => `${scheduleWeekdayShort[window.weekday] ?? "?"} ${window.starts_at.slice(0, 5)}–${window.ends_at.slice(0, 5)}`)
+    .join(" · ");
+}
 
 type AccessSettings = {
   antipassback_seconds: number;
@@ -3530,6 +3554,10 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
   const [antipassbackDraft, setAntipassbackDraft] = useState("");
   const [savingAntipassback, setSavingAntipassback] = useState(false);
   const [accessSettingsError, setAccessSettingsError] = useState("");
+  const [schedulePlan, setSchedulePlan] = useState<BackendPlan | null>(null);
+  const [scheduleRows, setScheduleRows] = useState<ScheduleDraftRow[]>([]);
+  const [savingSchedule, setSavingSchedule] = useState(false);
+  const [scheduleError, setScheduleError] = useState("");
 
   const loadPlans = async () => {
     setPlansError("");
@@ -3749,6 +3777,78 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
     }
   };
 
+  const openSchedule = (plan: BackendPlan) => {
+    setSchedulePlan(plan);
+    setScheduleError("");
+    setScheduleRows(plan.access_windows.map((window, index) => ({
+      key: `${index}-${newClientReference()}`,
+      weekday: window.weekday,
+      starts_at: window.starts_at.slice(0, 5),
+      ends_at: window.ends_at.slice(0, 5),
+    })));
+  };
+
+  const closeSchedule = () => {
+    setSchedulePlan(null);
+    setScheduleRows([]);
+    setScheduleError("");
+  };
+
+  const addScheduleRow = () => {
+    const last = scheduleRows[scheduleRows.length - 1];
+    setScheduleRows((current) => [
+      ...current,
+      {
+        key: newClientReference(),
+        weekday: last?.weekday ?? 0,
+        starts_at: last?.ends_at ?? "06:00",
+        ends_at: "22:00",
+      },
+    ]);
+  };
+
+  const saveSchedule = async () => {
+    if (!schedulePlan) return;
+    if (scheduleRows.some((row) => !row.starts_at || !row.ends_at)) {
+      setScheduleError("Cada ventana necesita hora de inicio y de fin.");
+      return;
+    }
+    if (scheduleRows.some((row) => row.starts_at === row.ends_at)) {
+      setScheduleError("La hora de inicio y la de fin no pueden ser iguales; quita la ventana para un acceso libre.");
+      return;
+    }
+    setSavingSchedule(true);
+    setScheduleError("");
+    try {
+      const response = await fetch(`/api/admin/plans/${encodeURIComponent(schedulePlan.id)}/access-windows`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          windows: scheduleRows.map((row) => ({
+            weekday: row.weekday,
+            starts_at: `${row.starts_at}:00`,
+            ends_at: `${row.ends_at}:00`,
+          })),
+        }),
+      });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as BackendPlan & { detail?: string };
+      if (!response.ok) throw new Error(payload.detail || "No se pudo guardar el horario.");
+      setPlans((current) => current?.map((item) => (item.id === payload.id ? payload : item)) ?? current);
+      onToast(payload.access_windows.length === 0
+        ? `${payload.name}: acceso libre todo el día.`
+        : `${payload.name}: ${payload.access_windows.length} ${payload.access_windows.length === 1 ? "ventana de acceso" : "ventanas de acceso"}.`);
+      closeSchedule();
+    } catch (saveError) {
+      setScheduleError(saveError instanceof Error ? saveError.message : "No se pudo guardar el horario.");
+    } finally {
+      setSavingSchedule(false);
+    }
+  };
+
   if (!canManage) {
     return (
       <section className="panel full-panel">
@@ -3964,6 +4064,60 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
         <div className="panel-header access-list-heading">
           <div>
             <p className="section-kicker">POLÍTICA DE ACCESO</p>
+            <h2>Horario de acceso</h2>
+          </div>
+          <span className="role-count">{(plans ?? []).filter((plan) => plan.access_windows.length > 0).length}</span>
+        </div>
+        <p className="panel-hint">
+          El kiosco rechaza el código fuera de las ventanas del plan con «Estás fuera del horario
+          permitido.». Un plan sin ventanas queda abierto todo el día, así que configurarlas es lo
+          que cambia el comportamiento. Los días van de lunes a domingo y las horas se interpretan en
+          el huso horario del club; una ventana cuya hora de fin es menor que la de inicio cruza la
+          medianoche.
+        </p>
+        {plansError && <div className="login-error" role="alert">{plansError}</div>}
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>PLAN</th>
+                <th>VENTANAS</th>
+                <th>ESTADO</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {plans === null ? <tr><td colSpan={4} className="empty-row">{plansError ? "No se pudieron cargar los planes." : "Cargando planes…"}</td></tr>
+                : plans.length === 0 ? <tr><td colSpan={4} className="empty-row">No hay planes activos.</td></tr>
+                : plans.map((plan) => (
+                  <tr key={plan.id}>
+                    <td><strong>{plan.name}</strong></td>
+                    <td className="kiosk-schedule-summary">{planScheduleSummary(plan.access_windows)}</td>
+                    <td>
+                      {plan.access_windows.length === 0
+                        ? "Sin restricción"
+                        : `${plan.access_windows.length} ${plan.access_windows.length === 1 ? "ventana" : "ventanas"}`}
+                    </td>
+                    <td>
+                      <button type="button" className="button button-secondary" disabled={savingSchedule} onClick={() => openSchedule(plan)}>
+                        Editar horario
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="table-bottom">
+          <span>Horas del club · hasta 28 ventanas por plan</span>
+          <span>Una ventana se aplica al día que empieza</span>
+        </div>
+      </section>
+
+      <section className="panel full-panel">
+        <div className="panel-header access-list-heading">
+          <div>
+            <p className="section-kicker">POLÍTICA DE ACCESO</p>
             <h2>Control de duplicados</h2>
           </div>
           <span className="role-count">{accessSettings == null ? "…" : accessSettings.antipassback_seconds === 0 ? "Off" : `${accessSettings.antipassback_seconds}s`}</span>
@@ -4021,6 +4175,85 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
           minutos y solo se puede usar una vez.
         </p>
       </section>
+
+      {schedulePlan && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget && !savingSchedule) closeSchedule(); }}
+        >
+          <section className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="plan-schedule-title">
+            <div className="modal-header">
+              <span className="modal-icon"><Clock3 size={19} /></span>
+              <button type="button" className="icon-button" aria-label="Cerrar" disabled={savingSchedule} onClick={closeSchedule}><X size={19} /></button>
+            </div>
+            <p className="section-kicker">HORARIO DE ACCESO</p>
+            <h2 id="plan-schedule-title">{schedulePlan.name}</h2>
+            <p className="modal-subtitle">
+              Sin ventanas el plan queda abierto todo el día. Una ventana que termina antes de
+              empezar cruza la medianoche y sigue aplicando al día en que empezó.
+            </p>
+            <div className="kiosk-schedule-rows">
+              {scheduleRows.length === 0
+                ? <p className="kiosk-schedule-empty">Este plan no tiene ventanas: el kiosco permite la entrada a cualquier hora.</p>
+                : scheduleRows.map((row) => (
+                  <div className="kiosk-schedule-row" key={row.key}>
+                    <select
+                      className="kiosk-schedule-select"
+                      value={row.weekday}
+                      disabled={savingSchedule}
+                      aria-label="Día de la ventana"
+                      onChange={(event) => setScheduleRows((current) => current.map((item) => item.key === row.key ? { ...item, weekday: Number(event.target.value) } : item))}
+                    >
+                      {scheduleWeekdayLabels.map((label, index) => <option key={label} value={index}>{label}</option>)}
+                    </select>
+                    <input
+                      type="time"
+                      className="kiosk-schedule-time"
+                      value={row.starts_at}
+                      disabled={savingSchedule}
+                      aria-label="Hora de inicio de la ventana"
+                      onChange={(event) => setScheduleRows((current) => current.map((item) => item.key === row.key ? { ...item, starts_at: event.target.value } : item))}
+                    />
+                    <span className="kiosk-schedule-separator">a</span>
+                    <input
+                      type="time"
+                      className="kiosk-schedule-time"
+                      value={row.ends_at}
+                      disabled={savingSchedule}
+                      aria-label="Hora de fin de la ventana"
+                      onChange={(event) => setScheduleRows((current) => current.map((item) => item.key === row.key ? { ...item, ends_at: event.target.value } : item))}
+                    />
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Quitar ventana"
+                      disabled={savingSchedule}
+                      onClick={() => setScheduleRows((current) => current.filter((item) => item.key !== row.key))}
+                    >
+                      <Trash2 size={17} />
+                    </button>
+                  </div>
+                ))}
+            </div>
+            <div className="kiosk-schedule-actions">
+              <button type="button" className="button button-secondary" disabled={savingSchedule || scheduleRows.length >= 28} onClick={addScheduleRow}>
+                <Plus size={16} />Agregar ventana
+              </button>
+              <button type="button" className="button button-secondary" disabled={savingSchedule || scheduleRows.length === 0} onClick={() => setScheduleRows([])}>
+                Quitar todas
+              </button>
+            </div>
+            {scheduleError && <div className="login-error" role="alert">{scheduleError}</div>}
+            <div className="modal-actions">
+              <button type="button" className="button button-secondary" disabled={savingSchedule} onClick={closeSchedule}>Cancelar</button>
+              <button type="button" className="button button-primary" disabled={savingSchedule} onClick={() => void saveSchedule()}>
+                <Check size={16} />{savingSchedule ? "Guardando…" : "Guardar horario"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

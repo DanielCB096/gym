@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Time,
     UniqueConstraint,
     Uuid,
     func,
@@ -123,6 +124,50 @@ class AccessEvent(SQLModel, table=True):
     source: str = Field(default="reader", max_length=16)
     occurred_at: datetime = Field(sa_type=DateTime(timezone=True))
     offline: bool = Field(default=False)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
+class PlanAccessWindow(SQLModel, table=True):
+    """Allowed entry hours for a membership plan, in the club's local time.
+
+    A plan with no rows is open all day: the engine only checks the schedule
+    when ``AccessSnapshot.allowed_windows`` is not ``None``. ``weekday`` follows
+    ``datetime.weekday()`` (Monday is 0) and an ``ends_at`` earlier than
+    ``starts_at`` crosses midnight into the next day.
+    """
+
+    __tablename__ = "plan_access_windows"
+    __table_args__ = (
+        CheckConstraint(
+            "weekday >= 0 AND weekday <= 6", name="ck_plan_access_windows_weekday"
+        ),
+        CheckConstraint(
+            "starts_at <> ends_at", name="ck_plan_access_windows_span"
+        ),
+        UniqueConstraint(
+            "plan_id",
+            "weekday",
+            "starts_at",
+            "ends_at",
+            name="uq_plan_access_windows_slot",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    plan_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("plans.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )
+    )
+    weekday: int
+    starts_at: time = Field(sa_column=Column(Time(), nullable=False))
+    ends_at: time = Field(sa_column=Column(Time(), nullable=False))
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),

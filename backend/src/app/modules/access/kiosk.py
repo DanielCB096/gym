@@ -37,6 +37,7 @@ from app.modules.access.service import (
     count_member_entries_today,
     evaluate_access,
     last_member_entry_at,
+    plan_access_windows,
     read_antipassback_seconds,
     record_access_event,
 )
@@ -539,6 +540,9 @@ def _decide(
     plan = session.get(Plan, membership.plan_id) if membership is not None else None
     timezone_name = os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE)
     antipassback_seconds = read_antipassback_seconds(session)
+    schedule_windows = (
+        plan_access_windows(session, plan.id) if plan is not None else ()
+    )
     last_entry_at = None
     snapshot = None
     if membership is not None:
@@ -557,7 +561,9 @@ def _decide(
             blocking_debt=False,
             cached_at=occurred_at,
             valid_until=occurred_at + KIOSK_ATTEMPT_WINDOW,
-            allowed_windows=None,
+            # A plan without rows is open all day; the engine only checks the
+            # schedule when the tuple is present.
+            allowed_windows=schedule_windows if schedule_windows else None,
             daily_entry_limit=daily_entry_limit,
             entries_today=(
                 count_member_entries_today(
@@ -577,9 +583,9 @@ def _decide(
         reader_id=reader_id,
         direction=AccessDirection.ENTRY,
         occurred_at=occurred_at,
-        # Occupancy, schedules and debt blocking are not wired yet; the kiosk
-        # enforces membership state, the plan's daily entry limit and the
-        # club-wide antipassback window.
+        # Occupancy and debt blocking are not wired yet; the kiosk enforces
+        # membership state, the plan's schedule, the plan's daily entry limit
+        # and the club-wide antipassback window.
         current_occupancy=0,
         max_occupancy=1,
         offline=False,

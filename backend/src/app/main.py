@@ -50,12 +50,16 @@ from app.modules.access.kiosk import (
 from app.modules.access.offline_store import SQLiteAccessStore
 from app.modules.access.service import (
     MAX_ANTIPASSBACK_SECONDS,
+    MAX_PLAN_ACCESS_WINDOWS,
+    InvalidAccessWindow,
     access_event_item,
     access_today_summary,
     get_access_settings,
     list_access_events,
+    plan_access_windows,
     record_access_event,
     record_manual_access,
+    replace_plan_access_windows,
     update_antipassback_seconds,
 )
 from app.modules.classes import (
@@ -2581,6 +2585,12 @@ class MemberContactResponse(BaseModel):
     status: str
 
 
+class PlanAccessWindowResponse(BaseModel):
+    weekday: int
+    starts_at: time
+    ends_at: time
+
+
 class PlanResponse(BaseModel):
     id: UUID
     name: str
@@ -2588,10 +2598,21 @@ class PlanResponse(BaseModel):
     price_cents: int
     currency: str
     daily_entry_limit: int | None
+    access_windows: list[PlanAccessWindowResponse]
 
 
 class PlanDailyEntryLimitRequest(BaseModel):
     daily_entry_limit: int | None = Field(ge=1)
+
+
+class PlanAccessWindowRequest(BaseModel):
+    weekday: int = Field(ge=0, le=6)
+    starts_at: time
+    ends_at: time
+
+
+class PlanAccessWindowsRequest(BaseModel):
+    windows: list[PlanAccessWindowRequest] = Field(max_length=MAX_PLAN_ACCESS_WINDOWS)
 
 
 class AssignPlanRequest(BaseModel):
@@ -4145,10 +4166,10 @@ def list_plans(
     plans = session.exec(
         select(Plan).where(Plan.is_active.is_(True)).order_by(Plan.name, Plan.id)
     ).all()
-    return [_plan_response(plan) for plan in plans]
+    return [_plan_response(session, plan) for plan in plans]
 
 
-def _plan_response(plan: Plan) -> PlanResponse:
+def _plan_response(session: Session, plan: Plan) -> PlanResponse:
     return PlanResponse(
         id=plan.id,
         name=plan.name,
@@ -4156,6 +4177,14 @@ def _plan_response(plan: Plan) -> PlanResponse:
         price_cents=plan.price_cents,
         currency=plan.currency,
         daily_entry_limit=plan.daily_entry_limit,
+        access_windows=[
+            PlanAccessWindowResponse(
+                weekday=window.weekday,
+                starts_at=window.starts_at,
+                ends_at=window.ends_at,
+            )
+            for window in plan_access_windows(session, plan.id)
+        ],
     )
 
 
@@ -4176,7 +4205,40 @@ def update_plan_daily_entry_limit_endpoint(
         )
     except PlanNotFound as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    return _plan_response(plan)
+    return _plan_response(session, plan)
+
+
+@app.put(
+    "/admin/plans/{plan_id}/access-windows",
+    response_model=PlanResponse,
+    tags=["member administration"],
+)
+def replace_plan_access_windows_endpoint(
+    plan_id: UUID,
+    request: PlanAccessWindowsRequest,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("settings.manage"))],
+) -> PlanResponse:
+    try:
+        plan = replace_plan_access_windows(
+            session,
+            plan_id,
+            [
+                AccessWindow(
+                    weekday=window.weekday,
+                    starts_at=window.starts_at,
+                    ends_at=window.ends_at,
+                )
+                for window in request.windows
+            ],
+        )
+    except PlanNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except InvalidAccessWindow as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    return _plan_response(session, plan)
 
 
 @app.patch(

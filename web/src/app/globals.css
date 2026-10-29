@@ -897,6 +897,16 @@ th.sortable-header .sort-indicator { font-size: 8px; color: #23509a; }
 .kiosk-antipassback-state { color: #5a6b5f; font-size: 0.92rem; }
 .kiosk-rotate-confirm { display: grid; gap: 10px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid #e6d6ad; border-radius: 6px; background: #fdfaf0; color: #4a3d1c; }
 .kiosk-rotate-confirm p { margin: 0; font-size: 0.92rem; line-height: 1.45; }
+.kiosk-schedule-summary { color: #4b5d50; font-size: 0.92rem; line-height: 1.45; }
+.kiosk-schedule-rows { display: grid; gap: 8px; margin-top: 12px; }
+.kiosk-schedule-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.kiosk-schedule-select, .kiosk-schedule-time { padding: 8px 10px; border: 1px solid #d9e3d6; border-radius: 5px; background: #fff; color: #26352a; font: inherit; }
+.kiosk-schedule-select:focus, .kiosk-schedule-time:focus { outline: 2px solid #8fbf7a; outline-offset: 1px; }
+.kiosk-schedule-select { min-width: 130px; }
+.kiosk-schedule-time { width: 118px; }
+.kiosk-schedule-separator { color: #5a6b5f; font-size: 0.92rem; }
+.kiosk-schedule-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+.kiosk-schedule-empty { margin: 0; padding: 12px 14px; border: 1px dashed #d9e3d6; border-radius: 6px; color: #5a6b5f; font-size: 0.92rem; }
 
 @media (max-width: 650px) {
   .photo-grid { grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); }

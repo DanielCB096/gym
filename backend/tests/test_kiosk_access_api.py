@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from hashlib import sha256
 from uuid import UUID, uuid4
 
@@ -26,6 +26,7 @@ from app.modules.access.models import (
     AccessDecision,
     AccessDirection,
     AccessReason,
+    AccessWindow,
     KioskAttempt,
     KioskDevice,
     utc_now,
@@ -35,6 +36,7 @@ from app.modules.access.service import (
     last_member_entry_at,
     read_antipassback_seconds,
     record_access_event,
+    replace_plan_access_windows,
     update_antipassback_seconds,
 )
 from app.modules.identity.service import ensure_default_access_control, register_user
@@ -1080,3 +1082,167 @@ def test_member_row_lock_is_for_update_on_postgresql() -> None:
         str(statement.compile(dialect=sqlite.dialect())).split()
     )
     assert "FOR UPDATE" not in sqlite_sql
+
+
+def test_plan_schedule_windows_are_configured_from_the_panel(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            owner = _login_staff(client, "owner@example.com", "owner-strong-password")
+            reception = _login_staff(client, "reception@example.com", "reception-strong-password")
+            windows_path = f"/admin/plans/{ids['plan']}/access-windows"
+            morning = {"weekday": 0, "starts_at": "06:00", "ends_at": "22:00"}
+
+            assert client.put(
+                windows_path, headers=reception, json={"windows": [morning]}
+            ).status_code == 403
+            assert client.put(
+                "/admin/plans/00000000-0000-0000-0000-000000000000/access-windows",
+                headers=owner,
+                json={"windows": [morning]},
+            ).status_code == 404
+
+            invalid_day = client.put(
+                windows_path, headers=owner, json={"windows": [{**morning, "weekday": 7}]}
+            )
+            assert invalid_day.status_code == 422
+            empty_span = client.put(
+                windows_path,
+                headers=owner,
+                json={"windows": [{"weekday": 0, "starts_at": "08:00", "ends_at": "08:00"}]},
+            )
+            assert empty_span.status_code == 422
+            assert "no pueden ser iguales" in empty_span.json()["detail"]
+            duplicated = client.put(
+                windows_path, headers=owner, json={"windows": [morning, morning]}
+            )
+            assert duplicated.status_code == 422
+            assert "mismo día y las mismas horas" in duplicated.json()["detail"]
+            overlapping = client.put(
+                windows_path,
+                headers=owner,
+                json={
+                    "windows": [
+                        {"weekday": 0, "starts_at": "06:00", "ends_at": "12:00"},
+                        {"weekday": 0, "starts_at": "11:00", "ends_at": "15:00"},
+                    ]
+                },
+            )
+            assert overlapping.status_code == 422
+            assert "traslapan" in overlapping.json()["detail"]
+            overnight_tail = client.put(
+                windows_path,
+                headers=owner,
+                json={
+                    "windows": [
+                        {"weekday": 0, "starts_at": "22:00", "ends_at": "02:00"},
+                        {"weekday": 1, "starts_at": "01:00", "ends_at": "06:00"},
+                    ]
+                },
+            )
+            assert overnight_tail.status_code == 422
+
+            saved = client.put(
+                windows_path,
+                headers=owner,
+                json={
+                    "windows": [
+                        {"weekday": 0, "starts_at": "06:00", "ends_at": "22:00"},
+                        {"weekday": 6, "starts_at": "08:00", "ends_at": "14:00"},
+                    ]
+                },
+            )
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["access_windows"] == [
+                {"weekday": 0, "starts_at": "06:00:00", "ends_at": "22:00:00"},
+                {"weekday": 6, "starts_at": "08:00:00", "ends_at": "14:00:00"},
+            ]
+            listed = client.get("/admin/plans", headers=owner).json()
+            assert listed[0]["access_windows"] == saved.json()["access_windows"]
+
+            cleared = client.put(windows_path, headers=owner, json={"windows": []})
+            assert cleared.status_code == 200, cleared.text
+            assert cleared.json()["access_windows"] == []
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
+def test_kiosk_denies_outside_the_plan_schedule(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-kiosk-access-secret")
+    monkeypatch.setenv("APP_TIMEZONE", "UTC")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+        device, _ = create_kiosk_device(session, label="Tablet")
+        monday_morning = datetime(2026, 10, 26, 10, 0, tzinfo=timezone.utc)
+        monday_night = datetime(2026, 10, 26, 23, 0, tzinfo=timezone.utc)
+        tuesday_early = datetime(2026, 10, 27, 1, 0, tzinfo=timezone.utc)
+        tuesday_after = datetime(2026, 10, 27, 3, 0, tzinfo=timezone.utc)
+
+        replace_plan_access_windows(
+            session,
+            ids["plan"],
+            [AccessWindow(weekday=0, starts_at=time(6, 0), ends_at=time(22, 0))],
+        )
+        granted = check_in_with_code(
+            session,
+            device=device,
+            code=issue_member_access_code(session, ids["ana"], now=monday_morning).code,
+            now=monday_morning,
+        )
+        assert granted.authorized is True
+
+        denied = check_in_with_code(
+            session,
+            device=device,
+            code=issue_member_access_code(session, ids["ana"], now=monday_night).code,
+            now=monday_night,
+        )
+        assert denied.authorized is False
+        assert denied.reason == "outside_allowed_hours"
+        assert denied.message == "Estás fuera del horario permitido."
+
+        # A window that ends before it starts covers the next morning.
+        replace_plan_access_windows(
+            session,
+            ids["plan"],
+            [AccessWindow(weekday=0, starts_at=time(22, 0), ends_at=time(2, 0))],
+        )
+        overnight = check_in_with_code(
+            session,
+            device=device,
+            code=issue_member_access_code(session, ids["ana"], now=tuesday_early).code,
+            now=tuesday_early,
+        )
+        assert overnight.authorized is True
+        late = check_in_with_code(
+            session,
+            device=device,
+            code=issue_member_access_code(session, ids["ana"], now=tuesday_after).code,
+            now=tuesday_after,
+        )
+        assert late.authorized is False
+        assert late.reason == "outside_allowed_hours"
+
+        # Without windows the plan is open again at any hour.
+        replace_plan_access_windows(session, ids["plan"], [])
+        reopened = check_in_with_code(
+            session,
+            device=device,
+            code=issue_member_access_code(session, ids["ana"], now=tuesday_after).code,
+            now=tuesday_after,
+        )
+        assert reopened.authorized is True
+    engine.dispose()

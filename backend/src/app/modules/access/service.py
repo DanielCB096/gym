@@ -3,7 +3,7 @@ from datetime import datetime, time, timedelta, timezone
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, delete, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -17,9 +17,11 @@ from app.modules.access.models import (
     AccessSettings,
     AccessSnapshot,
     AccessWindow,
+    PlanAccessWindow,
     utc_now,
 )
 from app.modules.memberships.models import Member, Membership, Plan
+from app.modules.memberships.service import PlanNotFound
 from app.timezone import DEFAULT_TIMEZONE, club_timezone
 
 DEFAULT_ACCESS_PAGE_SIZE = 25
@@ -27,6 +29,8 @@ MAX_ACCESS_PAGE_SIZE = 100
 ACCESS_STATES = ("authorized", "denied", "manual")
 DEFAULT_ANTIPASSBACK_SECONDS = 0
 MAX_ANTIPASSBACK_SECONDS = 3600
+MAX_PLAN_ACCESS_WINDOWS = 28
+SECONDS_PER_DAY = 24 * 60 * 60
 
 
 def evaluate_access(
@@ -484,6 +488,109 @@ def update_antipassback_seconds(
     session.commit()
     session.refresh(settings)
     return settings
+
+
+class InvalidAccessWindow(ValueError):
+    pass
+
+
+def plan_access_windows(session: Session, plan_id: UUID) -> tuple[AccessWindow, ...]:
+    """Return the plan's allowed entry windows in club local time.
+
+    An empty tuple means the plan has no schedule and the kiosk stays open;
+    ``AccessSnapshot.allowed_windows`` uses ``None`` for that case, so callers
+    must translate an empty result before building the snapshot.
+    """
+    rows = session.exec(
+        select(PlanAccessWindow)
+        .where(PlanAccessWindow.plan_id == plan_id)
+        .order_by(PlanAccessWindow.weekday, PlanAccessWindow.starts_at)
+    ).all()
+    return tuple(
+        AccessWindow(
+            weekday=row.weekday, starts_at=row.starts_at, ends_at=row.ends_at
+        )
+        for row in rows
+    )
+
+
+def replace_plan_access_windows(
+    session: Session,
+    plan_id: UUID,
+    windows: list[AccessWindow],
+) -> Plan:
+    """Replace the whole schedule of a plan; an empty list removes it.
+
+    Replacing all rows in one transaction keeps the kiosk from reading a half
+    written week while the panel saves.
+    """
+    plan = session.get(Plan, plan_id)
+    if plan is None:
+        raise PlanNotFound("Plan was not found")
+    validated = _validated_windows(windows)
+    session.exec(delete(PlanAccessWindow).where(PlanAccessWindow.plan_id == plan_id))
+    for window in validated:
+        session.add(
+            PlanAccessWindow(
+                plan_id=plan_id,
+                weekday=window.weekday,
+                starts_at=window.starts_at,
+                ends_at=window.ends_at,
+            )
+        )
+    session.commit()
+    return plan
+
+
+def _validated_windows(windows: list[AccessWindow]) -> list[AccessWindow]:
+    if len(windows) > MAX_PLAN_ACCESS_WINDOWS:
+        raise InvalidAccessWindow(
+            f"Un plan admite hasta {MAX_PLAN_ACCESS_WINDOWS} ventanas de acceso."
+        )
+    seen: set[tuple[int, time, time]] = set()
+    for window in windows:
+        if not 0 <= window.weekday <= 6:
+            raise InvalidAccessWindow(
+                "El día debe ir de 0 (lunes) a 6 (domingo)."
+            )
+        if window.starts_at == window.ends_at:
+            raise InvalidAccessWindow(
+                "La hora de inicio y la de fin no pueden ser iguales; deja el plan "
+                "sin ventanas para que el acceso sea libre."
+            )
+        key = (window.weekday, window.starts_at, window.ends_at)
+        if key in seen:
+            raise InvalidAccessWindow(
+                "Ya hay una ventana con el mismo día y las mismas horas."
+            )
+        seen.add(key)
+    _reject_overlaps(windows)
+    return windows
+
+
+def _reject_overlaps(windows: list[AccessWindow]) -> None:
+    # A window that ends before it starts is split into the two club days it
+    # covers, so the overlap check also sees the overnight tail.
+    spans: dict[int, list[tuple[int, int]]] = {}
+    for window in windows:
+        start = _second_of_day(window.starts_at)
+        end = _second_of_day(window.ends_at)
+        if start < end:
+            spans.setdefault(window.weekday, []).append((start, end))
+        else:
+            spans.setdefault(window.weekday, []).append((start, SECONDS_PER_DAY))
+            spans.setdefault((window.weekday + 1) % 7, []).append((0, end))
+    for day_spans in spans.values():
+        day_spans.sort()
+        for previous, current in zip(day_spans, day_spans[1:]):
+            if current[0] < previous[1]:
+                raise InvalidAccessWindow(
+                    "Dos ventanas se traslapan el mismo día; ajústalas para que no se crucen."
+                )
+
+
+def _second_of_day(value: time) -> int:
+    return value.hour * 3600 + value.minute * 60 + value.second
 
 
 def last_member_entry_at(
