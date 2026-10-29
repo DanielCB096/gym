@@ -890,6 +890,11 @@ th.sortable-header .sort-indicator { font-size: 8px; color: #23509a; }
 .kiosk-token-panel { border-color: #d7e6c8; background: #f8fcf4; }
 .kiosk-token-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .kiosk-token { flex: 1 1 260px; padding: 10px 12px; border: 1px dashed #c9d8b8; border-radius: 5px; background: #fff; color: #2d4a24; font: 600 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; user-select: all; }
+.kiosk-limit-input { width: 130px; padding: 8px 10px; border: 1px solid #d9e3d6; border-radius: 5px; background: #fff; color: #26352a; font: inherit; }
+.kiosk-limit-input:focus { outline: 2px solid #8fbf7a; outline-offset: 1px; }
+.kiosk-antipassback-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; }
+.kiosk-antipassback-row label { font-weight: 600; color: #26352a; }
+.kiosk-antipassback-state { color: #5a6b5f; font-size: 0.92rem; }
 
 @media (max-width: 650px) {
   .photo-grid { grid-template-columns: repeat(auto-fill, minmax(116px, 1fr)); }

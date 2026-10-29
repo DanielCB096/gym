@@ -14,6 +14,12 @@ la entrada o la deniega con el motor de acceso del club.
 - Aviso explícito de que el registro de entrada necesita el servidor; no hay check-in offline.
 - Banda «Equipos no disponibles hoy» con la flota en mantenimiento o fuera de servicio,
   refrescada cada minuto desde `GET /kiosk/equipment`.
+- Control de duplicados configurable desde el panel: un código del socio que ya entró
+  dentro de la ventana del club se deniega con «Entrada duplicada. Espera un momento.».
+- Cartel de recepción (`cartel.html`) como pantalla pasiva para una TV o monitor:
+  lista grande de equipos no disponibles con ubicación y estado, estado vacío
+  «Todos los equipos están operativos», reloj y fecha, y su propia configuración
+  (`centrofit.sign.config.v1`) para usar un token de dispositivo independiente.
 
 ## Cómo ejecutarlo
 
@@ -23,7 +29,8 @@ Desde la raíz del repositorio:
 python -m http.server 8090 --directory kiosk
 ```
 
-Abre `http://localhost:8090` en la tablet o navegador de recepción.
+Abre `http://localhost:8090` en la tablet o navegador de recepción y
+`http://localhost:8090/cartel.html` en la pantalla del cartel.
 
 El backend debe incluir el origen del kiosco en `CORS_ORIGINS` y permitir el
 encabezado `X-Kiosk-Token`. En vista previa:
@@ -43,6 +50,11 @@ PREVIEW_MODE=true ... uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 Para retirar un equipo, revócalo en el panel; el kiosco recibe `401` en el
 siguiente intento y pide un token nuevo.
+
+Para el cartel, crea un **dispositivo aparte** (por ejemplo «Cartel de recepción»)
+y captura su token en la configuración del cartel (`Configurar cartel`). Así se
+puede revocar la pantalla sin detener el kiosco y viceversa. El cartel solo usa
+`GET /kiosk/equipment`: no valida códigos ni registra accesos.
 
 ## Flujo del socio
 
@@ -65,13 +77,29 @@ la lista al validar un código.
 - La lista de equipos no disponibles se refresca cada minuto o al recuperar la red;
   si la consulta falla se conserva la última conocida, así que un cambio puede tardar
   hasta un minuto en verse y no hay push.
-- El kiosco no sustituye la validación de recepción: aplica membresía vigente y
-  registra el evento, pero aún no valida horarios, adeudos, aforo ni hardware.
+- El cartel muestra solo nombre, ubicación y estado. No hay horario estimado de
+  reparación ni equipo alternativo porque el modelo de mantenimiento aún no los
+  expone; la indicación es preguntar en recepción. Un `401` borra su token y vuelve
+  a configuración, y si nunca pudo consultar muestra un aviso de error.
+- El kiosco no sustituye la validación de recepción: aplica membresía vigente, límite
+  diario del plan, control de duplicados y registra el evento, pero aún no valida
+  horarios, adeudos, aforo ni hardware.
+- Límite diario por plan: se configura en el panel (tarjeta «Límite diario de entradas»
+  de la página «Kiosco») y el kiosco lo aplica contando las entradas autorizadas del
+  socio en el día local del club, **incluidas las manuales de recepción**. Al agotarse,
+  el check-in responde «Ya usaste tus entradas de hoy.»; un plan sin límite no consulta
+  el conteo. La entrada manual sigue permitiéndose y emitir un código nunca se bloquea.
+- Control de duplicados (antipassback): la tarjeta «Control de duplicados» de la página
+  «Kiosco» fija una ventana global en segundos (`0` la desactiva). El check-in busca la
+  última entrada autorizada del socio —también las manuales— y, si el código llega
+  dentro de la ventana, responde «Entrada duplicada. Espera un momento.»; la entrada
+  manual de recepción nunca se bloquea, pero cuenta para la ventana. Con `0` el
+  comportamiento es el de siempre y no se consulta la última entrada.
 
 ## Pendiente
 
-- Antipassback y límite diario por plan.
 - Modo offline con cola local y sincronización.
 - QR, huella o tarjeta física y apertura de torniquete.
 - Rotación automática de tokens y aprovisionamiento remoto.
-- Cartel de recepción con la flota no disponible y refresco por push.
+- Refresco por push del cartel y del kiosco (hoy ambos consultan cada minuto).
+- Antipassback por área, lector o plan (hoy la ventana es global del club).

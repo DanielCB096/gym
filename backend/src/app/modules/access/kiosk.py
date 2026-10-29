@@ -32,8 +32,14 @@ from app.modules.access.models import (
     MemberAccessCode,
     utc_now,
 )
-from app.modules.access.service import evaluate_access, record_access_event
-from app.modules.memberships.models import Member, Membership
+from app.modules.access.service import (
+    count_member_entries_today,
+    evaluate_access,
+    last_member_entry_at,
+    read_antipassback_seconds,
+    record_access_event,
+)
+from app.modules.memberships.models import Member, Membership, Plan
 from app.modules.portal.service import signing_secret
 from app.timezone import DEFAULT_TIMEZONE
 
@@ -338,8 +344,17 @@ def _decide(
     reader_id: str,
 ):
     membership = _latest_membership(session, member.id)
+    plan = session.get(Plan, membership.plan_id) if membership is not None else None
+    timezone_name = os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE)
+    antipassback_seconds = read_antipassback_seconds(session)
+    last_entry_at = None
     snapshot = None
     if membership is not None:
+        daily_entry_limit = plan.daily_entry_limit if plan is not None else None
+        if antipassback_seconds > 0:
+            last_entry_at = last_member_entry_at(
+                session, member.id, before=occurred_at
+            )
         snapshot = AccessSnapshot(
             member_id=member.id,
             membership_status=(
@@ -351,9 +366,18 @@ def _decide(
             cached_at=occurred_at,
             valid_until=occurred_at + KIOSK_ATTEMPT_WINDOW,
             allowed_windows=None,
-            daily_entry_limit=None,
-            entries_today=0,
-            antipassback_seconds=0,
+            daily_entry_limit=daily_entry_limit,
+            entries_today=(
+                count_member_entries_today(
+                    session,
+                    member.id,
+                    timezone_name=timezone_name,
+                    now=occurred_at,
+                )
+                if daily_entry_limit is not None
+                else 0
+            ),
+            antipassback_seconds=antipassback_seconds,
         )
     request = AccessRequest(
         event_id=uuid4(),
@@ -362,7 +386,8 @@ def _decide(
         direction=AccessDirection.ENTRY,
         occurred_at=occurred_at,
         # Occupancy, schedules and debt blocking are not wired yet; the kiosk
-        # only enforces membership state until those policies exist.
+        # enforces membership state, the plan's daily entry limit and the
+        # club-wide antipassback window.
         current_occupancy=0,
         max_occupancy=1,
         offline=False,
@@ -370,7 +395,8 @@ def _decide(
     return evaluate_access(
         snapshot,
         request,
-        timezone_name=os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE),
+        timezone_name=timezone_name,
+        last_successful_entry_at=last_entry_at,
     )
 
 

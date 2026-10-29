@@ -34,8 +34,8 @@ Este módulo cubre el control de acceso al gimnasio, validación de membresía, 
 1. El socio abre «Acceso habilitado» en la app y pulsa «Ver mi código».
 2. La app pide `POST /member/access/code`; el backend exige socio activo y membresía vigente y devuelve un código de seis dígitos con cinco minutos de vida. Emitir otro invalida el anterior.
 3. El socio dicta o muestra el código en recepción; la tablet del kiosco lo captura en el teclado numérico.
-4. El kiosco envía `POST /kiosk/check-in` con `X-Kiosk-Token` y el código. El backend autentica el dispositivo, consume el código de forma atómica y evalúa la membresía con el motor de acceso.
-5. La pantalla muestra «Acceso concedido» con el nombre abreviado o el motivo del rechazo («Código inválido o vencido.», «Membresía vencida. Pasa a recepción.» o «Demasiados intentos. Espera un momento.»).
+4. El kiosco envía `POST /kiosk/check-in` con `X-Kiosk-Token` y el código. El backend autentica el dispositivo, consume el código de forma atómica y evalúa la membresía con el motor de acceso, incluidos el límite diario del plan y el control de duplicados del club si están configurados.
+5. La pantalla muestra «Acceso concedido» con el nombre abreviado o el motivo del rechazo («Código inválido o vencido.», «Membresía vencida. Pasa a recepción.», «Ya usaste tus entradas de hoy.», «Entrada duplicada. Espera un momento.» o «Demasiados intentos. Espera un momento.»).
 6. La decisión queda en `access_events` con origen `reader` y lector «Kiosco <etiqueta>», y aparece en la bitácora del panel. Un código usado no se puede repetir.
 
 ### Flujo implementado: alta de un kiosco
@@ -98,6 +98,8 @@ Este módulo cubre el control de acceso al gimnasio, validación de membresía, 
   - tablero con accesos del día y bitácora con filtros por estado y búsqueda
   - acceso manual con motivo
   - página «Kiosco» con los dispositivos autorizados, alta con token de una sola vista y revocación
+  - tarjeta «Límite diario de entradas» en «Kiosco»: un campo por plan para fijar o retirar `daily_entry_limit`
+  - tarjeta «Control de duplicados» en «Kiosco»: ventana de antipassback del club en segundos (`0` la desactiva) con insignia, estado y guardado
 - Componentes del diseño todavía pendientes:
   - filtros por horario, lector, plan o afiliación
   - tabla específica de accesos denegados
@@ -130,7 +132,7 @@ Este módulo cubre el control de acceso al gimnasio, validación de membresía, 
 ### Reglas clave
 - Solo puede entrar quien tiene membresía vigente, no congelada, sin adeudo bloqueante y dentro del horario del plan.
 - El sistema debe validar la política de visitas por plan y máximo de accesos permitidos.
-- Si hay dos o más intentos de acceso con la misma credencial en un periodo corto, se debe detectar y registrar como posible antipassback o intento anómalo.
+- Si hay dos o más intentos de acceso con la misma credencial en un periodo corto, se debe detectar y registrar como posible antipassback o intento anómalo. Implementado en el kiosco: un segundo código del mismo socio dentro de la ventana del club se deniega como `antipassback` y queda en la bitácora (ADR-026).
 - Todo acceso manual requiere usuario, motivo y auditoría.
 - Los datos biométricos nunca se guardan como imagen; solo la plantilla cifrada.
 - Si un lector falla, el acceso aún puede funcionar en modo degradado con el sistema local.
@@ -227,6 +229,9 @@ Implementación inicial del motor offline y del kiosco de recepción con código
 - 2026-10-15: documento ampliado con flujos, pantallas, reglas,.hardware, métricas y criterios de aceptación.
 - 2026-10-28: se implementa el código rotativo en la app del socio, el endpoint del kiosco, la PWA de recepción y la administración de dispositivos en el panel (ADR-024).
 - 2026-10-28: el kiosco muestra la flota no disponible con `GET /kiosk/equipment`, autenticado con el mismo token del dispositivo; es un aviso de solo lectura que se refresca cada minuto y no participa en la decisión de acceso (ADR-018).
+- 2026-10-28: se agrega el cartel de recepción (`kiosk/cartel.html`), una pantalla pasiva que reutiliza `GET /kiosk/equipment` con el token de un dispositivo propio para mostrar la flota no disponible en la TV de recepción; no valida códigos ni escribe en la bitácora.
+- 2026-10-28: el límite diario de entradas deja de ser una regla del motor sin datos y pasa a configurarse por plan (`plans.daily_entry_limit`) desde el panel; el kiosco cuenta las entradas autorizadas del día del club, incluidas las manuales, y deniega con «Ya usaste tus entradas de hoy.» (ADR-025).
+- 2026-10-28: el antipassback deja de ser una regla sin datos y pasa a configurarse como ventana del club (`access_settings.antipassback_seconds`, `0` desactivado) desde la página «Kiosco»; el kiosco consulta la última entrada autorizada del socio —también las manuales— y deniega el código siguiente con «Entrada duplicada. Espera un momento.» (ADR-026).
 
 ## 15. Implementación actual y límites
 
@@ -235,11 +240,14 @@ Implementación inicial del motor offline y del kiosco de recepción con código
 - Los dispositivos se administran desde el panel con `settings.manage`: alta con token de una sola vista y revocación inmediata. El token se guarda como SHA-256 y la tableta lo conserva en `localStorage`.
 - El kiosco reutiliza `evaluate_access` y escribe la decisión en `access_events` con origen `reader`; la bitácora del panel ya muestra lector «Kiosco <etiqueta>».
 - El kiosco consulta `GET /kiosk/equipment` al arrancar, al recuperar la red y cada 60 segundos, y pinta «Equipos no disponibles hoy» con nombre, ubicación y estado (`En mantenimiento` / `Fuera de servicio`). Es un aviso de solo lectura: no bloquea el check-in, conserva la última lista conocida si la consulta falla y un `401` borra el token y vuelve a configuración, igual que en el check-in. La lista sale de `list_unavailable_equipment` en el módulo de mantenimiento, importado de forma perezosa desde `access.kiosk`.
-- El snapshot del kiosco solo aporta estado y fechas de la membresía: no consulta adeudo, horario, límite diario ni antipassback, y envía ocupación 0. Un socio moroso o fuera de horario entra si su membresía está vigente.
+- El cartel de recepción (`kiosk/cartel.html`) usa la misma consulta y un dispositivo propio para pintar la flota no disponible como pantalla pasiva en una TV; su token solo permite leer la lista, no validar códigos, y se revoca desde la misma página «Kiosco» del panel.
+- El límite diario se configura por plan con `PATCH /admin/plans/{plan_id}` (permiso `settings.manage`, solo propietario) y el kiosco lo consulta en cada check-in a través del plan de la membresía vigente. El conteo usa el día local del club (`APP_TIMEZONE`) e incluye las entradas autorizadas, también las manuales de recepción; la entrada manual sigue permitiéndose como `manual_override` y emitir un código nunca se bloquea. Sin límite (`null`) no se consulta el conteo.
+- El control de duplicados es una ventana global del club (`access_settings.antipassback_seconds`, `0`–`3600`, `0` desactivado) que se lee en cada check-in con `GET/PATCH /admin/access/settings` para configurarla (`settings.manage`). El kiosco busca la última entrada autorizada del socio —incluidas las manuales— anterior al intento y el motor deniega dentro de la ventana con `reason="antipassback"`. La entrada manual nunca se bloquea, pero cuenta; con `0` no se consulta la última entrada (ADR-026).
+- El snapshot del kiosco aporta estado, fechas, límite diario del plan y ventana de antipassback: no consulta adeudo ni horario, y envía ocupación 0. Un socio moroso o fuera de horario entra si su membresía está vigente, no agotó su límite y no repite entrada dentro de la ventana.
 - No hay hardware conectado: el kiosco no abre torniquete ni registra salidas. Tampoco hay validación offline (el service worker solo cachea el shell) ni rotación o caducidad del token del dispositivo.
 - El motor valida estado/vigencia de membresía, adeudo bloqueante, horario local, límite diario, antipassback y aforo.
 - El snapshot y el outbox son persistentes en SQLite local; cada decisión usa `event_id` idempotente y queda pendiente hasta recibir confirmación de sincronización.
 - Una salida se permite aunque no exista snapshot de membresía, para no impedir el egreso por una membresía vencida o una caché faltante.
 - La vista previa obtiene estado de membresía desde SQLite; el indicador de adeudo y los horarios se proporcionan manualmente para simular reglas.
 - Aún no existe integración con credenciales/biometría, controlador, torniquete, cálculo compartido de aforo ni sincronización con un backend en red.
-- La vigencia máxima del snapshot, antipassback, política de visitas y aforo por área requieren configuración y validación con el gimnasio.
+- La vigencia máxima del snapshot, la política de visitas y el aforo por área requieren configuración y validación con el gimnasio; la ventana de antipassback ya se configura, pero solo la aplica el kiosco.

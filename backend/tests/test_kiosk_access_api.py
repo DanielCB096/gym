@@ -1,7 +1,7 @@
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import event
@@ -16,7 +16,20 @@ from app.modules.access.kiosk import (
     create_kiosk_device,
     issue_member_access_code,
 )
-from app.modules.access.models import KioskAttempt, KioskDevice
+from app.modules.access.models import (
+    AccessDecision,
+    AccessDirection,
+    AccessReason,
+    KioskAttempt,
+    KioskDevice,
+)
+from app.modules.access.service import (
+    count_member_entries_today,
+    last_member_entry_at,
+    read_antipassback_seconds,
+    record_access_event,
+    update_antipassback_seconds,
+)
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.memberships.models import Member, Membership, Plan
 
@@ -84,7 +97,7 @@ def _seed(session: Session) -> dict[str, UUID]:
         ]
     )
     session.commit()
-    return {"ana": ana.id, "beto": beto.id, "carla": lapsed.id}
+    return {"ana": ana.id, "beto": beto.id, "carla": lapsed.id, "plan": plan.id}
 
 
 def _login_staff(client: TestClient, email: str, password: str) -> dict[str, str]:
@@ -391,4 +404,299 @@ def test_access_code_expires_five_minutes_after_issue(monkeypatch) -> None:
             pass
         else:
             raise AssertionError("An expired code must be rejected")
+    engine.dispose()
+
+
+def test_plan_daily_entry_limit_blocks_kiosk_and_counts_manual_entries(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    monkeypatch.setenv("APP_TIMEZONE", "America/Mexico_City")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            owner = _login_staff(client, "owner@example.com", "owner-strong-password")
+            reception = _login_staff(client, "reception@example.com", "reception-strong-password")
+            device = _create_device(client, owner)
+            kiosk_headers = {"X-Kiosk-Token": device["token"]}
+            plan_path = f"/admin/plans/{ids['plan']}"
+
+            assert client.patch(
+                plan_path, headers=reception, json={"daily_entry_limit": 2}
+            ).status_code == 403
+            assert client.patch(
+                plan_path, headers=owner, json={"daily_entry_limit": 0}
+            ).status_code == 422
+            assert client.patch(
+                "/admin/plans/00000000-0000-0000-0000-000000000000",
+                headers=owner,
+                json={"daily_entry_limit": 2},
+            ).status_code == 404
+
+            limited = client.patch(
+                plan_path, headers=owner, json={"daily_entry_limit": 1}
+            )
+            assert limited.status_code == 200, limited.text
+            assert limited.json()["daily_entry_limit"] == 1
+            listed = client.get("/admin/plans", headers=owner).json()
+            assert listed[0]["daily_entry_limit"] == 1
+
+            manual = client.post(
+                "/admin/access-events/manual",
+                headers=reception,
+                json={"member_id": str(ids["ana"]), "note": "Cortesía"},
+            )
+            assert manual.status_code == 201, manual.text
+            assert manual.json()["authorized"] is True
+
+            member_headers = _login_member(client, "ana@example.com")
+            issued = client.post("/member/access/code", headers=member_headers)
+            assert issued.status_code == 201, issued.text
+            denied = client.post(
+                "/kiosk/check-in",
+                headers=kiosk_headers,
+                json={"code": issued.json()["code"]},
+            )
+            assert denied.status_code == 200, denied.text
+            assert denied.json()["authorized"] is False
+            assert denied.json()["reason"] == "daily_limit"
+            assert denied.json()["message"] == "Ya usaste tus entradas de hoy."
+
+            cleared = client.patch(
+                plan_path, headers=owner, json={"daily_entry_limit": None}
+            )
+            assert cleared.status_code == 200, cleared.text
+            assert cleared.json()["daily_entry_limit"] is None
+
+            issued_again = client.post("/member/access/code", headers=member_headers)
+            assert issued_again.status_code == 201, issued_again.text
+            granted = client.post(
+                "/kiosk/check-in",
+                headers=kiosk_headers,
+                json={"code": issued_again.json()["code"]},
+            )
+            assert granted.status_code == 200, granted.text
+            assert granted.json()["authorized"] is True
+
+            events = client.get("/admin/access-events", headers=owner).json()
+            assert events["total"] == 3
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
+def test_antipassback_window_blocks_repeated_kiosk_entries(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            owner = _login_staff(client, "owner@example.com", "owner-strong-password")
+            reception = _login_staff(client, "reception@example.com", "reception-strong-password")
+            device = _create_device(client, owner)
+            kiosk_headers = {"X-Kiosk-Token": device["token"]}
+            settings_path = "/admin/access/settings"
+
+            assert client.get(settings_path, headers=reception).status_code == 403
+            assert client.patch(
+                settings_path, headers=reception, json={"antipassback_seconds": 60}
+            ).status_code == 403
+            assert client.patch(
+                settings_path, headers=owner, json={"antipassback_seconds": -1}
+            ).status_code == 422
+            assert client.patch(
+                settings_path, headers=owner, json={"antipassback_seconds": 3601}
+            ).status_code == 422
+
+            initial = client.get(settings_path, headers=owner)
+            assert initial.status_code == 200, initial.text
+            assert initial.json()["antipassback_seconds"] == 0
+
+            enabled = client.patch(
+                settings_path, headers=owner, json={"antipassback_seconds": 600}
+            )
+            assert enabled.status_code == 200, enabled.text
+            assert enabled.json()["antipassback_seconds"] == 600
+
+            manual = client.post(
+                "/admin/access-events/manual",
+                headers=reception,
+                json={"member_id": str(ids["ana"]), "note": "Cortesía"},
+            )
+            assert manual.status_code == 201, manual.text
+            assert manual.json()["authorized"] is True
+
+            member_headers = _login_member(client, "ana@example.com")
+            issued = client.post("/member/access/code", headers=member_headers)
+            assert issued.status_code == 201, issued.text
+            denied = client.post(
+                "/kiosk/check-in",
+                headers=kiosk_headers,
+                json={"code": issued.json()["code"]},
+            )
+            assert denied.status_code == 200, denied.text
+            assert denied.json()["authorized"] is False
+            assert denied.json()["reason"] == "antipassback"
+            assert denied.json()["message"] == "Entrada duplicada. Espera un momento."
+
+            disabled = client.patch(
+                settings_path, headers=owner, json={"antipassback_seconds": 0}
+            )
+            assert disabled.status_code == 200, disabled.text
+            assert disabled.json()["antipassback_seconds"] == 0
+
+            issued_again = client.post("/member/access/code", headers=member_headers)
+            assert issued_again.status_code == 201, issued_again.text
+            granted = client.post(
+                "/kiosk/check-in",
+                headers=kiosk_headers,
+                json={"code": issued_again.json()["code"]},
+            )
+            assert granted.status_code == 200, granted.text
+            assert granted.json()["authorized"] is True
+
+            events = client.get("/admin/access-events", headers=owner).json()
+            assert events["total"] == 3
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
+def test_last_member_entry_at_includes_manual_entries() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+
+        def add_event(
+            authorized: bool,
+            occurred_at: datetime,
+            *,
+            direction: AccessDirection = AccessDirection.ENTRY,
+            reason: AccessReason = AccessReason.ENTRY_ALLOWED,
+            source: str = "reader",
+        ) -> None:
+            record_access_event(
+                session,
+                AccessDecision(
+                    event_id=uuid4(),
+                    member_id=ids["ana"],
+                    authorized=authorized,
+                    reason=reason,
+                    direction=direction,
+                    occurred_at=occurred_at,
+                    offline=False,
+                ),
+                reader_id="Prueba",
+                source=source,
+            )
+
+        base = datetime(2026, 10, 28, 15, 0, tzinfo=timezone.utc)
+        add_event(True, base)
+        add_event(
+            False,
+            base + timedelta(minutes=1),
+            reason=AccessReason.ANTIPASSBACK,
+        )
+        add_event(
+            True,
+            base + timedelta(minutes=2),
+            direction=AccessDirection.EXIT,
+            reason=AccessReason.EXIT_ALLOWED,
+        )
+        add_event(
+            True,
+            base + timedelta(minutes=3),
+            reason=AccessReason.MANUAL_OVERRIDE,
+            source="manual",
+        )
+
+        assert last_member_entry_at(session, ids["ana"]) == base + timedelta(minutes=3)
+        assert last_member_entry_at(
+            session, ids["ana"], before=base + timedelta(minutes=3)
+        ) == base
+        assert last_member_entry_at(session, ids["beto"]) is None
+
+        assert read_antipassback_seconds(session) == 0
+        try:
+            update_antipassback_seconds(session, -1)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("A negative window must be rejected")
+        assert update_antipassback_seconds(
+            session, 120, now=base
+        ).antipassback_seconds == 120
+        assert read_antipassback_seconds(session) == 120
+        assert update_antipassback_seconds(
+            session, 0, now=base
+        ).antipassback_seconds == 0
+    engine.dispose()
+
+
+def test_count_member_entries_today_uses_the_club_day() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+
+        def add_event(
+            authorized: bool,
+            occurred_at: datetime,
+            *,
+            direction: AccessDirection = AccessDirection.ENTRY,
+            reason: AccessReason = AccessReason.ENTRY_ALLOWED,
+        ) -> None:
+            record_access_event(
+                session,
+                AccessDecision(
+                    event_id=uuid4(),
+                    member_id=ids["ana"],
+                    authorized=authorized,
+                    reason=reason,
+                    direction=direction,
+                    occurred_at=occurred_at,
+                    offline=False,
+                ),
+                reader_id="Prueba",
+            )
+
+        # Mexico City is UTC-6: the club day starts at 06:00 UTC.
+        add_event(True, datetime(2026, 10, 28, 5, 59, tzinfo=timezone.utc))
+        add_event(True, datetime(2026, 10, 28, 6, 1, tzinfo=timezone.utc))
+        add_event(
+            False,
+            datetime(2026, 10, 28, 7, 0, tzinfo=timezone.utc),
+            reason=AccessReason.DAILY_LIMIT,
+        )
+        add_event(
+            True,
+            datetime(2026, 10, 28, 8, 0, tzinfo=timezone.utc),
+            direction=AccessDirection.EXIT,
+            reason=AccessReason.EXIT_ALLOWED,
+        )
+
+        noon = datetime(2026, 10, 28, 18, 0, tzinfo=timezone.utc)
+        assert count_member_entries_today(
+            session, ids["ana"], timezone_name="America/Mexico_City", now=noon
+        ) == 1
+        next_day = datetime(2026, 10, 29, 7, 0, tzinfo=timezone.utc)
+        assert count_member_entries_today(
+            session, ids["ana"], timezone_name="America/Mexico_City", now=next_day
+        ) == 0
     engine.dispose()

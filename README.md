@@ -60,7 +60,7 @@ Gestionar la operación completa de un gimnasio con foco en:
 - Cache y colas: Redis + Celery
 - Web admin: Next.js + TypeScript
 - App móvil: React Native + Expo (acceso del socio con código OTP por correo)
-- Kiosco: PWA estática sin dependencias (`kiosk/`) para una tablet de recepción
+- Kiosco: PWA estática sin dependencias (`kiosk/`) para una tablet de recepción, con un cartel pasivo (`cartel.html`) para la TV de recepción
 - Autenticación: sesiones opacas Bearer con RBAC para el personal y OTP por correo para socios; MFA para administradores pendiente
 - Facturación: integración con PAC vía XML/JSON
 - Pagos: Conekta como pasarela recomendada para México
@@ -99,7 +99,7 @@ git commit -m "feat: agrega alta de socio con consentimientos"
 
 ## Verificación
 
-Se ejecutan pruebas y lint en CI para cada cambio (backend, panel web, typecheck de la app móvil y la cadena de migraciones Alembic contra PostgreSQL 16). La documentación se mantiene en este repositorio como contexto del proyecto. La app móvil del socio se inicia desde `mobile/` con `npm install` y `npm start`; apunta al backend con `EXPO_PUBLIC_API_URL` y el portal usa `SECRET_KEY` para firmar los códigos OTP. El kiosco de recepción se sirve como sitio estático con `python -m http.server 8090 --directory kiosk` y se configura con la URL del backend y el token que el panel muestra una sola vez. Ver `mobile/README.md` y `kiosk/README.md`.
+Se ejecutan pruebas y lint en CI para cada cambio (backend, panel web, typecheck de la app móvil y la cadena de migraciones Alembic contra PostgreSQL 16). La documentación se mantiene en este repositorio como contexto del proyecto. La app móvil del socio se inicia desde `mobile/` con `npm install` y `npm start`; apunta al backend con `EXPO_PUBLIC_API_URL` y el portal usa `SECRET_KEY` para firmar los códigos OTP. El kiosco de recepción se sirve como sitio estático con `python -m http.server 8090 --directory kiosk`, se configura con la URL del backend y el token que el panel muestra una sola vez, y aplica el límite diario de entradas que se configura por plan en la misma página «Kiosco» (ADR-025) y el control de duplicados del club (ADR-026); el cartel de recepción vive en `kiosk/cartel.html` y usa un token de dispositivo propio. Ver `mobile/README.md` y `kiosk/README.md`.
 
 ## Importante
 

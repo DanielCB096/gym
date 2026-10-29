@@ -129,6 +129,33 @@ class AccessEvent(SQLModel, table=True):
     )
 
 
+class AccessSettings(SQLModel, table=True):
+    """Single-row club policy for access rules that do not belong to a member.
+
+    ``antipassback_seconds`` is the minimum gap between two authorized entries
+    of the same member; ``0`` disables the rule. The row is created with id 1
+    by the migration and lazily by the service when a preview database starts
+    empty.
+    """
+
+    __tablename__ = "access_settings"
+    __table_args__ = (
+        CheckConstraint(
+            "antipassback_seconds >= 0 AND antipassback_seconds <= 3600",
+            name="ck_access_settings_antipassback_range",
+        ),
+    )
+
+    id: int = Field(default=1, primary_key=True)
+    antipassback_seconds: int = Field(default=0)
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
+    )
+
+
 class KioskDevice(SQLModel, table=True):
     """Tablet at the front desk that validates member check-in codes.
 

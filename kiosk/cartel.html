@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0B1220" />
+    <meta
+      name="description"
+      content="Cartel de recepción de Centro Fit: equipos que hoy no están disponibles."
+    />
+    <title>Cartel de recepción · Centro Fit</title>
+    <link rel="manifest" href="./cartel.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./cartel.css" />
+    <script src="./cartel.js" defer></script>
+  </head>
+  <body class="sign">
+    <header class="sign-bar">
+      <div class="brand">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <div>
+          <p class="brand-name">CENTRO FIT</p>
+          <p class="brand-sub">Disponibilidad de equipos</p>
+        </div>
+      </div>
+      <div class="status">
+        <span class="status-dot" id="network-dot" aria-hidden="true"></span>
+        <span id="network-label">En línea</span>
+        <time id="today" class="today"></time>
+        <time id="clock" class="clock">--:--</time>
+      </div>
+    </header>
+
+    <main class="sign-main">
+      <section id="setup-view" class="panel setup" hidden>
+        <h1>Configura este cartel</h1>
+        <p class="muted">
+          Este cartel es una pantalla de solo lectura. Captura la dirección del servidor y el
+          token de un dispositivo del kiosco creado en el panel.
+        </p>
+        <form id="setup-form" novalidate>
+          <label for="api-url">Dirección del servidor</label>
+          <input
+            id="api-url"
+            name="apiUrl"
+            type="url"
+            inputmode="url"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="http://127.0.0.1:8000"
+            required
+          />
+          <label for="device-token">Token del dispositivo</label>
+          <input
+            id="device-token"
+            name="token"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Token generado en el panel"
+            required
+          />
+          <p id="setup-error" class="error" role="alert" hidden></p>
+          <div class="setup-actions">
+            <button type="submit" class="primary">Guardar y probar conexión</button>
+            <button type="button" id="setup-cancel" class="secondary" hidden>
+              Volver al cartel
+            </button>
+          </div>
+        </form>
+        <p class="hint">
+          Crea un dispositivo aparte en el panel («Cartel de recepción») para poder revocar este
+          cartel sin detener el kiosco. El token se guarda solo en este navegador.
+        </p>
+      </section>
+
+      <section id="sign-view" class="sign-view" hidden>
+        <div class="sign-headline">
+          <h1>Equipos no disponibles</h1>
+          <p id="sign-subtitle" class="muted">
+            Estas máquinas están en mantenimiento o fuera de servicio. Pregunta en recepción por
+            una alternativa.
+          </p>
+        </div>
+        <p id="sign-offline" class="sign-banner" role="status" hidden>
+          Sin conexión con el servidor: se muestra la última lista conocida.
+        </p>
+        <p id="sign-loading" class="sign-loading" role="status">Consultando equipos…</p>
+        <p id="sign-error" class="sign-banner sign-banner-error" role="alert" hidden>
+          No se pudo consultar el estado de los equipos. Avisa al personal del club.
+        </p>
+        <ul id="equipment-list" class="equipment-grid" aria-label="Equipos no disponibles"></ul>
+        <div id="sign-empty" class="sign-empty" hidden>
+          <span class="sign-empty-mark" aria-hidden="true">✓</span>
+          <p class="sign-empty-title">Todos los equipos están operativos</p>
+          <p class="muted">Disfruta tu entrenamiento.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="sign-footer">
+      <span id="updated-at">Sin actualizar</span>
+      <span class="sign-footer-note">Si una máquina no enciende, avisa en recepción.</span>
+      <button type="button" id="open-setup" class="link">Configurar cartel</button>
+    </footer>
+  </body>
+</html>

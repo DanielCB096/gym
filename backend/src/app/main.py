@@ -22,6 +22,7 @@ from app.modules.access.models import (
     AccessDirection,
     AccessMemberNotFound,
     AccessRequest,
+    AccessSettings,
     AccessSnapshot,
     AccessWindow,
 )
@@ -44,11 +45,14 @@ from app.modules.access.kiosk import (
 )
 from app.modules.access.offline_store import SQLiteAccessStore
 from app.modules.access.service import (
+    MAX_ANTIPASSBACK_SECONDS,
     access_event_item,
     access_today_summary,
+    get_access_settings,
     list_access_events,
     record_access_event,
     record_manual_access,
+    update_antipassback_seconds,
 )
 from app.modules.classes import (
     ClassRoomItem,
@@ -348,6 +352,7 @@ from app.modules.memberships.service import (
     MembershipNotFound,
     MembershipPaymentNotAllowed,
     MembershipState,
+    PlanNotFound,
     PlanUnavailable,
     assign_membership_plan,
     cancel_membership,
@@ -361,6 +366,7 @@ from app.modules.memberships.service import (
     retry_failed_charge,
     start_first_charge,
     update_member,
+    update_plan_daily_entry_limit,
 )
 from app.modules.notifications import (
     MemberNotificationItem,
@@ -2577,6 +2583,11 @@ class PlanResponse(BaseModel):
     duration_days: int
     price_cents: int
     currency: str
+    daily_entry_limit: int | None
+
+
+class PlanDailyEntryLimitRequest(BaseModel):
+    daily_entry_limit: int | None = Field(ge=1)
 
 
 class AssignPlanRequest(BaseModel):
@@ -2693,6 +2704,15 @@ class KioskDeviceCreatedResponse(KioskDeviceResponse):
 
 class KioskDeviceCreateRequest(BaseModel):
     label: str = Field(min_length=1, max_length=80)
+
+
+class AccessSettingsResponse(BaseModel):
+    antipassback_seconds: int
+    updated_at: datetime
+
+
+class AccessSettingsRequest(BaseModel):
+    antipassback_seconds: int = Field(ge=0, le=MAX_ANTIPASSBACK_SECONDS)
 
 
 class KioskCheckInRequest(BaseModel):
@@ -4088,16 +4108,38 @@ def list_plans(
     plans = session.exec(
         select(Plan).where(Plan.is_active.is_(True)).order_by(Plan.name, Plan.id)
     ).all()
-    return [
-        PlanResponse(
-            id=plan.id,
-            name=plan.name,
-            duration_days=plan.duration_days,
-            price_cents=plan.price_cents,
-            currency=plan.currency,
+    return [_plan_response(plan) for plan in plans]
+
+
+def _plan_response(plan: Plan) -> PlanResponse:
+    return PlanResponse(
+        id=plan.id,
+        name=plan.name,
+        duration_days=plan.duration_days,
+        price_cents=plan.price_cents,
+        currency=plan.currency,
+        daily_entry_limit=plan.daily_entry_limit,
+    )
+
+
+@app.patch(
+    "/admin/plans/{plan_id}",
+    response_model=PlanResponse,
+    tags=["member administration"],
+)
+def update_plan_daily_entry_limit_endpoint(
+    plan_id: UUID,
+    request: PlanDailyEntryLimitRequest,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("settings.manage"))],
+) -> PlanResponse:
+    try:
+        plan = update_plan_daily_entry_limit(
+            session, plan_id, daily_entry_limit=request.daily_entry_limit
         )
-        for plan in plans
-    ]
+    except PlanNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return _plan_response(plan)
 
 
 @app.patch(
@@ -4385,6 +4427,39 @@ def kiosk_equipment(
             for item in list_kiosk_equipment_notices(session)
         ]
     )
+
+
+def _access_settings_response(settings: AccessSettings) -> AccessSettingsResponse:
+    return AccessSettingsResponse(
+        antipassback_seconds=settings.antipassback_seconds,
+        updated_at=settings.updated_at,
+    )
+
+
+@app.get(
+    "/admin/access/settings",
+    response_model=AccessSettingsResponse,
+    tags=["access administration"],
+)
+def get_access_settings_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("settings.manage"))],
+) -> AccessSettingsResponse:
+    return _access_settings_response(get_access_settings(session))
+
+
+@app.patch(
+    "/admin/access/settings",
+    response_model=AccessSettingsResponse,
+    tags=["access administration"],
+)
+def update_access_settings_endpoint(
+    request: AccessSettingsRequest,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("settings.manage"))],
+) -> AccessSettingsResponse:
+    settings = update_antipassback_seconds(session, request.antipassback_seconds)
+    return _access_settings_response(settings)
 
 
 @app.get(

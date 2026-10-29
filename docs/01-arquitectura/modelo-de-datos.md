@@ -122,7 +122,7 @@ La migración inicial materializa únicamente el flujo prioritario de socios, pl
 | Tabla | Responsabilidad | Restricciones principales |
 |---|---|---|
 | `members` | identidad y contacto mínimo del socio | UUID, correo normalizado único cuando existe, estado de perfil separado del estado de membresía, `credit_limit_cents` nullable (`NULL` = sin tope, `>= 0`) |
-| `plans` | configuración vendible de un plan | código único, duración positiva, importe en centavos y moneda |
+| `plans` | configuración vendible de un plan | código único, duración positiva, importe en centavos y moneda, `daily_entry_limit` nullable (`NULL` = sin límite, `>= 1`) |
 | `memberships` | vigencia y estado del plan asignado | FKs restrictivas a socio/plan, periodo válido, estado controlado y máximo de una membresía no terminal por socio |
 | `member_consents` | aceptación y revocación de documentos | historial con versión y fecha; no almacena datos médicos |
 | `payment_methods` | referencia tokenizada del proveedor | token del proveedor cifrado, nunca PAN/CVV; un solo método predeterminado activo por socio |
@@ -243,6 +243,14 @@ La migración `20261028_0042_kiosk_access.py` agrega tres tablas para el primer 
 | `kiosk_attempts` | intentos fallidos del dispositivo, sin el código capturado | FK en cascada al kiosco, resultado `invalid` con CHECK, `occurred_at` e índice por dispositivo/fecha; el límite de 10 por minuto se calcula sobre esta tabla |
 
 El código solo prueba identidad: la decisión de entrada la sigue tomando `evaluate_access` con un `AccessSnapshot` armado desde la membresía más reciente, y el resultado se persiste en `access_events` (no en una tabla nueva) con `source = "reader"` y `reader_id = "Kiosco <etiqueta>"`. Un código solo se consume si el `UPDATE ... WHERE consumed_at IS NULL` afecta una fila, así que dos kioscos que lo capturen a la vez no pueden conceder dos entradas. Los intentos válidos no se copian a `kiosk_attempts`, y ni el código en claro ni el token aparecen en la tabla ni en la respuesta del listado de dispositivos; el token se devuelve una sola vez al crear el dispositivo. La vista previa crea estas tablas con `create_all` y no necesita parche porque son tablas nuevas. El kiosco también lee la tabla `equipment` de mantenimiento a través de `GET /kiosk/equipment` (solo lectura, sin tablas nuevas) para mostrar los equipos en mantenimiento o fuera de servicio.
+
+El límite diario de entradas no agrega tablas: la migración `20261028_0043_plan_daily_entry_limit.py` añade `plans.daily_entry_limit` (`INTEGER` nullable, CHECK `ck_plans_daily_entry_limit`: `NULL` o `>= 1`) y el conteo se calcula sobre `access_events` (entradas autorizadas del socio dentro del día local del club), de modo que no hay contador que reiniciar ni job nocturno. Un plan con `NULL` conserva el comportamiento sin límite.
+
+El control de duplicados agrega una tabla de política, no de eventos: `20261028_0044_access_antipassback_settings.py` crea `access_settings` con una sola fila (`id = 1`) y `antipassback_seconds` (`INTEGER NOT NULL`, `server_default 0`, CHECK `ck_access_settings_antipassback_range`: `0`–`3600`), más `updated_at`. `0` desactiva la regla y es el valor que siembra la migración, así que no cambia el comportamiento existente. La última entrada del socio se sigue leyendo de `access_events` (`authorized = true`, `direction = entry`, sin importar `source`); no hay contador ni tabla nueva de eventos.
+
+| Tabla | Responsabilidad | Restricciones principales |
+|---|---|---|
+| `access_settings` | política global del club que no depende del socio ni del plan | fila única `id = 1`, `antipassback_seconds` entre `0` y `3600` con CHECK (donde `0` desactiva), `updated_at` con `server_default now()`; se edita con `GET/PATCH /admin/access/settings` y `settings.manage` |
 
 ## Identidad y autorización inicial
 

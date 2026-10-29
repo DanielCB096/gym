@@ -14,6 +14,7 @@ from app.modules.access.models import (
     AccessMemberNotFound,
     AccessReason,
     AccessRequest,
+    AccessSettings,
     AccessSnapshot,
     AccessWindow,
     utc_now,
@@ -24,6 +25,8 @@ from app.timezone import DEFAULT_TIMEZONE, club_timezone
 DEFAULT_ACCESS_PAGE_SIZE = 25
 MAX_ACCESS_PAGE_SIZE = 100
 ACCESS_STATES = ("authorized", "denied", "manual")
+DEFAULT_ANTIPASSBACK_SECONDS = 0
+MAX_ANTIPASSBACK_SECONDS = 3600
 
 
 def evaluate_access(
@@ -412,6 +415,97 @@ def access_today_summary(
     )
     row = session.exec(statement).one()
     return AccessTodaySummary(entries=int(row[0] or 0), denied=int(row[1] or 0))
+
+
+def count_member_entries_today(
+    session: Session,
+    member_id: UUID,
+    *,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    now: datetime | None = None,
+) -> int:
+    """Count a member's authorized entries in the club's current local day.
+
+    Both the kiosk and the manual reception entry count: the limit is about how
+    many times the member came in, not which door let them through.
+    """
+    moment = _as_utc(now or utc_now())
+    local_timezone = club_timezone(timezone_name)
+    local_now = moment.astimezone(local_timezone)
+    start_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = start_local.astimezone(timezone.utc)
+    end = (start_local + timedelta(days=1)).astimezone(timezone.utc)
+
+    statement = select(func.count(AccessEvent.id)).where(
+        AccessEvent.member_id == member_id,
+        AccessEvent.authorized.is_(True),
+        AccessEvent.direction == AccessDirection.ENTRY.value,
+        AccessEvent.occurred_at >= start,
+        AccessEvent.occurred_at < end,
+    )
+    return int(session.exec(statement).one() or 0)
+
+
+def read_antipassback_seconds(session: Session) -> int:
+    """Return the club's antipassback window without creating the settings row."""
+    settings = session.get(AccessSettings, 1)
+    return settings.antipassback_seconds if settings is not None else DEFAULT_ANTIPASSBACK_SECONDS
+
+
+def get_access_settings(session: Session) -> AccessSettings:
+    """Return the singleton settings row, creating it with defaults if needed."""
+    settings = session.get(AccessSettings, 1)
+    if settings is None:
+        settings = AccessSettings(id=1)
+        session.add(settings)
+        session.commit()
+        session.refresh(settings)
+    return settings
+
+
+def update_antipassback_seconds(
+    session: Session,
+    seconds: int,
+    *,
+    now: datetime | None = None,
+) -> AccessSettings:
+    """Set the club's antipassback window; ``0`` disables the rule."""
+    if not 0 <= seconds <= MAX_ANTIPASSBACK_SECONDS:
+        raise ValueError(
+            f"antipassback_seconds must be between 0 and {MAX_ANTIPASSBACK_SECONDS}"
+        )
+    settings = session.get(AccessSettings, 1)
+    if settings is None:
+        settings = AccessSettings(id=1, antipassback_seconds=seconds)
+    else:
+        settings.antipassback_seconds = seconds
+    settings.updated_at = now or utc_now()
+    session.add(settings)
+    session.commit()
+    session.refresh(settings)
+    return settings
+
+
+def last_member_entry_at(
+    session: Session,
+    member_id: UUID,
+    *,
+    before: datetime | None = None,
+) -> datetime | None:
+    """Return the member's most recent authorized entry, including manual ones.
+
+    Manual reception entries count: a member who already came in through the
+    front desk must not bypass the window with a code right after.
+    """
+    statement = select(func.max(AccessEvent.occurred_at)).where(
+        AccessEvent.member_id == member_id,
+        AccessEvent.authorized.is_(True),
+        AccessEvent.direction == AccessDirection.ENTRY.value,
+    )
+    if before is not None:
+        statement = statement.where(AccessEvent.occurred_at < _as_utc(before))
+    value = session.exec(statement).one()
+    return _as_utc(value) if value is not None else None
 
 
 def _as_utc(value: datetime) -> datetime:

@@ -164,6 +164,12 @@ type BackendPlan = {
   duration_days: number;
   price_cents: number;
   currency: string;
+  daily_entry_limit: number | null;
+};
+
+type AccessSettings = {
+  antipassback_seconds: number;
+  updated_at: string;
 };
 
 type BackendMembershipState = {
@@ -3513,6 +3519,35 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
   const [newToken, setNewToken] = useState<string | null>(null);
   const [createdLabel, setCreatedLabel] = useState("");
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [plans, setPlans] = useState<BackendPlan[] | null>(null);
+  const [planDrafts, setPlanDrafts] = useState<Record<string, string>>({});
+  const [savingPlanId, setSavingPlanId] = useState<string | null>(null);
+  const [plansError, setPlansError] = useState("");
+  const [accessSettings, setAccessSettings] = useState<AccessSettings | null>(null);
+  const [antipassbackDraft, setAntipassbackDraft] = useState("");
+  const [savingAntipassback, setSavingAntipassback] = useState(false);
+  const [accessSettingsError, setAccessSettingsError] = useState("");
+
+  const loadPlans = async () => {
+    setPlansError("");
+    try {
+      const response = await fetch("/api/admin/plans", { cache: "no-store" });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as BackendPlan[] | { detail?: string };
+      if (!response.ok || !Array.isArray(payload)) {
+        throw new Error((payload as { detail?: string }).detail || "No se pudieron cargar los planes.");
+      }
+      setPlans(payload);
+      setPlanDrafts(Object.fromEntries(
+        payload.map((plan) => [plan.id, plan.daily_entry_limit == null ? "" : String(plan.daily_entry_limit)]),
+      ));
+    } catch (loadError) {
+      setPlansError(loadError instanceof Error ? loadError.message : "No se pudieron cargar los planes.");
+    }
+  };
 
   const loadDevices = async () => {
     setLoading(true);
@@ -3533,9 +3568,28 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
     }
   };
 
+  const loadAccessSettings = async () => {
+    setAccessSettingsError("");
+    try {
+      const response = await fetch("/api/admin/access/settings", { cache: "no-store" });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as AccessSettings & { detail?: string };
+      if (!response.ok) throw new Error(payload.detail || "No se pudo cargar el control de duplicados.");
+      setAccessSettings(payload);
+      setAntipassbackDraft(String(payload.antipassback_seconds));
+    } catch (loadError) {
+      setAccessSettingsError(loadError instanceof Error ? loadError.message : "No se pudo cargar el control de duplicados.");
+    }
+  };
+
   useEffect(() => {
     if (canManage) {
       void loadDevices();
+      void loadPlans();
+      void loadAccessSettings();
     }
   }, []);
 
@@ -3599,6 +3653,73 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
       onToast("Token copiado al portapapeles.");
     } catch {
       onToast("No se pudo copiar automáticamente; selecciona el token y cópialo.");
+    }
+  };
+
+  const savePlanLimit = async (plan: BackendPlan) => {
+    const raw = (planDrafts[plan.id] ?? "").trim();
+    const limit = raw === "" ? null : Number(raw);
+    if (limit !== null && (!Number.isInteger(limit) || limit < 1)) {
+      onToast("El límite debe ser un entero mayor o igual a 1, o quedar vacío.");
+      return;
+    }
+    setSavingPlanId(plan.id);
+    try {
+      const response = await fetch(`/api/admin/plans/${encodeURIComponent(plan.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ daily_entry_limit: limit }),
+      });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as BackendPlan & { detail?: string };
+      if (!response.ok) throw new Error(payload.detail || "No se pudo guardar el límite.");
+      setPlans((current) => current?.map((item) => (item.id === plan.id ? payload : item)) ?? current);
+      setPlanDrafts((current) => ({
+        ...current,
+        [plan.id]: payload.daily_entry_limit == null ? "" : String(payload.daily_entry_limit),
+      }));
+      onToast(payload.daily_entry_limit == null
+        ? `Límite diario de ${plan.name} retirado.`
+        : `${plan.name}: ${payload.daily_entry_limit} ${payload.daily_entry_limit === 1 ? "entrada" : "entradas"} por día.`);
+    } catch (saveError) {
+      onToast(saveError instanceof Error ? saveError.message : "No se pudo guardar el límite.");
+    } finally {
+      setSavingPlanId(null);
+    }
+  };
+
+  const saveAntipassback = async () => {
+    const raw = antipassbackDraft.trim();
+    const seconds = Number(raw);
+    if (!Number.isInteger(seconds) || seconds < 0 || seconds > 3600) {
+      onToast("La ventana debe ser un entero entre 0 y 3600 segundos.");
+      return;
+    }
+    setSavingAntipassback(true);
+    try {
+      const response = await fetch("/api/admin/access/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ antipassback_seconds: seconds }),
+      });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as AccessSettings & { detail?: string };
+      if (!response.ok) throw new Error(payload.detail || "No se pudo guardar el control de duplicados.");
+      setAccessSettings(payload);
+      setAntipassbackDraft(String(payload.antipassback_seconds));
+      onToast(payload.antipassback_seconds === 0
+        ? "Control de duplicados desactivado."
+        : `Control de duplicados activo: ${payload.antipassback_seconds} segundos.`);
+    } catch (saveError) {
+      onToast(saveError instanceof Error ? saveError.message : "No se pudo guardar el control de duplicados.");
+    } finally {
+      setSavingAntipassback(false);
     }
   };
 
@@ -3713,6 +3834,118 @@ function KioskView({ permissions, onUnauthorized, onToast }: { permissions: stri
         <div className="table-bottom">
           <span>{(devices ?? []).length} {(devices ?? []).length === 1 ? "kiosco registrado" : "kioscos registrados"}</span>
           <span>Token SHA-256 · intentos limitados por dispositivo</span>
+        </div>
+      </section>
+
+      <section className="panel full-panel">
+        <div className="panel-header access-list-heading">
+          <div>
+            <p className="section-kicker">POLÍTICA DE ACCESO</p>
+            <h2>Límite diario de entradas</h2>
+          </div>
+          <span className="role-count">{(plans ?? []).filter((plan) => plan.daily_entry_limit != null).length}</span>
+        </div>
+        <p className="panel-hint">
+          El kiosco cuenta las entradas autorizadas del día del club, incluidas las que recepción
+          registra a mano, y rechaza el código cuando el socio ya alcanzó el límite de su plan.
+          Deja el campo vacío para un plan sin límite. Una entrada manual siempre se permite y
+          solo suma al conteo.
+        </p>
+        {plansError && <div className="login-error" role="alert">{plansError}</div>}
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>PLAN</th>
+                <th>DURACIÓN</th>
+                <th>ENTRADAS POR DÍA</th>
+                <th>ESTADO</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {plans === null ? <tr><td colSpan={5} className="empty-row">{plansError ? "No se pudieron cargar los planes." : "Cargando planes…"}</td></tr>
+                : plans.length === 0 ? <tr><td colSpan={5} className="empty-row">No hay planes activos.</td></tr>
+                : plans.map((plan) => {
+                  const saving = savingPlanId === plan.id;
+                  const draft = planDrafts[plan.id] ?? "";
+                  const unchanged = draft === (plan.daily_entry_limit == null ? "" : String(plan.daily_entry_limit));
+                  return (
+                    <tr key={plan.id}>
+                      <td><strong>{plan.name}</strong></td>
+                      <td>{plan.duration_days} días</td>
+                      <td>
+                        <input
+                          className="kiosk-limit-input"
+                          type="number"
+                          min={1}
+                          step={1}
+                          inputMode="numeric"
+                          placeholder="Sin límite"
+                          value={draft}
+                          disabled={saving}
+                          aria-label={`Entradas por día del plan ${plan.name}`}
+                          onChange={(event) => setPlanDrafts((current) => ({ ...current, [plan.id]: event.target.value }))}
+                        />
+                      </td>
+                      <td>{plan.daily_entry_limit == null ? "Sin límite" : `${plan.daily_entry_limit} al día`}</td>
+                      <td>
+                        <button type="button" className="button button-secondary" disabled={saving || unchanged} onClick={() => void savePlanLimit(plan)}>
+                          {saving ? "Guardando…" : "Guardar"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel full-panel">
+        <div className="panel-header access-list-heading">
+          <div>
+            <p className="section-kicker">POLÍTICA DE ACCESO</p>
+            <h2>Control de duplicados</h2>
+          </div>
+          <span className="role-count">{accessSettings == null ? "…" : accessSettings.antipassback_seconds === 0 ? "Off" : `${accessSettings.antipassback_seconds}s`}</span>
+        </div>
+        <p className="panel-hint">
+          Bloquea un segundo código del mismo socio dentro de la ventana contada desde su última
+          entrada autorizada, incluidas las entradas manuales de recepción. Usa <strong>0</strong>
+          para desactivarlo. La entrada manual de recepción nunca se bloquea; solo cuenta para la
+          ventana del kiosco.
+        </p>
+        {accessSettingsError && <div className="login-error" role="alert">{accessSettingsError}</div>}
+        <div className="kiosk-antipassback-row">
+          <label htmlFor="antipassback-seconds">Ventana en segundos</label>
+          <input
+            id="antipassback-seconds"
+            className="kiosk-limit-input"
+            type="number"
+            min={0}
+            max={3600}
+            step={5}
+            inputMode="numeric"
+            value={antipassbackDraft}
+            disabled={savingAntipassback || accessSettings == null}
+            onChange={(event) => setAntipassbackDraft(event.target.value)}
+          />
+          <span className="kiosk-antipassback-state">
+            {accessSettings == null
+              ? "Cargando…"
+              : accessSettings.antipassback_seconds === 0
+                ? "Desactivado: se permiten entradas seguidas."
+                : `Activo: espera ${accessSettings.antipassback_seconds} segundos entre entradas del mismo socio.`}
+          </span>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={savingAntipassback || accessSettings == null || antipassbackDraft === String(accessSettings.antipassback_seconds)}
+            onClick={() => void saveAntipassback()}
+          >
+            {savingAntipassback ? "Guardando…" : "Guardar"}
+          </button>
         </div>
       </section>
 

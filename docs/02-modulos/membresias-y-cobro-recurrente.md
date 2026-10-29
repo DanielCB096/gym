@@ -176,8 +176,11 @@ La pasarela real, el cobro recurrente automático, las promociones/descuentos y 
 
 La **app del socio** consulta sus pagos de membresía desde `GET /member/payments` (Bearer, paginado, más recientes primero) con importe, moneda, método, fecha, periodo, plan y nota, sin cobrador ni turno de caja. Es de solo lectura: el cobro sigue siendo exclusivo del panel con `members.manage` y turno abierto. Ver ADR-012.
 
+El plan ya guarda su **límite diario de entradas** (`plans.daily_entry_limit`, migración `20261028_0043`): `NULL` significa sin límite y el CHECK exige `>= 1`. Se fija o retira con `PATCH /admin/plans/{plan_id}` (`settings.manage`) desde la tarjeta «Límite diario de entradas» de la página «Kiosco» del panel; el kiosco lo aplica contando entradas autorizadas del día del club, incluidas las manuales. El alta y la edición completa de planes siguen pendientes: el panel solo expone este campo y `GET /admin/plans` lista los planes activos. Ver ADR-025.
+
 ## 14. Historial de cambios
 
+- 2026-10-28: **límite diario de entradas por plan** (`plans.daily_entry_limit`, migración `20261028_0043`, ADR-025). `PATCH /admin/plans/{plan_id}` con `settings.manage` fija o retira el límite; el kiosco lo aplica por día del club contando entradas autorizadas (también las manuales). No cambia el cobro, la vigencia ni las reglas de membresía.
 - 2026-10-27: **consulta de pagos de membresía desde la app del socio** (`GET /member/payments`, solo lectura, paginada y acotada a la sesión), sin migración ni cambios en el cobro manual. El estado de cuenta de la tienda se expone por separado en `GET /member/account`.
 - 2026-10-21: **cobro manual y renovación de membresía en mostrador** (migración `20261021_0023`). `POST /admin/members/{id}/membership/payments` registra un pago idempotente con efectivo, tarjeta declarada o transferencia, exige turno abierto, liga el pago al turno y crea/renueva la membresía. `payments` gana periodo, turno, cobrador y nota; `payment_attempts` acepta tarjeta declarada sin token. El panel agrega el cobro y el turno separa los cobros de membresía; la activación sin cobro queda como cortesía explícita.
 - 2026-10-15: documento inicial con alcance, flujos, entidades y criterios de aceptación

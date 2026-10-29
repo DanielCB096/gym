@@ -43,6 +43,10 @@ class PlanUnavailable(BillingError):
     pass
 
 
+class PlanNotFound(BillingError):
+    pass
+
+
 class ConsentRequired(BillingError):
     pass
 
@@ -561,6 +565,25 @@ def _membership_state(
         previous_status=previous_status,
         plan_changed=plan_changed,
     )
+
+
+def update_plan_daily_entry_limit(
+    session: Session,
+    plan_id: UUID,
+    *,
+    daily_entry_limit: int | None,
+) -> Plan:
+    """Set or clear the plan's per-club-day entry limit for the kiosk."""
+    if daily_entry_limit is not None and daily_entry_limit < 1:
+        raise ValueError("daily_entry_limit must be at least 1 or null")
+    plan = session.get(Plan, plan_id)
+    if plan is None:
+        raise PlanNotFound("Plan was not found")
+    plan.daily_entry_limit = daily_entry_limit
+    session.add(plan)
+    session.commit()
+    session.refresh(plan)
+    return plan
 
 
 def assign_membership_plan(

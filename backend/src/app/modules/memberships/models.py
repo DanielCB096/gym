@@ -81,6 +81,10 @@ class Plan(SQLModel, table=True):
             "billing_interval_days IS NULL OR billing_interval_days > 0",
             name="ck_plans_billing_interval_positive",
         ),
+        CheckConstraint(
+            "daily_entry_limit IS NULL OR daily_entry_limit >= 1",
+            name="ck_plans_daily_entry_limit",
+        ),
         UniqueConstraint("code", name="uq_plans_code"),
     )
 
@@ -94,6 +98,7 @@ class Plan(SQLModel, table=True):
         sa_column=Column(String(3), nullable=False, server_default=text("'MXN'")),
     )
     billing_interval_days: int | None = None
+    daily_entry_limit: int | None = None
     is_active: bool = Field(
         default=True,
         sa_column=Column(Boolean, nullable=False, server_default=text("true")),

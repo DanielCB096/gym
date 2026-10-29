@@ -29,6 +29,7 @@ ADDED_COLUMNS = {
         "client_reference": "VARCHAR(64)",
     },
     "members": {"credit_limit_cents": "BIGINT"},
+    "plans": {"daily_entry_limit": "INTEGER"},
     "member_account_statement_deliveries": {
         "retry_of_id": "CHAR(32)",
         "purpose": "VARCHAR(16) NOT NULL DEFAULT 'statement'",

@@ -1,0 +1,20 @@
+{
+  "name": "Cartel de recepción · Centro Fit",
+  "short_name": "Cartel Centro Fit",
+  "description": "Equipos que hoy no están disponibles en el club.",
+  "lang": "es-MX",
+  "start_url": "./cartel.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#0B1220",
+  "theme_color": "#0B1220",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

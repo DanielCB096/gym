@@ -1,10 +1,14 @@
-const CACHE_NAME = "centrofit-kiosk-v1";
+const CACHE_NAME = "centrofit-kiosk-v2";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
   "./manifest.webmanifest",
+  "./cartel.html",
+  "./cartel.css",
+  "./cartel.js",
+  "./cartel.webmanifest",
   "./icon.svg",
 ];
 
@@ -39,14 +43,15 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (request.mode === "navigate") {
+    const page = url.pathname.endsWith("/cartel.html") ? "./cartel.html" : "./index.html";
     event.respondWith(
       fetch(request)
         .then((response) => {
           const copy = response.clone();
-          void caches.open(CACHE_NAME).then((cache) => cache.put("./index.html", copy));
+          void caches.open(CACHE_NAME).then((cache) => cache.put(page, copy));
           return response;
         })
-        .catch(() => caches.match("./index.html")),
+        .catch(() => caches.match(page)),
     );
     return;
   }
