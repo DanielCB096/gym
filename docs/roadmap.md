@@ -20,7 +20,7 @@
 
 ## Fase 3
 
-- servicios extra (nutrición, entrenador personalizado, casilleros, eventos)
+- servicios extra (nutrición, entrenador personalizado, fisioterapia —diseñada en ADR-039, sin implementar—, casilleros, eventos)
 - optimización de rendimiento y multi-sucursal
 - automatización avanzada de cumplimiento y reporting
 

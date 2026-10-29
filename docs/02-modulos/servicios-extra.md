@@ -4,6 +4,8 @@
 
 Este módulo define la arquitectura base para servicios futuros que no están activos hoy, pero que pueden añadirse sin rediseñar la plataforma. El enfoque es un modelo genérico de servicio/producto con recurso, agenda y precio.
 
+La fisioterapia nació de este modelo, pero su cobro solo por asistencia y su paquete mensual con descuento tienen reglas propias y ya viven en un documento propio ([fisioterapia.md](fisioterapia.md), ADR-039). Este documento sigue cubriendo la nutrición, el entrenador personalizado, los casilleros y los eventos.
+
 ## 2. Actores y permisos
 
 - gerente: activar servicios y definir precios
@@ -78,7 +80,7 @@ Este módulo define la arquitectura base para servicios futuros que no están ac
 
 ## 11. Preguntas abiertas
 
-- ¿qué servicio se activará primero?
+- ¿qué servicio se activará primero? La fisioterapia será el primero y ya tiene diseño propio (ADR-039)
 - ¿debe existir un catálogo unificado de productos y servicios?
 
 ## 12. Criterios de aceptación
@@ -94,3 +96,4 @@ En diseño
 ## 14. Historial de cambios
 
 - 2026-10-15: documento inicial de módulo
+- 2026-10-29: la fisioterapia sale del modelo genérico y estrena documento propio (ADR-039)

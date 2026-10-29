@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-29 · Plan del módulo de fisioterapia (diseño, sin implementar)
+
+- **Tres políticas cerradas**: solo se cobra la sesión a la que el socio llegó —una inasistencia o una llegada a la que ya no se le puede dar la sesión no genera cargo ni descuenta crédito—, la agenda la lleva recepción y el socio solo consulta su saldo y sus citas en la app con un aviso cuando se le agenda, y el paquete de dos sesiones mensuales se paga en una sola exhibición con 20 % de descuento.
+- **Modelo**: cuatro tablas nuevas (`physio_services`, `physio_offers`, `physio_packs`, `physio_appointments`) más `sales.physio_appointment_id`; el paquete es un saldo prepagado sin estado persistido, con vigencia de 31 días y consumo en orden de vencimiento. La sesión suelta se cobra al marcar la asistencia como una venta de servicio con SKU `FISIO` en el ledger existente, y un paquete agotado pide la forma de pago para cobrar esa sesión en el mismo paso.
+- **Agenda**: la cita se agenda, mueve y cancela desde el panel; la marca se permite desde el inicio hasta 24 horas después del fin, con corrección `attended ↔ no_show` en esa ventana, y el cierre del día deja en `no_show` lo que nadie marcó sin tocar saldos. El traslape se valida en el servicio y la doble marca se evita con bloqueo de fila, con prueba opt-in contra PostgreSQL.
+- **Incrementos**: (1) catálogo, paquetes y agenda sin app; (2) consulta de solo lectura en la app y los tres avisos de la cita; (3) reporte del consultorio, recordatorio de 24 horas y política de devolución o extensión del paquete.
+- **Documentación**: nuevo módulo `docs/02-modulos/fisioterapia.md`, ADR-039, enlace desde servicios extra, roadmap e índice de documentación. No hay código, migraciones ni cambios de esquema todavía.
+
 ## 2026-10-29 · El aviso de revisión se cierra al revisar
 
 - **Estado nuevo en la bandeja del personal**: `staff_notifications.resolved_at` (migración `20261029_0054_staff_notification_resolved.py`, columna anulable; `preview_patch.py` la agrega en la vista previa). Es distinta de `read_at`: un aviso puede estar leído y seguir pendiente, o cerrarse sin que nadie lo abriera.
