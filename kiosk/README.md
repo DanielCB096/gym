@@ -12,6 +12,8 @@ la entrada o la deniega con el motor de acceso del club.
 - Token guardado solo en `localStorage` del equipo; se puede revocar desde el panel.
 - Manifest y service worker para instalar la PWA y conservar el shell sin conexión.
 - Aviso explícito de que el registro de entrada necesita el servidor; no hay check-in offline.
+- Banda «Equipos no disponibles hoy» con la flota en mantenimiento o fuera de servicio,
+  refrescada cada minuto desde `GET /kiosk/equipment`.
 
 ## Cómo ejecutarlo
 
@@ -51,11 +53,18 @@ siguiente intento y pide un token nuevo.
    responde con la decisión del motor de acceso.
 4. La entrada queda en la misma bitácora que los accesos manuales y de lector.
 
+El kiosco también consulta `GET /kiosk/equipment` con el mismo token para listar la
+flota no disponible. Es un aviso de solo lectura: no bloquea el check-in ni consulta
+la lista al validar un código.
+
 ## Reglas y límites
 
 - 6 códigos por socio cada 10 minutos.
 - 10 intentos por kiosco cada minuto.
 - Códigos guardados como HMAC; el token del kiosco como SHA-256.
+- La lista de equipos no disponibles se refresca cada minuto o al recuperar la red;
+  si la consulta falla se conserva la última conocida, así que un cambio puede tardar
+  hasta un minuto en verse y no hay push.
 - El kiosco no sustituye la validación de recepción: aplica membresía vigente y
   registra el evento, pero aún no valida horarios, adeudos, aforo ni hardware.
 
@@ -65,3 +74,4 @@ siguiente intento y pide un token nuevo.
 - Modo offline con cola local y sincronización.
 - QR, huella o tarjeta física y apertura de torniquete.
 - Rotación automática de tokens y aprovisionamiento remoto.
+- Cartel de recepción con la flota no disponible y refresco por push.

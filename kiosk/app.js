@@ -5,6 +5,7 @@ const REQUEST_TIMEOUT_MS = 10000;
 const SUCCESS_RESET_MS = 7000;
 const DENIED_RESET_MS = 5000;
 const RATE_LIMIT_RESET_MS = 8000;
+const EQUIPMENT_REFRESH_MS = 60000;
 
 const elements = {
   setupView: document.getElementById("setup-view"),
@@ -24,6 +25,8 @@ const elements = {
   resultMessage: document.getElementById("result-message"),
   resultClose: document.getElementById("result-close"),
   deviceLabel: document.getElementById("device-label"),
+  equipmentNotice: document.getElementById("equipment-notice"),
+  equipmentList: document.getElementById("equipment-list"),
   clock: document.getElementById("clock"),
   networkDot: document.getElementById("network-dot"),
   networkLabel: document.getElementById("network-label"),
@@ -35,7 +38,10 @@ const state = {
   busy: false,
   resetTimer: null,
   submitTimer: null,
+  equipment: [],
 };
+
+let equipmentTimer = null;
 
 function loadConfig() {
   try {
@@ -92,6 +98,7 @@ function openSetup(message) {
   elements.deviceToken.value = state.config.token;
   showSetupError(message || "");
   elements.deviceLabel.textContent = state.config.label;
+  elements.equipmentNotice.hidden = true;
   setView("setup");
 }
 
@@ -278,6 +285,71 @@ async function handleSetupSubmit(event) {
   saveConfig();
   elements.deviceLabel.textContent = state.config.label;
   backToKeypad();
+  startEquipmentPolling();
+}
+
+function renderEquipmentNotices(items) {
+  state.equipment = items;
+  elements.equipmentList.replaceChildren();
+  elements.equipmentNotice.hidden = items.length === 0;
+  for (const item of items) {
+    const row = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "equipment-name";
+    name.textContent = item.location ? `${item.name} · ${item.location}` : item.name;
+    const status = document.createElement("span");
+    status.className = `equipment-status ${
+      item.status === "out_of_service" ? "out_of_service" : "maintenance"
+    }`;
+    status.textContent = item.status_label || "No disponible";
+    row.append(name, status);
+    elements.equipmentList.append(row);
+  }
+}
+
+async function refreshEquipmentNotices() {
+  if (!state.config.apiUrl || !state.config.token) {
+    return;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${state.config.apiUrl}/kiosk/equipment`, {
+      headers: { "X-Kiosk-Token": state.config.token },
+      signal: controller.signal,
+    });
+    if (response.status === 401) {
+      state.config.token = "";
+      saveConfig();
+      renderEquipmentNotices([]);
+      if (!state.busy && state.digits.length === 0) {
+        openSetup("El token del kiosco no es válido o fue revocado. Captura uno nuevo.");
+      }
+      return;
+    }
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json().catch(() => null);
+    if (payload && Array.isArray(payload.items)) {
+      renderEquipmentNotices(payload.items);
+    }
+  } catch {
+    // The last known list stays on screen; check-in does not depend on it.
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function startEquipmentPolling() {
+  if (!state.config.apiUrl || !state.config.token) {
+    return;
+  }
+  if (equipmentTimer !== null) {
+    clearInterval(equipmentTimer);
+  }
+  void refreshEquipmentNotices();
+  equipmentTimer = setInterval(() => void refreshEquipmentNotices(), EQUIPMENT_REFRESH_MS);
 }
 
 function setNetworkStatus() {
@@ -337,7 +409,10 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-window.addEventListener("online", setNetworkStatus);
+window.addEventListener("online", () => {
+  setNetworkStatus();
+  void refreshEquipmentNotices();
+});
 window.addEventListener("offline", setNetworkStatus);
 
 if (typeof navigator.serviceWorker === "object") {
@@ -355,6 +430,7 @@ elements.deviceLabel.textContent = state.config.label;
 
 if (state.config.apiUrl && state.config.token) {
   backToKeypad();
+  startEquipmentPolling();
 } else {
   openSetup(
     state.config.apiUrl

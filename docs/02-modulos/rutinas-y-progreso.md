@@ -122,7 +122,7 @@ Este módulo cubre la creación y asignación de rutinas por parte del entrenado
 ## 7. Integraciones con otros módulos
 
 - Clases y bookings: se puede relacionar la sesión con entrenamiento de grupo o instructor.
-- Mantenimiento de equipo: un ejercicio puede marcar que requiere una máquina específica y quedar bloqueado si está fuera de servicio.
+- Mantenimiento de equipo: un ejercicio puede marcar que requiere una máquina específica y quedar bloqueado si está fuera de servicio. El detalle de la rutina en la app del socio marca con `equipment_status` cada línea cuyo equipo está en mantenimiento o fuera de servicio y resume el recuento en el encabezado.
 - Acceso y membresías: el sistema verifica que el socio tenga vigencia para seguir asignado a rutinas.
 - Comunicación: recordatorios de cumplimiento y seguimiento del entrenador.
 

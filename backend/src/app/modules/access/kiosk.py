@@ -108,6 +108,36 @@ class KioskCheckInResult:
     event_id: UUID
 
 
+@dataclass(frozen=True)
+class KioskEquipmentNotice:
+    name: str
+    location: str | None
+    status: str
+    status_label: str
+
+
+EQUIPMENT_STATUS_MESSAGES: dict[str, str] = {
+    "maintenance": "En mantenimiento",
+    "out_of_service": "Fuera de servicio",
+}
+
+
+def list_kiosk_equipment_notices(session: Session) -> list[KioskEquipmentNotice]:
+    # Imported lazily: the access module never imports maintenance on load, so
+    # the kiosk keeps its own dependency graph (same rule as notices).
+    from app.modules.maintenance.service import list_unavailable_equipment
+
+    return [
+        KioskEquipmentNotice(
+            name=item.name,
+            location=item.location,
+            status=item.status,
+            status_label=EQUIPMENT_STATUS_MESSAGES.get(item.status, item.status),
+        )
+        for item in list_unavailable_equipment(session)
+    ]
+
+
 def issue_member_access_code(
     session: Session,
     member_id: UUID,

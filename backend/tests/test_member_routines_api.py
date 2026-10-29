@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 import pytest
@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.main import app, get_session
 from app.modules.identity.service import ensure_default_access_control, register_user
+from app.modules.maintenance import create_equipment, set_equipment_status
 from app.modules.memberships.models import Member, Membership, Plan
 from app.modules.portal.routines import (
     get_member_progress,
@@ -72,12 +73,13 @@ def _seed_member(session: Session, *, email: str, first_name: str = "Ana"):
     return member.id
 
 
-def _seed_routine(session: Session, *, objective: str = "Fuerza general"):
+def _seed_routine(session: Session, *, objective: str = "Fuerza general", equipment_id=None):
     press = create_exercise(
         session,
         name=f"Press banca {uuid4().hex[:4]}",
         muscle_group="Pecho",
         category="Fuerza",
+        equipment_id=equipment_id,
     )
     squat = create_exercise(
         session,
@@ -131,7 +133,8 @@ def test_member_routine_list_detail_and_progress(monkeypatch) -> None:
         )
         ana_id = _seed_member(session, email="ana@example.com")
         _seed_member(session, email="beto@example.com", first_name="Beto")
-        routine_id = _seed_routine(session)
+        bench = create_equipment(session, name="Banco plano", category="Fuerza")
+        routine_id = _seed_routine(session, equipment_id=bench.id)
         finished = create_assignment(
             session,
             routine_id=routine_id,
@@ -180,6 +183,7 @@ def test_member_routine_list_detail_and_progress(monkeypatch) -> None:
             measured_at=datetime.now(timezone.utc) - timedelta(days=1),
             weight_kg=68,
         )
+        set_equipment_status(session, bench.id, status="maintenance")
         active_id = active.id
 
     def override_session() -> Iterator[Session]:
@@ -218,6 +222,10 @@ def test_member_routine_list_detail_and_progress(monkeypatch) -> None:
             assert payload["plan"][0]["reps"] == "10"
             assert payload["plan"][0]["rest_seconds"] == 60
             assert payload["plan"][0]["load_note"] == "20 kg"
+            # La app del socio marca la línea a partir de este campo: es el estado
+            # vivo del equipo, no el que tenía la rutina al asignarse.
+            assert payload["plan"][0]["equipment_status"] == "maintenance"
+            assert payload["plan"][1]["equipment_status"] is None
             assert len(payload["workouts"]) == 2
             assert payload["workouts"][0]["performed_at"] == (today - timedelta(days=1)).isoformat()
             assert "member_email" not in payload["assignment"]

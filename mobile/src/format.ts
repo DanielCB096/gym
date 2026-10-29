@@ -200,6 +200,18 @@ export function assignmentStatusLabel(status: string): string {
   return ASSIGNMENT_LABELS[status] ?? status;
 }
 
+const EQUIPMENT_UNAVAILABLE_LABELS: Record<string, string> = {
+  maintenance: "Equipo en mantenimiento",
+  out_of_service: "Equipo fuera de servicio",
+};
+
+export function equipmentUnavailableLabel(status: string | null): string | null {
+  if (!status) {
+    return null;
+  }
+  return EQUIPMENT_UNAVAILABLE_LABELS[status] ?? null;
+}
+
 export function goalMetricLabel(metric: string): string {
   return GOAL_METRIC_LABELS[metric] ?? metric;
 }

@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-28 · El kiosco de recepción muestra los equipos que no están disponibles
+
+- **API**: `GET /kiosk/equipment` (token `X-Kiosk-Token`, `200` con `items`) devuelve nombre, ubicación, estado y etiqueta de los equipos en `maintenance`/`out_of_service`, ordenados por estado y nombre. Reutiliza `list_unavailable_equipment` de `maintenance/service.py` con import perezoso; sin tablas, migraciones ni permisos de personal nuevos.
+- **Kiosco**: la PWA pinta la banda «Equipos no disponibles hoy» bajo el teclado, con una fila por equipo y su estado en ámbar o rojo; consulta al arrancar, al recuperar la red y cada minuto, se oculta cuando no hay equipos, conserva la última lista si falla la red y un `401` borra el token y vuelve a configuración. Es un aviso de solo lectura: no bloquea el check-in.
+- **Pruebas**: nuevo `backend/tests/test_kiosk_equipment_api.py` (1 prueba) cubre el `401` sin token y con token falso, la lista solo con equipos no disponibles, las etiquetas, el cambio de estado en caliente y la revocación del dispositivo; la suite del backend queda en **201 pruebas**. Verificación en navegador con «Hack squat · Piso de pesas / Fuera de servicio» y «Banda de correr curva · Cardio / En mantenimiento».
+- **Documentación**: módulos de control de acceso y mantenimiento de equipo, avisos del socio, modelo de datos, ADR-018 y ADR-024 (nota de actualización), deuda técnica, plan de pruebas, roadmap y README de documentación, del backend y del kiosco.
+
+## 2026-10-28 · La app del socio marca el equipo que no está disponible
+
+- **App**: el detalle de la rutina pinta cada línea del plan cuyo `equipment_status` es `maintenance`/`out_of_service` con «Equipo en mantenimiento»/«Equipo fuera de servicio» y el encabezado de Ejercicios suma cuántas líneas están marcadas. `equipmentUnavailableLabel` vive en `mobile/src/format.ts`, espejo de `UNAVAILABLE_EQUIPMENT_STATUSES` del backend. Solo lectura: sin rutas, sin permisos, sin tablas y sin bloquear el registro de series.
+- **Pruebas**: `backend/tests/test_member_routines_api.py` afirma que `/member/routines/{id}` entrega el estado vivo del equipo por línea (`maintenance` en la línea vinculada y `null` en la otra), y el `npm run typecheck` de la app pasa.
+- **Documentación**: módulos de rutinas y progreso, mantenimiento de equipo y avisos del socio; deuda técnica.
+
 ## 2026-10-28 · El backend se niega a arrancar con una zona horaria inválida
 
 - **Arranque**: `validate_club_timezone()` en `src/app/timezone.py` resuelve `APP_TIMEZONE` (o el nombre recibido) y falla con `ValueError` («APP_TIMEZONE no es una zona horaria válida: …») en vez de degradar a UTC. El `lifespan` de `src/app/main.py` la llama antes de montar la vista previa, así que una errata detiene el proceso en vez de correr folios, cortes de caja y reportes un día sin avisar.

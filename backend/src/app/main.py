@@ -39,6 +39,7 @@ from app.modules.access.kiosk import (
     create_kiosk_device,
     issue_member_access_code,
     list_kiosk_devices,
+    list_kiosk_equipment_notices,
     revoke_kiosk_device,
 )
 from app.modules.access.offline_store import SQLiteAccessStore
@@ -2708,6 +2709,17 @@ class KioskCheckInResponse(BaseModel):
     event_id: UUID
 
 
+class KioskEquipmentItem(BaseModel):
+    name: str
+    location: str | None
+    status: str
+    status_label: str
+
+
+class KioskEquipmentResponse(BaseModel):
+    items: list[KioskEquipmentItem]
+
+
 class DashboardMembersResponse(BaseModel):
     total: int
     active: int
@@ -4350,6 +4362,28 @@ def kiosk_check_in(
         reader_id=result.reader_id,
         occurred_at=result.occurred_at,
         event_id=result.event_id,
+    )
+
+
+@app.get(
+    "/kiosk/equipment",
+    response_model=KioskEquipmentResponse,
+    tags=["kiosk"],
+)
+def kiosk_equipment(
+    device: Annotated[KioskDevice, Depends(get_kiosk_device)],
+    session: SessionDependency,
+) -> KioskEquipmentResponse:
+    return KioskEquipmentResponse(
+        items=[
+            KioskEquipmentItem(
+                name=item.name,
+                location=item.location,
+                status=item.status,
+                status_label=item.status_label,
+            )
+            for item in list_kiosk_equipment_notices(session)
+        ]
     )
 
 

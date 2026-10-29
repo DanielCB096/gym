@@ -82,6 +82,7 @@ Este módulo cubre el control de acceso al gimnasio, validación de membresía, 
   - pantalla de resultado con «Acceso concedido» o el motivo del rechazo y el nombre abreviado del socio
   - configuración del dispositivo (dirección del backend y token de kiosco) con prueba de conexión
   - indicador de conexión online/offline y reloj local
+  - banda «Equipos no disponibles hoy» con la flota en mantenimiento o fuera de servicio (`GET /kiosk/equipment`)
   - botón «Siguiente socio» y reinicio automático del teclado
 - Componentes del diseño todavía pendientes:
   - barra de búsqueda por nombre, teléfono o ID
@@ -225,6 +226,7 @@ Implementación inicial del motor offline y del kiosco de recepción con código
 
 - 2026-10-15: documento ampliado con flujos, pantallas, reglas,.hardware, métricas y criterios de aceptación.
 - 2026-10-28: se implementa el código rotativo en la app del socio, el endpoint del kiosco, la PWA de recepción y la administración de dispositivos en el panel (ADR-024).
+- 2026-10-28: el kiosco muestra la flota no disponible con `GET /kiosk/equipment`, autenticado con el mismo token del dispositivo; es un aviso de solo lectura que se refresca cada minuto y no participa en la decisión de acceso (ADR-018).
 
 ## 15. Implementación actual y límites
 
@@ -232,6 +234,7 @@ Implementación inicial del motor offline y del kiosco de recepción con código
 - El código se emite desde la app (`POST /member/access/code`), dura cinco minutos, es de un solo uso, se guarda como HMAC-SHA256 y emitir otro invalida el anterior. Hay 6 emisiones por socio cada 10 minutos y 10 intentos por kiosco cada minuto; los intentos inválidos quedan en `kiosk_attempts` sin guardar el código.
 - Los dispositivos se administran desde el panel con `settings.manage`: alta con token de una sola vista y revocación inmediata. El token se guarda como SHA-256 y la tableta lo conserva en `localStorage`.
 - El kiosco reutiliza `evaluate_access` y escribe la decisión en `access_events` con origen `reader`; la bitácora del panel ya muestra lector «Kiosco <etiqueta>».
+- El kiosco consulta `GET /kiosk/equipment` al arrancar, al recuperar la red y cada 60 segundos, y pinta «Equipos no disponibles hoy» con nombre, ubicación y estado (`En mantenimiento` / `Fuera de servicio`). Es un aviso de solo lectura: no bloquea el check-in, conserva la última lista conocida si la consulta falla y un `401` borra el token y vuelve a configuración, igual que en el check-in. La lista sale de `list_unavailable_equipment` en el módulo de mantenimiento, importado de forma perezosa desde `access.kiosk`.
 - El snapshot del kiosco solo aporta estado y fechas de la membresía: no consulta adeudo, horario, límite diario ni antipassback, y envía ocupación 0. Un socio moroso o fuera de horario entra si su membresía está vigente.
 - No hay hardware conectado: el kiosco no abre torniquete ni registra salidas. Tampoco hay validación offline (el service worker solo cachea el shell) ni rotación o caducidad del token del dispositivo.
 - El motor valida estado/vigencia de membresía, adeudo bloqueante, horario local, límite diario, antipassback y aforo.

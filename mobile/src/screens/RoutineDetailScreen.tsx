@@ -12,7 +12,7 @@ import {
 
 import { ApiError, getMemberRoutine, logMemberWorkout } from "../api";
 import { describeError } from "../errors";
-import { assignmentStatusLabel, formatDay } from "../format";
+import { assignmentStatusLabel, equipmentUnavailableLabel, formatDay } from "../format";
 import { colors, radius, sharedStyles, spacing } from "../theme";
 import type { MemberRoutineDetail, MemberWorkoutSet, MemberWorkoutSetInput } from "../types";
 
@@ -226,6 +226,11 @@ export function RoutineDetailScreen({ token, assignmentId, onBack, onSessionExpi
     }
   };
 
+  const unavailableCount = detail
+    ? detail.plan.filter((line) => equipmentUnavailableLabel(line.equipment_status) !== null)
+        .length
+    : 0;
+
   return (
     <ScrollView
       style={sharedStyles.screen}
@@ -299,30 +304,53 @@ export function RoutineDetailScreen({ token, assignmentId, onBack, onSessionExpi
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Ejercicios</Text>
+            {unavailableCount > 0 ? (
+              <View style={styles.planWarning}>
+                <Text style={styles.planWarningText}>
+                  {unavailableCount === 1
+                    ? "1 ejercicio de este plan usa un equipo que hoy no está disponible y está marcado abajo."
+                    : `${unavailableCount} ejercicios de este plan usan un equipo que hoy no está disponible y están marcados abajo.`}
+                </Text>
+              </View>
+            ) : null}
             {detail.plan.length === 0 ? (
               <View style={sharedStyles.card}>
                 <Text style={sharedStyles.body}>La rutina no tiene ejercicios.</Text>
               </View>
             ) : (
-              detail.plan.map((line) => (
-                <View key={line.id} style={[sharedStyles.card, styles.lineCard]}>
-                  <View style={styles.lineHeading}>
-                    <Text style={styles.linePosition}>{line.position}</Text>
-                    <Text style={styles.lineName}>{line.exercise_name}</Text>
+              detail.plan.map((line) => {
+                const equipmentWarning = equipmentUnavailableLabel(line.equipment_status);
+                return (
+                  <View key={line.id} style={[sharedStyles.card, styles.lineCard]}>
+                    <View style={styles.lineHeading}>
+                      <Text style={styles.linePosition}>{line.position}</Text>
+                      <Text style={styles.lineName}>{line.exercise_name}</Text>
+                    </View>
+                    <Text style={sharedStyles.body}>
+                      {line.muscle_group} · {line.category}
+                    </Text>
+                    <Text style={styles.lineDose}>
+                      {line.sets} series × {/^\d+$/.test(line.reps) ? `${line.reps} repeticiones` : line.reps}
+                      {line.rest_seconds !== null ? ` · ${line.rest_seconds} s de descanso` : ""}
+                    </Text>
+                    {equipmentWarning ? (
+                      <Text
+                        style={
+                          line.equipment_status === "out_of_service"
+                            ? styles.lineUnavailableSevere
+                            : styles.lineUnavailable
+                        }
+                      >
+                        {equipmentWarning}
+                      </Text>
+                    ) : null}
+                    {line.load_note ? (
+                      <Text style={styles.lineNote}>Carga: {line.load_note}</Text>
+                    ) : null}
+                    {line.notes ? <Text style={sharedStyles.hint}>{line.notes}</Text> : null}
                   </View>
-                  <Text style={sharedStyles.body}>
-                    {line.muscle_group} · {line.category}
-                  </Text>
-                  <Text style={styles.lineDose}>
-                    {line.sets} series × {/^\d+$/.test(line.reps) ? `${line.reps} repeticiones` : line.reps}
-                    {line.rest_seconds !== null ? ` · ${line.rest_seconds} s de descanso` : ""}
-                  </Text>
-                  {line.load_note ? (
-                    <Text style={styles.lineNote}>Carga: {line.load_note}</Text>
-                  ) : null}
-                  {line.notes ? <Text style={sharedStyles.hint}>{line.notes}</Text> : null}
-                </View>
-              ))
+                );
+              })
             )}
           </View>
 
@@ -614,6 +642,27 @@ const styles = StyleSheet.create({
   },
   lineNote: {
     color: colors.accent,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  planWarning: {
+    backgroundColor: "rgba(245, 158, 11, 0.12)",
+    borderRadius: radius.md,
+    padding: spacing.md,
+  },
+  planWarningText: {
+    color: colors.warning,
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 20,
+  },
+  lineUnavailable: {
+    color: colors.warning,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  lineUnavailableSevere: {
+    color: colors.danger,
     fontSize: 14,
     fontWeight: "700",
   },

@@ -141,6 +141,33 @@ class EquipmentChoice:
 
 
 @dataclass(frozen=True)
+class UnavailableEquipmentItem:
+    id: UUID
+    name: str
+    category: str
+    location: str | None
+    status: str
+
+
+def list_unavailable_equipment(session: Session) -> list[UnavailableEquipmentItem]:
+    rows = session.exec(
+        select(Equipment)
+        .where(Equipment.status.in_(UNAVAILABLE_EQUIPMENT_STATUSES))
+        .order_by(Equipment.status.desc(), Equipment.name)
+    ).all()
+    return [
+        UnavailableEquipmentItem(
+            id=row.id,
+            name=row.name,
+            category=row.category,
+            location=row.location,
+            status=row.status,
+        )
+        for row in rows
+    ]
+
+
+@dataclass(frozen=True)
 class EquipmentSummary:
     total: int
     operational: int

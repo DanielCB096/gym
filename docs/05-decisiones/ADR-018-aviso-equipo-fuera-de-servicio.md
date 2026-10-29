@@ -13,6 +13,8 @@ Mientras tanto ADR-016 y ADR-017 dejaron montada la infraestructura que este avi
 
 Se eligió **solo la mitad del socio** del pendiente: el kiosco y el cartel de recepción siguen esperando, porque requieren pantalla y flujo propios, no una fila más en una bandeja.
 
+_Actualización 2026-10-28: el kiosco de recepción ya muestra la flota no disponible con `GET /kiosk/equipment`; sigue pendiente el cartel de recepción._
+
 ## Decisión
 
 - **Nuevo `kind` en `member_notifications`: `equipment_out_of_service`**, añadido a `NOTIFICATION_KINDS` y al `CHECK ck_member_notifications_kind`. PostgreSQL guarda un `CHECK` como una sola expresión, así que ensanchar la lista exige soltar y volver a crear la restricción con el mismo nombre (`20261027_0037_equipment_out_of_service_notice.py`); la vista previa reconstruye la tabla con la misma pareja de textos en `preview_patch.CHECK_UPGRADES`. El revertido cuenta los avisos del tipo nuevo y **se niega** si existen, en lugar de borrarlos a traición.
@@ -23,6 +25,7 @@ Se eligió **solo la mitad del socio** del pendiente: el kiosco y el cartel de r
 - **El texto nombra la máquina y su lugar, nunca el ticket.** «Un equipo está fuera de servicio» + «El equipo {nombre} de {lugar} quedó fuera de servicio el dd/mm/aaaa. Si tu rutina usa un ejercicio con este equipo, pídele a tu entrenador que lo sustituya.» El nombre y el lugar pasan por `_clip(..., 80)` y `_clip(..., 40)` porque son campos que el personal edita libremente. El cuerpo **no** incluye el título del ticket: puede traer datos internos o de terceros, y el aviso es para el socio.
 - **Sin aviso de regreso, sin filtro de membresía, audiencia sin tope.** Tres omisiones deliberadas: `operational` no anuncia (la bandeja es un historial de cosas que pasaron, no un estado), un socio con la membresía suspendida recibe igual su fila (es una bandeja, no un push: nadie está molestando a nadie) y no hay máximo de destinatarios por caída (una máquina muy usada escribe N inserciones en la misma petición).
 - **La app solo gana una etiqueta.** `equipment_out_of_service: "Equipo"` en `NOTIFICATION_KIND_LABELS` (`mobile/src/format.ts:95`); la bandeja ya renderizaba título, cuerpo y fecha, y un `kind` desconocido cae en «Aviso», así que el cambio es cosmético y hacia atrás. `ref_id` apunta al equipo **sin deep link**: la app no tiene pantalla de equipos.
+- **Actualización 2026-10-28 — el kiosco recibe la misma información como estado vivo, no como bandeja.** `GET /kiosk/equipment` (autenticado con el token del dispositivo) devuelve la flota en `maintenance`/`out_of_service` y la PWA la pinta bajo el teclado con nombre, ubicación y estado. No hay un aviso por equipo ni push: la tablet refresca cada minuto, así que un cambio se ve sin reiniciar. La consulta reutiliza `list_unavailable_equipment` de `maintenance` con import perezoso desde `access.kiosk`, y la app además marca `equipment_status` en el detalle de la rutina. El cartel de recepción sigue pendiente.
 
 ## Consecuencias y límites
 
@@ -34,8 +37,8 @@ Se eligió **solo la mitad del socio** del pendiente: el kiosco y el cartel de r
 - **El aviso puede tumbar la operación**: se emite dentro de la transacción de `set_equipment_status`, `create_ticket` y `update_ticket`, así que un error al redactarlo revierte el estado del equipo y el ticket. Mitigado con `_clip` y con los límites ya validados en el servicio.
 - El aviso **no se cierra cuando el equipo vuelve**: la bandeja no es un flujo de trabajo (misma límite que `workout_pending_review` en ADR-017).
 - Un ejercicio vinculado a una máquina que luego se **retira** pierde el vínculo (`ON DELETE SET NULL`), así que el historial de avisos no queda enlazado a un equipo existente: es la política de `ref_id` sin FK de siempre.
-- **Kiosco y recepción siguen pendientes** (`deuda-tecnica.md`); lo mismo que el bloqueo duro de un ejercicio cuya máquina está fuera de servicio, que sigue siendo un aviso suave.
-- Antes de producción: decidir si el regreso se anuncia, si debe existir un tope de audiencia o un job, y si la app debe renderizar `equipment_status` en el detalle de la rutina para que el plan y la bandeja no sean dos verdades distintas.
+- **El cartel de recepción sigue pendiente** (`deuda-tecnica.md`); el kiosco ya lista la flota no disponible desde 2026-10-28 con `GET /kiosk/equipment`. Lo mismo que el bloqueo duro de un ejercicio cuya máquina está fuera de servicio, que sigue siendo un aviso suave.
+- Antes de producción: decidir si el regreso se anuncia y si debe existir un tope de audiencia o un job. La app ya renderiza `equipment_status` en el detalle de la rutina (2026-10-28), así que el plan y la bandeja ya no son dos verdades distintas.
 
 ## Referencias
 
