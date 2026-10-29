@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-29 · Dos kioscos ya no pueden autorizar la misma entrada
+
+- **Servicio**: `check_in_with_code` bloquea la fila del socio (`SELECT members.id ... FOR UPDATE`, `access.kiosk._lock_member_row`) después de encontrar el código y antes de consumirlo, y suelta el bloqueo con el `commit` que graba el evento. El conteo del día y la última entrada se leen con el socio bloqueado, así que la segunda petición —otra tablet u otra conexión— espera y decide con el estado que dejó la primera; antes ambas podían leer el mismo conteo viejo y autorizar dos veces un plan de una entrada al día o saltarse el antipassback.
+- **Emisión serializada**: `issue_member_access_code` toma el mismo bloqueo antes de contar las emisiones de la ventana y de invalidar el código anterior. Dos peticiones simultáneas de la app ya no pasan el límite de 6 en 10 minutos con el mismo valor ni dejan dos códigos vivos, uno por teléfono.
+- **Consumo**: el `UPDATE` que consume el código suma `expires_at > :now` al filtro y no sincroniza la sesión (`synchronize_session=False`), para que un código que venció mientras se esperaba el bloqueo no se consuma.
+- **Alcance**: la entrada manual de recepción queda fuera del bloqueo (siempre autoriza y solo suma al conteo), y el orden es siempre socio → código, así que no hay bloqueos cruzados. Sin migración, sin columna y sin permiso nuevo.
+- **Pruebas**: 2 nuevas en `backend/tests/test_kiosk_access_api.py` (el bloqueo se toma antes de contar las entradas del día, tanto al emitir como al decidir; y la sentencia compila con `FOR UPDATE` en PostgreSQL y sin la cláusula en SQLite, donde la garantía no existe). La suite del backend queda en **212 pruebas** y el archivo del kiosco en 15.
+- **Verificación**: el cambio no tiene pantalla. Se comprobó con la suite completa y la compilación de la sentencia para el dialecto de PostgreSQL; no hay Docker en este equipo ni conexión a una base PostgreSQL, así que la carrera entre dos conexiones no se reprodujo en vivo: con SQLite el bloqueo es un no-op y una prueba de concurrencia ahí sería ficticia.
+- **Documentación**: nuevo ADR-030, módulo de control de acceso, deuda técnica, plan de pruebas, README de documentación, del backend y roadmap.
+
 ## 2026-10-29 · El socio ve cuántas entradas le quedan hoy
 
 - **API**: `GET /member/access/code` suma `entries_today` y `daily_entry_limit` a la respuesta del estado del código. El conteo reutiliza `count_member_entries_today` (entradas autorizadas del día del club, incluidas las manuales de recepción) y el límite sale del plan de la membresía más reciente (`_latest_membership` + `Plan`), el mismo par que usa el kiosco; `null` significa sin límite. No hay permiso nuevo, migración ni columna: el dato ya existía en el kiosco y solo se expone.

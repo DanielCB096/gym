@@ -5,10 +5,12 @@ from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import event
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.main import app, get_session
+from app.modules.access import kiosk as kiosk_module
 from app.modules.access.kiosk import (
     ACCESS_CODE_MAX_REQUESTS,
     KIOSK_TOKEN_LIFETIME,
@@ -1025,3 +1027,56 @@ def test_count_member_entries_today_uses_the_club_day() -> None:
             session, ids["ana"], timezone_name="America/Mexico_City", now=next_day
         ) == 0
     engine.dispose()
+
+
+def test_member_row_lock_precedes_the_limits_read(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-kiosk-access-secret")
+    monkeypatch.setenv("APP_TIMEZONE", "America/Mexico_City")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    order: list[str] = []
+    real_lock = kiosk_module._lock_member_row
+    real_count = kiosk_module.count_member_entries_today
+
+    def spy_lock(session: Session, member_id: UUID) -> None:
+        order.append("lock")
+        real_lock(session, member_id)
+
+    def spy_count(*args, **kwargs):
+        order.append("count")
+        return real_count(*args, **kwargs)
+
+    monkeypatch.setattr(kiosk_module, "_lock_member_row", spy_lock)
+    monkeypatch.setattr(kiosk_module, "count_member_entries_today", spy_count)
+
+    with Session(engine) as session:
+        ids = _seed(session)
+        plan = session.get(Plan, ids["plan"])
+        plan.daily_entry_limit = 3
+        session.add(plan)
+        device, _ = create_kiosk_device(session, label="Tablet")
+        now = datetime(2026, 10, 28, 18, 0, tzinfo=timezone.utc)
+
+        issued = issue_member_access_code(session, ids["ana"], now=now)
+        assert order == ["lock"]
+        order.clear()
+
+        granted = check_in_with_code(
+            session, device=device, code=issued.code, now=now + timedelta(seconds=30)
+        )
+        assert granted.authorized is True
+    assert order == ["lock", "count"]
+    engine.dispose()
+
+
+def test_member_row_lock_is_for_update_on_postgresql() -> None:
+    statement = kiosk_module._member_lock_statement(uuid4())
+    sql = " ".join(str(statement.compile(dialect=postgresql.dialect())).split())
+    assert sql.startswith("SELECT members.id FROM members WHERE members.id = ")
+    assert sql.endswith("FOR UPDATE")
+    # SQLite drops the clause, which is why the preview cannot prove the
+    # serialization: PostgreSQL does the real work in production.
+    sqlite_sql = " ".join(
+        str(statement.compile(dialect=sqlite.dialect())).split()
+    )
+    assert "FOR UPDATE" not in sqlite_sql

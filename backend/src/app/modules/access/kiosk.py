@@ -175,6 +175,11 @@ def issue_member_access_code(
             "Tu membresía no está activa. Pasa a recepción para regularizarla."
         )
 
+    # Serializes issuance per member: two apps asking at once would otherwise
+    # both pass the rate limit and leave two codes alive, each usable at a
+    # different kiosk.
+    _lock_member_row(session, member_id)
+
     window_start = occurred_at - ACCESS_CODE_REQUEST_WINDOW
     recent = session.exec(
         select(func.count(MemberAccessCode.id)).where(
@@ -483,13 +488,21 @@ def check_in_with_code(
         _record_attempt(session, device.id, "invalid", occurred_at)
         raise InvalidAccessCode("Código inválido o vencido.")
 
+    # The daily-limit count and the antipassback window are read before the
+    # event lands, so two kiosks could both see the same old state and both
+    # authorize. The row lock makes the second decision wait for the first
+    # commit; it is effective on PostgreSQL and a no-op on SQLite.
+    _lock_member_row(session, member.id)
+
     consumed = session.exec(
         update(MemberAccessCode)
         .where(
             MemberAccessCode.id == access_code.id,
             MemberAccessCode.consumed_at.is_(None),
+            MemberAccessCode.expires_at > occurred_at,
         )
         .values(consumed_at=occurred_at)
+        .execution_options(synchronize_session=False)
     )
     if consumed.rowcount != 1:
         session.rollback()
@@ -591,6 +604,20 @@ def _membership_active(
         <= occurred_at
         < _as_utc(membership.ends_at)
     )
+
+
+def _member_lock_statement(member_id: UUID):
+    return select(Member.id).where(Member.id == member_id).with_for_update()
+
+
+def _lock_member_row(session: Session, member_id: UUID) -> None:
+    """Hold the member's row until this transaction commits.
+
+    ``FOR UPDATE`` is honoured by PostgreSQL, the production engine, and
+    silently dropped by SQLite, which the preview and the tests use because it
+    already serializes writers.
+    """
+    session.exec(_member_lock_statement(member_id)).first()
 
 
 def _latest_membership(session: Session, member_id: UUID) -> Membership | None:
