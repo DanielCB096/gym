@@ -26,7 +26,11 @@ Hoy el despliegue es de un solo backend, pero los dos kioscos ya son un caso rea
 - El bloqueo también vale contra la sincronización offline del outbox: cuando un evento offline llega al backend pasa por `record_access_event`, pero no por la decisión del kiosco, así que su orden respecto a un check-in en vivo no está serializado. Un evento offline del pasado cuenta en el día del club y un check-in concurrente podría no verlo todavía.
 - El bloqueo se toma por socio; dos socios distintos siguen entrando en paralelo, y el kiosco no bloquea la tabla ni el club.
 - Si la transacción que tiene el bloqueo muere sin `commit` (caída del proceso, timeout), PostgreSQL lo libera al cerrar la conexión; no queda el socio bloqueado.
-- La validación de aforo sigue enviando ocupación 0: fuera de alcance.
+- La validación de aforo se sumó después (ADR-032) y su conteo se lee dentro de la misma transacción bloqueada.
+
+## Nota de actualización (2026-10-29)
+
+La carrera se reprodujo contra PostgreSQL 16.4 portátil y quedó cubierta por `backend/tests/test_kiosk_access_postgres.py`, que corre con `TEST_POSTGRES_URL` sobre una base desechable y se omite en la suite normal. El segundo check-in esperó 1,28 s al bloqueo frente a 21 ms sin contención, y 20 rondas de dos check-ins simultáneos con límite diario 1 dejaron una sola entrada con el bloqueo y dos en las 20 sin él.
 
 ## Referencias
 
