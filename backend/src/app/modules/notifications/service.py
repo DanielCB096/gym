@@ -32,7 +32,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Sequence, TypeVar
 from uuid import UUID
 
-from sqlalchemy import func, update
+from sqlalchemy import and_, func, or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -678,25 +678,26 @@ def _paginate_inbox(
     *,
     page: int,
     page_size: int,
-    unread_predicates: tuple = (),
+    unread_condition=None,
 ) -> tuple[int, int, list[NotificationRow], int, int, int]:
     """Count, unread-count and page one inbox.
 
     Both inboxes have the same shape once the owner column is given, so the
     paging rules stay in a single place and cannot drift apart. The staff inbox
-    passes the extra condition that a resolved notice no longer counts as
-    unread, because the badge is about work still owed.
+    passes the condition that separates work still owed from rows nobody has
+    looked at yet, because its badge is about work, not reading.
     """
     page, page_size = _clamp_page(page, page_size)
     total = int(
         session.exec(select(func.count(model.id)).where(owner_column == owner_id)).one() or 0
     )
+    if unread_condition is None:
+        unread_condition = model.read_at.is_(None)
     unread_total = int(
         session.exec(
             select(func.count(model.id)).where(
                 owner_column == owner_id,
-                model.read_at.is_(None),
-                *unread_predicates,
+                unread_condition,
             )
         ).one()
         or 0
@@ -804,6 +805,25 @@ def mark_all_notifications_read(
     return int(result.rowcount or 0)
 
 
+# Kinds whose service closes the notice once the work is done. Reading one of
+# them does not take it off the badge: only the work does. A kind without a
+# closure path yet stays on the unread rule, so the badge can still be cleared
+# by acknowledging it.
+CLOSABLE_STAFF_KINDS = ("workout_pending_review",)
+
+
+def _staff_pending_condition():
+    """What the staff badge still owes: closed work drops out, reads do not."""
+    unresolved = StaffNotification.resolved_at.is_(None)
+    return and_(
+        unresolved,
+        or_(
+            StaffNotification.read_at.is_(None),
+            StaffNotification.kind.in_(CLOSABLE_STAFF_KINDS),
+        ),
+    )
+
+
 def list_staff_notifications(
     session: Session,
     user_id: UUID,
@@ -818,7 +838,7 @@ def list_staff_notifications(
         user_id,
         page=page,
         page_size=page_size,
-        unread_predicates=(StaffNotification.resolved_at.is_(None),),
+        unread_condition=_staff_pending_condition(),
     )
     return StaffNotificationPage(
         items=[_staff_notification_item(row) for row in rows],
@@ -831,18 +851,17 @@ def list_staff_notifications(
 
 
 def unread_staff_notification_count(session: Session, user_id: UUID) -> int:
-    """Unread notices still owed to the account.
+    """Pending work, not unread rows.
 
-    A resolved notice is gone from the badge even if the reader never opened it:
-    the badge answers "what is left for me to do", and the service that closed
-    the notice already did it.
+    A resolved notice is gone from the badge even if the reader never opened it;
+    an unread one is gone too unless its work is still owed. Marking a workout
+    review as read leaves it on the badge until the workout is actually reviewed.
     """
     return int(
         session.exec(
             select(func.count(StaffNotification.id)).where(
                 StaffNotification.user_id == user_id,
-                StaffNotification.read_at.is_(None),
-                StaffNotification.resolved_at.is_(None),
+                _staff_pending_condition(),
             )
         ).one()
         or 0

@@ -305,6 +305,8 @@ def test_the_trainer_and_the_technician_see_their_own_work(monkeypatch) -> None:
             marked = client.post(f"/admin/notifications/{notice_id}/read", headers=technician)
             assert marked.status_code == 200, marked.text
             assert marked.json()["read_at"] is not None
+            # A ticket notice has no closure path yet, so acking it still clears
+            # the technician's badge; review requests stopped clearing theirs.
             assert client.get(
                 "/admin/notifications/unread-count", headers=technician
             ).json() == {"unread": 0}
@@ -320,8 +322,15 @@ def test_the_trainer_and_the_technician_see_their_own_work(monkeypatch) -> None:
             assert client.post("/admin/notifications/read-all", headers=trainer).json() == {
                 "updated": 1
             }
+            # Reading a review request is not doing the review. The badge answers
+            # "what is left for me to do", so the acked workout stays on it until
+            # the trainer reviews it; only the closure path takes it off.
+            trainer_inbox = _inbox(client, trainer)
+            assert trainer_inbox["unread_total"] == 1
+            assert trainer_inbox["items"][0]["read_at"] is not None
+            assert trainer_inbox["items"][0]["resolved_at"] is None
             assert client.get("/admin/notifications/unread-count", headers=trainer).json() == {
-                "unread": 0
+                "unread": 1
             }
     finally:
         app.dependency_overrides.clear()

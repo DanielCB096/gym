@@ -3089,7 +3089,8 @@ export default function HomePage() {
         return;
       }
       setNotices((current) => (current ?? []).map((item) => (item.id === notice.id ? { ...item, read_at: stamped } : item)));
-      setUnreadNotices((count) => Math.max(count - 1, 0));
+      // The badge counts pending work, not readings, so the server decides what is left.
+      void refreshUnreadNotices();
     } catch {
       showToast("No se pudo conectar con el backend.");
     }
@@ -3109,8 +3110,8 @@ export default function HomePage() {
         return;
       }
       setNotices((current) => (current ?? []).map((item) => (item.read_at ? item : { ...item, read_at: stamped })));
-      setUnreadNotices(0);
-      showToast(payload.updated ? `${payload.updated} aviso(s) marcados como leídos.` : "Bandeja al día.");
+      void refreshUnreadNotices();
+      showToast(payload.updated ? `${payload.updated} aviso(s) marcados como leídos.` : "No había avisos sin leer.");
     } catch {
       showToast("No se pudo conectar con el backend.");
     }
@@ -3257,7 +3258,7 @@ export default function HomePage() {
                   )}
                   {!noticesLoading && !noticesError && (notices ?? []).map((notice) => (
                     <button key={notice.id} className={`notification-item ${notice.resolved_at ? "is-attended" : notice.read_at ? "is-read" : "is-new"}`} onClick={() => void markNoticeRead(notice)}>
-                      <span className={`notification-dot ${notice.read_at || notice.resolved_at ? "lime-dot" : "coral-dot"}`} />
+                      <span className={`notification-dot ${notice.resolved_at ? "lime-dot" : "coral-dot"}`} />
                       <span className="notification-copy">
                         <strong>
                           {notice.title}
