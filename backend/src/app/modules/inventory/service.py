@@ -139,6 +139,10 @@ class ReturnExceedsSold(InventoryError):
     pass
 
 
+class ServiceAlreadyRefunded(InventoryError):
+    pass
+
+
 class InvalidAccountPayment(InventoryError):
     pass
 

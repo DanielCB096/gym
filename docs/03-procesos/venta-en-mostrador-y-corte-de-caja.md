@@ -52,6 +52,7 @@ I --> J[Cerrar turno]
 - Cada descuento deja un movimiento de inventario conciliable con el saldo.
 - Tampoco se puede devolver sin turno abierto, sin motivo ni por más unidades de las vendidas menos las ya devueltas.
 - Una devolución **reingresa** el producto al stock o lo da de baja como **merma**; en ambos casos el historial conserva el movimiento y el ledger cuadra contra el saldo.
+- Las ventas de **servicio** —el extra de una clase premium, cobrado al marcar asistencia— no pasan por la devolución de producto: se reembolsan desde la venta con `POST /admin/sales/{id}/service-refund` y el permiso `sales.service_refund` (solo dueño y gerente). La devolución es total, no toca inventario ni la reserva, sale del turno abierto que la paga y deja la venta `refunded`; repetirla responde `409`.
 - Una venta a cuenta exige un socio activo y se salda con pagos que no pueden superar el saldo pendiente.
 - El cargo a cuenta respeta el límite del socio: se acepta solo si `saldo + venta <= límite`. Sin límite (`NULL`) no hay tope; un límite `0` bloquea todos los cargos. Un intento que excede responde `409` y no descuenta stock.
 - Si el límite se reduce por debajo del saldo, la cuenta queda **sobre límite** y se bloquean nuevos cargos, pero la deuda existente se conserva.

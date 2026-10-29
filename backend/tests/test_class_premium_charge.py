@@ -373,3 +373,101 @@ def test_cash_premium_refund_requires_an_open_register() -> None:
             assert current["expected_cash_cents"] == -12000
     finally:
         app.dependency_overrides.clear()
+
+
+def test_register_refunds_a_service_with_the_manager_permission() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        member_id = _add_member(session, first="Ana")
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            trainer = _login(client, "trainer@example.com", "trainer-strong-password")
+            type_id, room_id = _create_catalog(client, manager)
+            _open_shift(client, reception)
+            session_id = _create_session(
+                client,
+                manager,
+                class_type_id=type_id,
+                room_id=room_id,
+                access_type="premium",
+                extra_price_cents=15000,
+            ).json()["id"]
+            reservation = _reserve(client, manager, session_id, member_id)
+            charged = _attend(client, manager, reservation["id"], payment_method="cash")
+            assert charged.status_code == 200, charged.text
+            sale_id = charged.json()["charge_sale_id"]
+
+            refund_url = f"/admin/sales/{sale_id}/service-refund"
+            reason = {"reason": "Cobro duplicado en recepción"}
+
+            # The register is a counter operation; refunding a service is not.
+            assert client.post(refund_url, headers=reception, json=reason).status_code == 403
+            assert client.post(refund_url, headers=trainer, json=reason).status_code == 403
+            assert client.post(refund_url, headers=manager, json={"reason": ""}).status_code == 422
+            assert client.get("/admin/sales", headers=manager).json()["items"][0]["status"] == "completed"
+
+            refunded = client.post(refund_url, headers=manager, json=reason)
+            assert refunded.status_code == 201, refunded.text
+            body = refunded.json()
+            assert body["refund_method"] == "cash"
+            assert body["total_refund_cents"] == 15000
+            assert body["reason"] == reason["reason"]
+            assert body["lines"][0]["product_id"] is None
+            assert body["lines"][0]["disposition"] == "write_off"
+            assert body["cash_session_id"]
+
+            # The sale is refunded, the drawer shows the outflow and the seat
+            # keeps its attendance: the refund does not rewrite the class.
+            sale = client.get("/admin/sales", headers=manager).json()["items"][0]
+            assert sale["status"] == "refunded"
+            current = client.get("/admin/cash-sessions/current", headers=reception).json()
+            assert current["cash_refunds_cents"] == 15000
+            assert current["expected_cash_cents"] == 0
+            roster = client.get(
+                f"/admin/classes/sessions/{session_id}/reservations", headers=manager
+            ).json()
+            assert roster["reservations"][0]["status"] == "attended"
+            assert roster["reservations"][0]["charge_status"] == "refunded"
+
+            # A second refund is a conflict, never a second payout.
+            again = client.post(refund_url, headers=manager, json=reason)
+            assert again.status_code == 409, again.text
+            assert client.get("/admin/sales/returns", headers=manager).json()["total"] == 1
+
+            # A product sale is not a service: it keeps the returns flow.
+            product = client.post(
+                "/admin/products",
+                headers=manager,
+                json={
+                    "sku": "agua-600",
+                    "name": "Agua 600 ml",
+                    "category": "Bebidas",
+                    "price_cents": 1500,
+                    "initial_stock": 5,
+                },
+            )
+            assert product.status_code == 201, product.text
+            product_sale = client.post(
+                "/admin/sales",
+                headers=reception,
+                json={
+                    "items": [{"product_id": product.json()["id"], "quantity": 1}],
+                    "payment_method": "cash",
+                },
+            )
+            assert product_sale.status_code == 201, product_sale.text
+            wrong = client.post(
+                f"/admin/sales/{product_sale.json()['id']}/service-refund",
+                headers=manager,
+                json={"reason": "Prueba"},
+            )
+            assert wrong.status_code == 422, wrong.text
+            assert "reserva de clase" in wrong.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()

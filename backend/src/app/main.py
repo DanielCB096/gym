@@ -272,6 +272,7 @@ from app.modules.inventory import (
     ReturnExceedsSold,
     SaleItemNotFound,
     SaleItemView,
+    ServiceAlreadyRefunded,
     SaleNotFound,
     SaleReturnView,
     StatementDeliveryFailed,
@@ -307,6 +308,7 @@ from app.modules.inventory import (
     open_cash_session,
     receive_purchase_order,
     register_member_account_payment,
+    refund_service_sale,
     register_sale,
     register_sale_return,
     register_stock_movement,
@@ -1031,6 +1033,10 @@ class SaleReturnLineRequest(BaseModel):
 class CreateSaleReturnRequest(BaseModel):
     items: list[SaleReturnLineRequest] = Field(min_length=1)
     refund_method: Literal["cash", "card", "transfer", "account"] | None = None
+    reason: str = Field(min_length=1, max_length=200)
+
+
+class RefundServiceSaleRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=200)
 
 
@@ -4712,6 +4718,7 @@ _INVENTORY_ERROR_STATUS: tuple[tuple[type[InventoryError], int], ...] = (
     (ProductUnavailable, status.HTTP_409_CONFLICT),
     (InsufficientStock, status.HTTP_409_CONFLICT),
     (ReturnExceedsSold, status.HTTP_409_CONFLICT),
+    (ServiceAlreadyRefunded, status.HTTP_409_CONFLICT),
     (NoOutstandingBalance, status.HTTP_409_CONFLICT),
     (PaymentExceedsBalance, status.HTTP_409_CONFLICT),
     (CreditLimitExceeded, status.HTTP_409_CONFLICT),
@@ -5324,6 +5331,36 @@ def register_sale_return_endpoint(
         )
     except InventoryError as error:
         raise _inventory_http_error(error) from error
+    return _sale_return_response(sale_return)
+
+
+@app.post(
+    "/admin/sales/{sale_id}/service-refund",
+    response_model=SaleReturnResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["sales"],
+)
+def refund_service_sale_endpoint(
+    sale_id: UUID,
+    request: RefundServiceSaleRequest,
+    session: SessionDependency,
+    principal: Annotated[
+        AuthenticatedUser, Depends(require_api_permission("sales.service_refund"))
+    ],
+) -> SaleReturnResponse:
+    try:
+        sale_return = refund_service_sale(
+            session, sale_id, reason=request.reason, actor_id=principal.user_id
+        )
+    except InventoryError as error:
+        raise _inventory_http_error(error) from error
+    if sale_return is None:
+        raise _inventory_http_error(
+            ServiceAlreadyRefunded("La venta de servicio ya está reembolsada")
+        )
+    # The service never commits: the classes flow shares its transaction with
+    # the reservation. Refunding from the register owns it, so it closes here.
+    session.commit()
     return _sale_return_response(sale_return)
 
 

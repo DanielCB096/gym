@@ -69,6 +69,11 @@ PREVIEW_PERMISSIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ("owner", "manager"),
     ),
     (
+        "sales.service_refund",
+        "Reembolsar servicios cobrados (clases premium)",
+        ("owner", "manager"),
+    ),
+    (
         "finance.manage",
         "Conciliar pagos y administrar cuentas bancarias",
         ("owner", "accountant"),

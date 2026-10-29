@@ -27,7 +27,7 @@ El sistema de dinero ya existe: una venta (`sales` + `sale_items`) con turno de 
 
 - **El turno de caja cuenta la venta aunque luego se reembolse.** Los totales del turno dejaron de filtrar `sales.status = "completed"` al sumar ventas: filtrarlas borraba el ingreso y seguía restando el reembolso, así que un cancelado premium dejaba el efectivo esperado en negativo. Ahora el turno suma todas las ventas del periodo y resta las devoluciones, y el esperado cuadra con el cajón (probado con una venta cobrada y reembolsada dentro del mismo turno). El arreglo también corrige el caso ya existente de una venta de producto devuelta por completo.
 - **No hay penalización por inasistencia.** Marcar `no_show` reembolsa la clase premium; si el club decide cobrar una penalización, será un cargo propio con sus reglas.
-- **Una venta de servicio no se puede devolver desde el POS**, solo desde la reserva que la originó. Es deliberado: la reserva es la fuente de verdad del vínculo y del estado de asistencia.
+- **Una venta de servicio no se puede devolver por la pantalla de devoluciones por cantidad del POS**, solo desde la reserva que la originó. Es deliberado: la reserva es la fuente de verdad del vínculo y del estado de asistencia. Desde el mismo día, ADR-034 agrega una devolución de servicio propia en el historial de ventas (`POST /admin/sales/{id}/service-refund`, permiso `sales.service_refund` de dueño y gerente) que reembolsa el importe sin tocar la reserva.
 - **El análisis por producto agrupa los servicios bajo «Servicios».** En el reporte de ingresos, `by_category` y `top_products` incluyen la categoría «Servicios» con `product_id=NULL`; no es un producto del catálogo ni valoriza inventario.
 - **La facturación no cambia de contrato.** La venta de servicio es un origen facturable más; su línea se factura con la clave y unidad configuradas para el origen, como cualquier venta de mostrador.
 - **Deshacer la asistencia es la única corrección desde el panel.** El roster permite `attended → no_show`; no hay botón para volver a `reserved` (el backend tampoco lo admite).
@@ -43,3 +43,4 @@ El sistema de dinero ya existe: una venta (`sales` + `sale_items`) con turno de 
 - `backend/tests/test_class_premium_charge.py`
 - `web/src/app/page.tsx` (`ClassRosterModal`)
 - `docs/02-modulos/clases-y-reservaciones.md`, `docs/02-modulos/punto-de-venta-e-inventario.md`
+- ADR-034 (devolución de servicios desde la caja)

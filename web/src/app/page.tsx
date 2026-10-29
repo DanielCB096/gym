@@ -4719,6 +4719,8 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
   const canSell = permissions.includes("sales.manage");
   const canReadSales = permissions.includes("sales.read");
   const canManageCredit = permissions.includes("sales.credit");
+  const canRefundServices = permissions.includes("sales.service_refund");
+  const showSalesActions = canSell || canRefundServices;
   const canReadInventory = permissions.includes("inventory.read") || canManageCatalog;
 
   const [tab, setTab] = useState<"venta" | "catalogo" | "caja" | "devoluciones" | "compras" | "cuentas">("venta");
@@ -4772,6 +4774,7 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
   const [returnsPage, setReturnsPage] = useState(1);
   const [returnsRefresh, setReturnsRefresh] = useState(0);
   const [returnSale, setReturnSale] = useState<BackendSale | null>(null);
+  const [serviceRefundSale, setServiceRefundSale] = useState<BackendSale | null>(null);
 
   const [suppliers, setSuppliers] = useState<SupplierDirectory | null>(null);
   const [suppliersLoading, setSuppliersLoading] = useState(false);
@@ -5417,6 +5420,16 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
     setReturnSale(sale);
   };
 
+  const handleServiceRefundSaved = (message: string) => {
+    setServiceRefundSale(null);
+    setSalesRefresh((value) => value + 1);
+    setReturnsRefresh((value) => value + 1);
+    setPosRefresh((value) => value + 1);
+    setCashRefresh((value) => value + 1);
+    setAccountsRefresh((value) => value + 1);
+    onToast(message);
+  };
+
   const handleSupplierSaved = (message: string) => {
     setSupplierModal(null);
     setSuppliersRefresh((value) => value + 1);
@@ -5706,22 +5719,24 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
             <div><p className="section-kicker">HISTORIAL</p><h2>Ventas recientes</h2></div>
             <span className="table-hint">{saleSummary.count} ventas · {formatMoney(saleSummary.total_cents)}{saleSummary.refunds_cents > 0 ? ` · devuelto ${formatMoney(saleSummary.refunds_cents)}` : ""}</span>
           </div>
-          <div className="table-scroll"><table className="data-table"><thead><tr><th>FOLIO</th><th>HORA</th><th>PRODUCTOS</th><th>PAGO</th><th>SOCIO</th><th>TOTAL</th><th>ESTADO</th>{canSell && <th />}</tr></thead><tbody>
-            {salesLoading ? <tr><td colSpan={canSell ? 8 : 7} className="empty-row">Cargando ventas…</td></tr>
-              : salesError ? <tr><td colSpan={canSell ? 8 : 7} className="empty-row">{salesError}</td></tr>
-              : saleItems.length === 0 ? <tr><td colSpan={canSell ? 8 : 7} className="empty-row">Todavía no hay ventas registradas.</td></tr>
+          <div className="table-scroll"><table className="data-table"><thead><tr><th>FOLIO</th><th>HORA</th><th>PRODUCTOS</th><th>PAGO</th><th>SOCIO</th><th>TOTAL</th><th>ESTADO</th>{showSalesActions && <th />}</tr></thead><tbody>
+            {salesLoading ? <tr><td colSpan={showSalesActions ? 8 : 7} className="empty-row">Cargando ventas…</td></tr>
+              : salesError ? <tr><td colSpan={showSalesActions ? 8 : 7} className="empty-row">{salesError}</td></tr>
+              : saleItems.length === 0 ? <tr><td colSpan={showSalesActions ? 8 : 7} className="empty-row">Todavía no hay ventas registradas.</td></tr>
               : saleItems.map((sale) => {
-                const returnable = sale.lines.some((line) => line.returnable_quantity > 0);
+                const returnable = canSell && sale.lines.some((line) => line.product_id !== null && line.returnable_quantity > 0);
+                const refundableService = canRefundServices && sale.lines.some((line) => line.product_id === null && line.returnable_quantity > 0);
+                const onlyServices = sale.lines.every((line) => line.product_id === null);
                 return (
                   <tr key={sale.id}>
                     <td className="time-cell">{sale.folio}{sale.origin === "offline" && <span className="status-badge status-warn pos-origin-badge"><i />Offline</span>}</td>
                     <td className="time-cell">{formatSaleTime(sale.sold_at)}</td>
-                    <td>{sale.lines.reduce((sum, line) => sum + line.quantity, 0)} artículos</td>
+                    <td>{onlyServices ? "Servicio de clase" : `${sale.lines.reduce((sum, line) => sum + line.quantity, 0)} artículos`}</td>
                     <td>{paymentMethodLabels[sale.payment_method] ?? sale.payment_method}</td>
                     <td>{sale.member_name ?? "Público general"}</td>
                     <td className="time-cell">{formatMoney(sale.total_cents)}{sale.refunded_cents > 0 && <small className="pos-min">devuelto {formatMoney(sale.refunded_cents)}</small>}</td>
                     <td><span className={`status-badge ${saleStatusBadges[sale.status] ?? "status-neutral"}`}><i />{saleStatusLabels[sale.status] ?? sale.status}</span></td>
-                    {canSell && <td><div className="pos-row-actions">{returnable ? <button type="button" className="text-button" onClick={() => openReturn(sale)}>Devolver</button> : <span className="table-hint">—</span>}</div></td>}
+                    {showSalesActions && <td><div className="pos-row-actions">{returnable ? <button type="button" className="text-button" onClick={() => openReturn(sale)}>Devolver</button> : refundableService ? <button type="button" className="text-button" onClick={() => setServiceRefundSale(sale)}>Reembolsar</button> : <span className="table-hint">—</span>}</div></td>}
                   </tr>
                 );
               })}
@@ -5946,6 +5961,7 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
       {openCashOpen && canSell && <OpenCashModal onClose={() => setOpenCashOpen(false)} onOpened={handleCashOpened} />}
       {closeCashOpen && canSell && cashSession && <CloseCashModal cashSession={cashSession} onClose={() => setCloseCashOpen(false)} onClosed={handleCashClosed} />}
       {returnSale && canSell && <SaleReturnModal sale={returnSale} onClose={() => setReturnSale(null)} onSaved={handleReturnSaved} />}
+      {serviceRefundSale && canRefundServices && <ServiceRefundModal sale={serviceRefundSale} onClose={() => setServiceRefundSale(null)} onSaved={handleServiceRefundSaved} />}
       {accountMember && <MemberAccountModal member={accountMember} canManage={canSell} canManageCredit={canManageCredit} cashSessionOpen={Boolean(cashSession)} onClose={() => setAccountMember(null)} onSaved={handleAccountSaved} />}
       {reminderOpen && canSell && <CollectionReminderModal onClose={() => setReminderOpen(false)} onSaved={handleAccountSaved} onUnauthorized={onUnauthorized} />}
       {creditLookupOpen && canManageCredit && <CreditLimitLookupModal onSelect={(summary) => { setAccountMember(summary); setCreditLookupOpen(false); }} onClose={() => setCreditLookupOpen(false)} onUnauthorized={onUnauthorized} />}
@@ -6561,6 +6577,54 @@ function SaleReturnModal({ sale, onClose, onSaved }: { sale: BackendSale; onClos
           {overLimit && <div className="login-error" role="alert">Una cantidad supera lo disponible para devolver.</div>}
           {error && <div className="login-error" role="alert">{error}</div>}
           <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy || !hasSelection}><Check size={16} />{busy ? "Registrando…" : "Registrar devolución"}</button></div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function ServiceRefundModal({ sale, onClose, onSaved }: { sale: BackendSale; onClose: () => void; onSaved: (message: string) => void }) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const serviceLine = sale.lines.find((line) => line.product_id === null);
+  const isCash = sale.payment_method === "cash";
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!reason.trim()) { setError("El motivo del reembolso es obligatorio."); return; }
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/sales/${sale.id}/service-refund`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      const payload = await response.json().catch(() => ({})) as { detail?: string; folio?: string; total_refund_cents?: number };
+      if (!response.ok) { setError(payload.detail || "No se pudo reembolsar el servicio."); return; }
+      onSaved(`Reembolso ${payload.folio ?? ""} registrado por ${formatMoney(payload.total_refund_cents ?? sale.total_cents)}.`);
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="service-refund-title">
+        <div className="modal-header"><span className="modal-icon"><RotateCcw size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">REEMBOLSO DE SERVICIO</p>
+        <h2 id="service-refund-title">Reembolsar venta {sale.folio}</h2>
+        <p className="modal-subtitle">{sale.member_name ?? "Público general"} · {serviceLine?.product_name ?? "Servicio"} · {paymentMethodLabels[sale.payment_method] ?? sale.payment_method}</p>
+        <form onSubmit={submit}>
+          <p className="manual-hint">Es el cobro de una clase premium: no hay mercancía que reingresar al stock. La reserva de la clase conserva su estado y solo se devuelve el importe.</p>
+          {isCash && <p className="manual-hint">El importe sale en efectivo de la caja, así que el turno debe estar abierto.</p>}
+          <label className="form-field"><span>Motivo (obligatorio)</span><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Cobro duplicado, cortesía, error de captura" maxLength={200} autoFocus /></label>
+          <div className="modal-feedback pos-difference"><span>Total a reembolsar</span><strong>{formatMoney(sale.total_cents)}</strong></div>
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}><Check size={16} />{busy ? "Reembolsando…" : "Reembolsar servicio"}</button></div>
         </form>
       </section>
     </div>
