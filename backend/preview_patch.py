@@ -58,10 +58,15 @@ ADDED_COLUMNS = {
     "progress_photos": {"origin": "VARCHAR(8) NOT NULL DEFAULT 'staff'"},
     "kiosk_devices": {"token_expires_at": "DATETIME"},
     "staff_notifications": {"resolved_at": "DATETIME"},
-    "staffing_settings": {"attendance_request_sla_hours": "INTEGER NOT NULL DEFAULT 24"},
+    "staffing_settings": {
+        "attendance_request_sla_hours": "INTEGER NOT NULL DEFAULT 24",
+        "attendance_email_enabled": "BOOLEAN NOT NULL DEFAULT 1",
+    },
     "staffing_settings_events": {
         "previous_attendance_request_sla_hours": "INTEGER NOT NULL DEFAULT 24",
         "attendance_request_sla_hours": "INTEGER NOT NULL DEFAULT 24",
+        "previous_attendance_email_enabled": "BOOLEAN NOT NULL DEFAULT 1",
+        "attendance_email_enabled": "BOOLEAN NOT NULL DEFAULT 1",
     },
     "staff_attendance_requests": {"due_at": "DATETIME"},
     "staff_attendance_events": {"attendance_request_id": "CHAR(32)"},
@@ -597,6 +602,20 @@ def backfill_attendance_request_links(connection: sqlite3.Connection) -> int:
     return connection.execute("SELECT changes()").fetchone()[0]
 
 
+def ensure_added_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    """Add the columns a later migration introduced, returning the new ones."""
+    present = column_names(connection, table)
+    added: set[str] = set()
+    for column, sql_type in ADDED_COLUMNS[table].items():
+        if column in present:
+            print(f"{table}.{column} already present")
+            continue
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+        added.add(column)
+        print(f"Added {table}.{column}")
+    return added
+
+
 def main(reset_maintenance: bool) -> None:
     connection = sqlite3.connect(DB)
     try:
@@ -604,17 +623,11 @@ def main(reset_maintenance: bool) -> None:
         tables = table_names(connection)
         added: set[tuple[str, str]] = set()
 
-        for table, columns in ADDED_COLUMNS.items():
+        for table in ADDED_COLUMNS:
             if table not in tables:
                 continue
-            present = column_names(connection, table)
-            for column, sql_type in columns.items():
-                if column in present:
-                    print(f"{table}.{column} already present")
-                    continue
-                connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+            for column in ensure_added_columns(connection, table):
                 added.add((table, column))
-                print(f"Added {table}.{column}")
 
         # Match the migration: requests that were already pending before the
         # term existed get the 24-hour default measured from their creation.

@@ -162,6 +162,18 @@ def read_attendance_request_sla_hours(session: Session) -> int:
     return settings.attendance_request_sla_hours
 
 
+def read_attendance_email_enabled(session: Session) -> bool:
+    """Whether the attendance notices are also queued as email.
+
+    The channel ships enabled and the club turns it off from the panel, so a
+    database without the settings row falls back to ``True``.
+    """
+    settings = session.get(StaffingSettings, 1)
+    if settings is None:
+        return True
+    return bool(settings.attendance_email_enabled)
+
+
 def get_staffing_settings(session: Session) -> StaffingSettings:
     """Return the singleton settings row, creating it with defaults if needed."""
     settings = session.get(StaffingSettings, 1)
@@ -179,6 +191,7 @@ def update_staffing_settings(
     check_in_early_grace_minutes: int,
     lateness_tolerance_minutes: int,
     attendance_request_sla_hours: int,
+    attendance_email_enabled: bool | None = None,
     actor_id: UUID | None = None,
 ) -> StaffingSettings:
     """Save the club policy, recording who changed what and the previous values.
@@ -187,7 +200,8 @@ def update_staffing_settings(
     the panel answer who moved the check-in window. A save that changes nothing
     writes no row, so the history only shows real changes. The request term is
     frozen on each pending request when it is created, so changing it here never
-    re-times a request that is already waiting.
+    re-times a request that is already waiting. Omitting the email switch keeps
+    the stored value, so an older client cannot turn it on or off by accident.
     """
     for value, label, limit in (
         (check_in_early_grace_minutes, "check_in_early_grace_minutes", MAX_ATTENDANCE_POLICY_MINUTES),
@@ -204,16 +218,20 @@ def update_staffing_settings(
     previous_grace = settings.check_in_early_grace_minutes
     previous_tolerance = settings.lateness_tolerance_minutes
     previous_sla = settings.attendance_request_sla_hours
+    previous_email = bool(settings.attendance_email_enabled)
+    next_email = previous_email if attendance_email_enabled is None else bool(attendance_email_enabled)
     if (
         previous_grace == check_in_early_grace_minutes
         and previous_tolerance == lateness_tolerance_minutes
         and previous_sla == attendance_request_sla_hours
+        and previous_email == next_email
     ):
         return _normalize_datetimes(settings, ("updated_at",))
     now = utc_now()
     settings.check_in_early_grace_minutes = check_in_early_grace_minutes
     settings.lateness_tolerance_minutes = lateness_tolerance_minutes
     settings.attendance_request_sla_hours = attendance_request_sla_hours
+    settings.attendance_email_enabled = next_email
     settings.updated_at = now
     session.add(settings)
     session.add(
@@ -225,6 +243,8 @@ def update_staffing_settings(
             lateness_tolerance_minutes=lateness_tolerance_minutes,
             previous_attendance_request_sla_hours=previous_sla,
             attendance_request_sla_hours=attendance_request_sla_hours,
+            previous_attendance_email_enabled=previous_email,
+            attendance_email_enabled=next_email,
             changed_at=now,
         )
     )

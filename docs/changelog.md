@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-30 · Asistencia: cola de correos de los avisos y su interruptor de club
+
+- **Una entrega por aviso**: `create_staff_notification` escribe `staff_notification_deliveries` en la misma transacción del aviso, solo para los seis tipos del ciclo de asistencia y solo cuando el aviso es nuevo —el dedupe no encola dos veces—. El destinatario es el correo de la cuenta activa del panel copiado al emitir; una cuenta deshabilitada o sin correo deja el aviso en la campana y no encola nada.
+- **Interruptor del club**: `staffing_settings.attendance_email_enabled` (verdadero por defecto) decide si el ciclo se encola, se edita con el `PATCH` de la política —omitir el campo conserva el valor guardado— y queda auditado con `previous_attendance_email_enabled`/`attendance_email_enabled` en `staffing_settings_events`.
+- **Todavía no se envía**: el corte deja la cola en `pending` (`attempts = 0`, sin fecha de intento). El envío, el reintento, la tarjeta de entregas y el significado de `sent` —el SMTP aceptó el mensaje, no que llegara a la bandeja— llegan en el siguiente.
+- **Esquema**: migración `20261031_0065_staff_notification_deliveries.py` con las tres columnas booleanas y la tabla de entregas (FK `RESTRICT`, `uq_staff_notification_deliveries_notice`, dos `CHECK` e índice `(status, created_at)`); su reversión se niega mientras haya entregas. `preview_patch.py` reproduce las columnas con `ensure_added_columns` y `create_all` crea la tabla.
+- **Pruebas**: 3 casos nuevos en `test_attendance_requests.py` —las seis entregas del ciclo completo con el correo de la cuenta, dedupe y cuenta deshabilitada, interruptor con su auditoría y escalado único al dueño— y 1 en `test_preview_patch.py` —columnas registradas e idempotencia del parche—. Suite en **283 pruebas**: 278 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Verificación**: el SQL offline de `20261031_0065` compila; `preview_patch.py` añadió las columnas a la vista previa con `attendance_email_enabled = 1` y, tras reiniciar el backend, `create_all` creó la tabla de entregas; `GET /admin/staff/settings` devolvió `attendance_email_enabled: true`.
+- **Documentación**: ADR-048, modelo de datos, módulo de personal y roles, plan de pruebas e índice.
+
 ## 2026-10-30 · Asistencia: relleno del vínculo solicitud→bitácora en el histórico
 
 - **Relleno sin cruzar instantes**: la aprobación de una solicitud escribe el motivo del evento como `Solicitud del colaborador: {justificación}` —con `· Nota del supervisor:` cuando la hay— desde ADR-044, así que las aprobaciones hechas antes de existir la columna se pueden enlazar por su propio texto. La regla exige la misma asistencia, `actor_id = decided_by`, `source = 'manual'`, el tipo de evento que produce el `mark`/`action` y el motivo exacto, y solo enlaza cuando el emparejamiento es uno a uno en ambos lados; lo ambiguo se queda sin vínculo.

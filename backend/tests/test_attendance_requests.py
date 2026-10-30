@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlmodel import Session, select
 
 from app.modules.identity.models import AppUser, Employee
 from app.modules.identity.service import ensure_default_access_control, register_user
-from app.modules.notifications.models import StaffNotification
+from app.modules.notifications.models import StaffNotification, StaffNotificationDelivery
+from app.modules.notifications.service import create_staff_notification
 from app.modules.staffing.models import (
     AttendanceEvent,
     StaffAttendance,
@@ -31,6 +32,7 @@ from app.modules.staffing.service import (
     list_attendance_annulments,
     list_attendance_requests,
     list_staffing_settings_events,
+    read_attendance_email_enabled,
     request_attendance_change,
     update_staffing_settings,
     void_attendance_mark,
@@ -629,3 +631,248 @@ def test_employee_without_account_is_still_corrected(session: Session) -> None:
         reason="Sin cuenta vinculada",
     )
     assert session.exec(select(StaffNotification)).all() == []
+    assert session.exec(select(StaffNotificationDelivery)).all() == []
+
+
+def queued_emails(session: Session) -> list[tuple[str, UUID, str, str, int]]:
+    rows = session.exec(
+        select(StaffNotificationDelivery, StaffNotification)
+        .join(StaffNotification, StaffNotification.id == StaffNotificationDelivery.notice_id)
+        .order_by(StaffNotificationDelivery.created_at)
+    ).all()
+    return [
+        (notice.kind, notice.user_id, delivery.recipient, delivery.status, delivery.attempts)
+        for delivery, notice in rows
+    ]
+
+
+def test_attendance_notices_queue_one_email_for_the_recipient(session: Session) -> None:
+    employee, account, manager = seed_employee_with_account(session)
+    account_email = "lucia.account@example.test"
+
+    # A correction and a void made from the panel reach the employee's account.
+    first = seed_attendance(session, employee.id, manager.id, late_minutes=20)
+    clock_out(
+        session,
+        shift_id=first.shift_id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START + timedelta(hours=8),
+    )
+    correct_attendance(
+        session,
+        attendance_id=first.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        event_type="check_in",
+        occurred_at=START - timedelta(minutes=5),
+        reason="Llegó antes y marcó tarde",
+    )
+    void_attendance_mark(
+        session,
+        attendance_id=first.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        mark="check_out",
+        reason="La salida era de otro día",
+    )
+
+    # A request waits for the supervisor and its decision reaches the employee.
+    second = seed_attendance(session, employee.id, manager.id, late_minutes=20, day_offset=1)
+    approved = request_attendance_change(
+        session,
+        attendance_id=second.id,
+        actor_id=account.id,
+        employee_id=employee.id,
+        mark="check_in",
+        action="correct",
+        proposed_at=START + timedelta(days=1),
+        justification="Entré a la hora y el reloj marcó tarde",
+    )
+    decide_attendance_request(
+        session, request_id=approved.id, actor_id=manager.id, decision="approved"
+    )
+
+    third = seed_attendance(session, employee.id, manager.id, late_minutes=10, day_offset=2)
+    rejected = request_attendance_change(
+        session,
+        attendance_id=third.id,
+        actor_id=account.id,
+        employee_id=employee.id,
+        mark="check_in",
+        action="correct",
+        proposed_at=START + timedelta(days=2, minutes=-5),
+        justification="Creo que entré antes",
+    )
+    decide_attendance_request(
+        session,
+        request_id=rejected.id,
+        actor_id=manager.id,
+        decision="rejected",
+        note="La cámara marca la hora original",
+    )
+
+    assert sorted(queued_emails(session)) == sorted(
+        [
+            ("attendance_corrected", account.id, account_email, "pending", 0),
+            ("attendance_voided", account.id, account_email, "pending", 0),
+            ("attendance_request_pending", manager.id, "manager@example.test", "pending", 0),
+            ("attendance_request_approved", account.id, account_email, "pending", 0),
+            ("attendance_request_pending", manager.id, "manager@example.test", "pending", 0),
+            ("attendance_request_rejected", account.id, account_email, "pending", 0),
+        ]
+    )
+    # The recipient is the panel account, not the employee's record address.
+    assert all(
+        delivery.recipient != employee.email
+        for delivery in session.exec(select(StaffNotificationDelivery)).all()
+    )
+
+    # Only the attendance cycle leaves the panel for now.
+    create_staff_notification(
+        session,
+        user_id=manager.id,
+        kind="workout_pending_review",
+        title="Entrenamiento pendiente de revisión",
+        body="Un aviso que todavía no sale por correo.",
+    )
+    assert len(queued_emails(session)) == 6
+
+
+def test_email_queue_respects_the_switch_and_never_repeats(session: Session) -> None:
+    employee, account, manager = seed_employee_with_account(session)
+    assert read_attendance_email_enabled(session) is True
+
+    # Replaying the same notice through its dedupe key queues one email.
+    key = f"attendance_corrected:{uuid4()}"
+    for _ in range(2):
+        create_staff_notification(
+            session,
+            user_id=manager.id,
+            kind="attendance_corrected",
+            title="Se corrigió tu marca",
+            body="El mismo aviso emitido dos veces.",
+            dedupe_key=key,
+        )
+    assert queued_emails(session) == [
+        ("attendance_corrected", manager.id, "manager@example.test", "pending", 0)
+    ]
+
+    # A disabled account keeps the inbox row but has no address to mail.
+    account.status = "disabled"
+    session.add(account)
+    session.commit()
+    create_staff_notification(
+        session,
+        user_id=account.id,
+        kind="attendance_request_approved",
+        title="Se aprobó tu solicitud",
+        body="La cuenta ya no está activa.",
+    )
+    assert len(queued_emails(session)) == 1
+    account.status = "active"
+    session.add(account)
+    session.commit()
+
+    # Turning the channel off keeps the notices and stops the deliveries.
+    update_staffing_settings(
+        session,
+        check_in_early_grace_minutes=15,
+        lateness_tolerance_minutes=0,
+        attendance_request_sla_hours=24,
+        attendance_email_enabled=False,
+        actor_id=manager.id,
+    )
+    assert read_attendance_email_enabled(session) is False
+    notices_before = len(session.exec(select(StaffNotification)).all())
+    attendance = seed_attendance(session, employee.id, manager.id, late_minutes=20)
+    correct_attendance(
+        session,
+        attendance_id=attendance.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        event_type="check_in",
+        occurred_at=START - timedelta(minutes=5),
+        reason="El canal de correo está apagado",
+    )
+    assert len(session.exec(select(StaffNotification)).all()) == notices_before + 1
+    assert len(queued_emails(session)) == 1
+
+    # An older client that omits the switch keeps it off, and the change is audited.
+    update_staffing_settings(
+        session,
+        check_in_early_grace_minutes=15,
+        lateness_tolerance_minutes=0,
+        attendance_request_sla_hours=48,
+        actor_id=manager.id,
+    )
+    assert read_attendance_email_enabled(session) is False
+    history = [
+        (event.previous_attendance_email_enabled, event.attendance_email_enabled)
+        for event, _, _ in list_staffing_settings_events(session)
+    ]
+    assert history.count((True, False)) == 1
+    assert history.count((False, False)) == 1
+
+    update_staffing_settings(
+        session,
+        check_in_early_grace_minutes=15,
+        lateness_tolerance_minutes=0,
+        attendance_request_sla_hours=48,
+        attendance_email_enabled=True,
+        actor_id=manager.id,
+    )
+    assert read_attendance_email_enabled(session) is True
+    history = [
+        (event.previous_attendance_email_enabled, event.attendance_email_enabled)
+        for event, _, _ in list_staffing_settings_events(session)
+    ]
+    assert history.count((False, True)) == 1
+
+    # With the channel back on, a new notice is queued again.
+    create_staff_notification(
+        session,
+        user_id=manager.id,
+        kind="attendance_request_rejected",
+        title="Se rechazó tu solicitud",
+        body="El canal volvió a quedar disponible.",
+    )
+    assert len(queued_emails(session)) == 2
+
+
+def test_overdue_escalation_queues_one_email_for_the_owner(session: Session) -> None:
+    employee, account, manager = seed_employee_with_account(session)
+    owner = register_user(
+        session,
+        email="owner3@example.test",
+        password="owner-password-long-enough",
+        role_codes=("owner",),
+    )
+    attendance = seed_attendance(session, employee.id, manager.id, late_minutes=12)
+    request = request_attendance_change(
+        session,
+        attendance_id=attendance.id,
+        actor_id=account.id,
+        employee_id=employee.id,
+        mark="check_in",
+        action="correct",
+        proposed_at=START,
+        justification="Marqué doce minutos tarde por error",
+    )
+
+    before_due = request.created_at + timedelta(hours=23, minutes=59)
+    assert escalate_overdue_attendance_requests(session, now=before_due) == 0
+    assert {kind for kind, *_ in queued_emails(session)} == {"attendance_request_pending"}
+
+    assert escalate_overdue_attendance_requests(session, now=before_due + timedelta(minutes=2)) == 1
+    overdue = [entry for entry in queued_emails(session) if entry[0] == "attendance_request_overdue"]
+    assert [(user_id, recipient, status, attempts) for _, user_id, recipient, status, attempts in overdue] == [
+        (owner.id, "owner3@example.test", "pending", 0)
+    ]
+
+    # Reading the queue again does not queue the escalation twice.
+    list_attendance_requests(session, status="pending")
+    assert escalate_overdue_attendance_requests(session, now=before_due + timedelta(days=2)) == 0
+    assert len(
+        [entry for entry in queued_emails(session) if entry[0] == "attendance_request_overdue"]
+    ) == 1

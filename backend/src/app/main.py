@@ -972,6 +972,7 @@ class StaffingSettingsRequest(BaseModel):
     check_in_early_grace_minutes: int = Field(ge=0, le=240)
     lateness_tolerance_minutes: int = Field(ge=0, le=240)
     attendance_request_sla_hours: int = Field(ge=0, le=720)
+    attendance_email_enabled: bool | None = None
 
 
 class AttendanceChangeRequest(BaseModel):
@@ -4421,6 +4422,7 @@ def update_staffing_settings_endpoint(
         check_in_early_grace_minutes=request.check_in_early_grace_minutes,
         lateness_tolerance_minutes=request.lateness_tolerance_minutes,
         attendance_request_sla_hours=request.attendance_request_sla_hours,
+        attendance_email_enabled=request.attendance_email_enabled,
         actor_id=principal.user_id,
     )
     return _staffing_settings_payload(settings)
@@ -4449,6 +4451,8 @@ def list_staffing_settings_events_endpoint(
                 "lateness_tolerance_minutes": event.lateness_tolerance_minutes,
                 "previous_attendance_request_sla_hours": event.previous_attendance_request_sla_hours,
                 "attendance_request_sla_hours": event.attendance_request_sla_hours,
+                "previous_attendance_email_enabled": event.previous_attendance_email_enabled,
+                "attendance_email_enabled": event.attendance_email_enabled,
             }
             for event, actor, employee in rows
         ]
@@ -4952,6 +4956,7 @@ def _staffing_settings_payload(settings: StaffingSettings) -> dict[str, object]:
         "check_in_early_grace_minutes": settings.check_in_early_grace_minutes,
         "lateness_tolerance_minutes": settings.lateness_tolerance_minutes,
         "attendance_request_sla_hours": settings.attendance_request_sla_hours,
+        "attendance_email_enabled": settings.attendance_email_enabled,
         "updated_at": settings.updated_at,
     }
 

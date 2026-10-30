@@ -33,7 +33,9 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
+    UniqueConstraint,
     Uuid,
     func,
     text,
@@ -132,6 +134,18 @@ STAFF_NOTIFICATION_KINDS = (
     "attendance_request_overdue",
 )
 
+# The attendance cycle is the first staff conversation that also leaves the
+# panel: the employee and the supervisors are told by email, not only by the
+# bell. Other kinds keep waiting for their own cut.
+STAFF_NOTIFICATION_EMAIL_KINDS = (
+    "attendance_corrected",
+    "attendance_voided",
+    "attendance_request_pending",
+    "attendance_request_approved",
+    "attendance_request_rejected",
+    "attendance_request_overdue",
+)
+
 
 class StaffNotification(SQLModel, table=True):
     """An inbox row addressed to a panel account instead of to a member."""
@@ -181,3 +195,62 @@ class StaffNotification(SQLModel, table=True):
     )
     read_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     resolved_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+
+class StaffNotificationDelivery(SQLModel, table=True):
+    """An email queued for one staff notice.
+
+    The row is written in the same transaction as the notice, so a rolled-back
+    change never leaves a message to send and a committed one cannot be
+    forgotten. ``pending`` means the SMTP server was not contacted yet; the
+    following attempt records ``sent``, ``simulated`` (preview mode) or
+    ``failed`` with the transport error. ``recipient`` is a snapshot of the
+    account's address at the time of the notice, because the account may be
+    edited later.
+    """
+
+    __tablename__ = "staff_notification_deliveries"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'sent', 'simulated', 'failed')",
+            name="ck_staff_notification_deliveries_status",
+        ),
+        CheckConstraint(
+            "attempts >= 0", name="ck_staff_notification_deliveries_attempts"
+        ),
+        UniqueConstraint(
+            "notice_id", name="uq_staff_notification_deliveries_notice"
+        ),
+        Index(
+            "ix_staff_notification_deliveries_status_created",
+            "status",
+            "created_at",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    notice_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("staff_notifications.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    recipient: str = Field(max_length=254)
+    status: str = Field(
+        default="pending",
+        sa_column=Column(String(16), nullable=False, server_default=text("'pending'")),
+    )
+    attempts: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default=text("0")),
+    )
+    error: str | None = Field(default=None, max_length=500)
+    last_attempt_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    sent_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )

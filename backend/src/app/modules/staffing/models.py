@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     DateTime,
@@ -128,6 +129,8 @@ class StaffingSettings(SQLModel, table=True):
     zero-or-positive minute counts and are edited from the panel.
     ``attendance_request_sla_hours`` is how long a supervisor has to decide an
     employee's change request before it counts as overdue; zero means no term.
+    ``attendance_email_enabled`` is whether the attendance notices are also
+    queued as email; the inbox works either way.
     """
 
     __tablename__ = "staffing_settings"
@@ -152,6 +155,10 @@ class StaffingSettings(SQLModel, table=True):
     attendance_request_sla_hours: int = Field(
         default=24,
         sa_column=Column(Integer, nullable=False, server_default=text("24")),
+    )
+    attendance_email_enabled: bool = Field(
+        default=True,
+        sa_column=Column(Boolean, nullable=False, server_default=text("true")),
     )
     updated_at: datetime = Field(
         default_factory=utc_now,
@@ -185,6 +192,12 @@ class StaffingSettingsEvent(SQLModel, table=True):
     )
     attendance_request_sla_hours: int = Field(
         sa_column=Column(Integer, nullable=False, server_default=text("24"))
+    )
+    previous_attendance_email_enabled: bool = Field(
+        sa_column=Column(Boolean, nullable=False, server_default=text("true"))
+    )
+    attendance_email_enabled: bool = Field(
+        sa_column=Column(Boolean, nullable=False, server_default=text("true"))
     )
     changed_at: datetime = Field(
         default_factory=utc_now,

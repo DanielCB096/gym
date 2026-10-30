@@ -494,3 +494,37 @@ def test_preview_backfills_the_request_link_on_older_events() -> None:
 
     # Running it again finds nothing left to link.
     assert preview_patch.backfill_attendance_request_links(connection) == 0
+
+
+def test_preview_upgrade_registers_the_email_switch_columns() -> None:
+    assert preview_patch.ADDED_COLUMNS["staffing_settings"]["attendance_email_enabled"] == (
+        "BOOLEAN NOT NULL DEFAULT 1"
+    )
+    assert preview_patch.ADDED_COLUMNS["staffing_settings_events"] == {
+        "previous_attendance_request_sla_hours": "INTEGER NOT NULL DEFAULT 24",
+        "attendance_request_sla_hours": "INTEGER NOT NULL DEFAULT 24",
+        "previous_attendance_email_enabled": "BOOLEAN NOT NULL DEFAULT 1",
+        "attendance_email_enabled": "BOOLEAN NOT NULL DEFAULT 1",
+    }
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        'CREATE TABLE "staffing_settings" (\n'
+        "\tid INTEGER NOT NULL, \n"
+        "\tcheck_in_early_grace_minutes INTEGER NOT NULL DEFAULT 15, \n"
+        "\tlateness_tolerance_minutes INTEGER NOT NULL DEFAULT 0, \n"
+        "\tattendance_request_sla_hours INTEGER NOT NULL DEFAULT 24, \n"
+        "\tupdated_at DATETIME NOT NULL, \n"
+        "\tPRIMARY KEY (id)\n"
+        ")"
+    )
+    connection.execute(
+        "INSERT INTO staffing_settings (id, updated_at) VALUES (1, '2026-10-30 12:00:00')"
+    )
+    connection.commit()
+    preview_patch.ensure_added_columns(connection, "staffing_settings")
+    preview_patch.ensure_added_columns(connection, "staffing_settings")
+    row = connection.execute(
+        "SELECT attendance_email_enabled FROM staffing_settings WHERE id = 1"
+    ).fetchone()
+    assert row == (1,)

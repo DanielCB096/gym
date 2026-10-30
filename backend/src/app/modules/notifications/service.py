@@ -43,9 +43,11 @@ from app.modules.notifications.models import (
     MAX_DEDUPE_CHARS,
     MAX_TITLE_CHARS,
     NOTIFICATION_KINDS,
+    STAFF_NOTIFICATION_EMAIL_KINDS,
     STAFF_NOTIFICATION_KINDS,
     MemberNotification,
     StaffNotification,
+    StaffNotificationDelivery,
     utc_now,
 )
 from app.timezone import to_club_timezone
@@ -211,21 +213,55 @@ def create_staff_notification(
     dedupe_key: str | None = None,
     now: datetime | None = None,
 ) -> StaffNotification:
-    """Append a message for a panel account."""
+    """Append a message for a panel account and queue its email.
+
+    The delivery row is written in the same transaction as the notice, and only
+    when the notice is new: a deduplicated replay returns the existing row and
+    must not send the message twice.
+    """
     clean_title, clean_body = _validated_message(kind, title, body, STAFF_NOTIFICATION_KINDS)
-    return _append(
-        session,
-        StaffNotification(
-            user_id=user_id,
-            kind=kind,
-            title=clean_title,
-            body=clean_body,
-            ref_id=ref_id,
-            dedupe_key=_clean_dedupe_key(dedupe_key),
-            created_at=_as_utc(now or utc_now()),
-        ),
-        StaffNotification,
+    notice = StaffNotification(
+        user_id=user_id,
+        kind=kind,
+        title=clean_title,
+        body=clean_body,
+        ref_id=ref_id,
+        dedupe_key=_clean_dedupe_key(dedupe_key),
+        created_at=_as_utc(now or utc_now()),
     )
+    stored = _append(session, notice, StaffNotification)
+    if stored is notice:
+        _enqueue_staff_notification_email(session, notice)
+    return stored
+
+
+def _enqueue_staff_notification_email(
+    session: Session, notice: StaffNotification
+) -> StaffNotificationDelivery | None:
+    """Queue an email for the notice when the club has the channel open.
+
+    Only the attendance kinds leave the panel today. The switch belongs to the
+    staffing policy; the import is late because that service imports this module
+    to write its own notices.
+    """
+    if notice.kind not in STAFF_NOTIFICATION_EMAIL_KINDS:
+        return None
+    from app.modules.staffing.service import read_attendance_email_enabled
+
+    if not read_attendance_email_enabled(session):
+        return None
+    user = session.get(AppUser, notice.user_id)
+    if user is None or user.status != "active":
+        return None
+    recipient = (user.email or "").strip()
+    if not recipient:
+        return None
+    delivery = StaffNotificationDelivery(
+        notice_id=notice.id,
+        recipient=recipient,
+    )
+    session.add(delivery)
+    return delivery
 
 
 def staff_user_for_employee(session: Session, employee_id: UUID | None) -> UUID | None:
