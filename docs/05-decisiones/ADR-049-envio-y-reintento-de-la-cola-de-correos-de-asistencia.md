@@ -1,0 +1,38 @@
+# ADR-049: Envío de la cola de correos de asistencia, su reintento y la tarjeta de entregas
+
+- Fecha: 2026-10-30
+- Estado: propuesta inicial
+
+## Contexto
+
+ADR-048 dejó la mitad transaccional del incremento: cada aviso del ciclo de asistencia, escrito con su entrega `pending` en la misma transacción, y el interruptor del club. El correo no salía. El club ya pidió que salga, y el requisito que lo frenaba sigue en pie: un SMTP lento no puede mantener abierta la transacción que registra la corrección y un fallo de transporte no puede revertirla.
+
+Sin un worker ni una cola externa en el despliegue actual, el envío tiene que ocurrir **después** de la respuesta, en el mismo proceso del backend, y lo tiene que disparar el propio uso del panel: el ciclo de asistencia solo produce avisos cuando alguien ya está operando el panel, y la campana consulta al backend con frecuencia. Además, operar una cola exige dos cosas que el ADR anterior aplazó: poder **reintentar** lo que falló y poder **ver** el estado de las entregas sin abrir la base.
+
+## Decisión
+
+- **El envío es una pasada fuera de la transacción, disparada tras la respuesta.** `send_pending_staff_notification_emails` toma hasta 20 entregas `pending` por `(created_at, id)`, las intenta y escribe su resultado. La ruta que emitió el aviso no lo ejecuta: FastAPI ejecuta una `BackgroundTasks` cuando ya devolvió la respuesta y cerró la sesión de la petición, así que la tarea abre **su propia sesión sobre el motor de la petición** (`session.get_bind()`, solo si es un `Engine`) y nunca comparte transacción con la marca, la corrección o la decisión. `flush_attendance_emails_after_response`, inyectado como dependencia `AttendanceEmailFlush`, es el punto único: lo llevan el contador de avisos sin leer —el que el panel consulta al abrir y al volver a la pestaña—, la corrección, la anulación y las dos rutas de solicitud. Si el motor no es un `Engine` —algunas pruebas—, la tarea no se registra y nada cambia.
+- **El intento se toma con compare-and-set, antes de tocar el SMTP.** El `CHECK` del estado solo admite cuatro valores, así que en vez de inventar un `sending` se hace `UPDATE … SET attempts = attempts + 1, last_attempt_at = now WHERE id = :id AND status = :from_status AND attempts = :attempts` y se confirma; `rowcount == 0` significa que otra pasada —otra pestaña, otro proceso uvicorn— tomó la entrega y esta la salta. Así dos pasadas concurrentes no envían el mismo correo, y el intento queda contado aunque el proceso muera durante la llamada al servidor.
+- **El interruptor se vuelve a leer al enviar.** La pasada empieza comprobando `attendance_email_enabled`: apagado, devuelve `enabled=False`, `attempted=0` y deja las filas en `pending`, que es lo que ADR-048 prometió —la cola no se borra ni se marca como fallida—. Encender vuelve a enviar lo que esperaba.
+- **Solo `failed` se puede reintentar, y el reintento no es un botón de repetir sin límite.** `POST /admin/staff/notifications/deliveries/{id}/retry` (`attendance.manage`) acepta una entrega `failed`; una `sent`/`simulated`/`pending` responde `409` y un identificador desconocido `404`. El reintento usa el mismo compare-and-set y la misma `_deliver`, y devuelve la fila con su resultado —también cuando vuelve a fallar, con el error nuevo—, de modo que el operador ve el motivo sin recargar. No hay backoff automático: la fila fallida espera una acción o la próxima pasada manual, y la pasada automática **no** vuelve a tomar `failed` por sí sola.
+- **`sent` no es «entregado».** Como en el resto de envíos del proyecto, `sent` significa que el servidor SMTP aceptó el mensaje; en la vista previa `send_email` no contacta a nadie y la fila queda `simulated`. El `error` de una entrega fallida se guarda recortado a 500 caracteres, y un aviso borrado —imposible con la FK `RESTRICT`, salvo una base manipulada a mano— marca la entrega `failed` con su motivo en vez de romper la pasada.
+- **Una pasada nunca se cae por un mensaje.** `MailNotConfigured`, `MailDeliveryFailed` y cualquier excepción inesperada se convierten en `failed` con su texto; el bucle sigue con la siguiente entrega. El resultado de la pasada —`attempted`, `sent`, `simulated`, `failed`, `remaining`— es lo que devuelve `POST /admin/staff/notifications/deliveries/send` y lo que el panel convierte en su aviso.
+- **La cola se ve y se opera desde la tarjeta del panel.** `GET /admin/staff/notifications/deliveries` (`attendance.read`) devuelve `enabled`, los cuatro conteos y una página de 20 entregas con destinatario copiado, tipo, título, estado, intentos, último intento, error y fecha de envío, filtrable por estado. En «Personal → Equipo», la tarjeta «Cola de entrega de avisos» muestra el chip del interruptor, los conteos, el filtro por estado, el botón «Enviar pendientes» y «Reintentar» en cada fila fallida —los dos últimos solo con `attendance.manage`—. La corrección y la anulación cierran el modal refrescando también la cola, porque ambas emiten un aviso.
+- **El interruptor se edita desde la misma tarjeta de política.** El `PATCH /admin/staff/settings` del panel pasa a enviar `attendance_email_enabled` junto con los minutos y el plazo, y el historial de la política muestra «correo encendido → apagado» cuando ese campo cambió, junto a los demás valores.
+
+## Consecuencias y límites
+
+- **No hay worker ni reintento automático.** Lo que se encola mientras nadie usa el panel espera a la próxima consulta o al próximo envío manual; el sistema no promete un correo «en segundos». Un club que quiera envío inmediato y desatendido necesitará un proceso dedicado que llame al mismo servicio —el servicio no sabe quién lo invoca—. En producción con varios procesos, cada uno puede disparar su pasada: el compare-and-set evita duplicados, pero no reparte la cola de forma equitativa.
+- **La pasada es corta a propósito.** El lote es de 20 entregas —el listado admite hasta 100 por página— y el envío no acepta otro tamaño; con un SMTP lento cada pasada tarda lo que tarden esos mensajes. No se corre en paralelo dentro de una pasada.
+- **Un `failed` no se reintenta solo.** Es una decisión, no una carencia: reintentar un rechazo permanente (una dirección inexistente) sin intervención solo gasta cuota y ensucia la cola. Revisar el error y pulsar «Reintentar» es el camino.
+- **La tarjeta no es un acuse.** `sent` sigue siendo «el SMTP aceptó el mensaje»; no hay rebotes ni confirmación de bandeja, igual que en las facturas y los estados de cuenta.
+- **Los demás avisos del personal siguen en la campana.** `STAFF_NOTIFICATION_EMAIL_KINDS` no cambia: solo el ciclo de asistencia sale por correo.
+
+## Referencias
+
+- `backend/src/app/modules/notifications/delivery.py` (`send_pending_staff_notification_emails`, `send_pending_staff_notification_emails_from_engine`, `retry_staff_notification_delivery`, `list_staff_notification_deliveries`, `staff_notification_delivery_counts`, `email_message_for_notice`)
+- `backend/src/app/main.py` (`flush_attendance_emails_after_response`, `AttendanceEmailFlush`, `GET /admin/staff/notifications/deliveries`, `POST /admin/staff/notifications/deliveries/send`, `POST /admin/staff/notifications/deliveries/{id}/retry`)
+- `backend/src/app/mailer.py` (`send_email`)
+- `backend/tests/test_attendance_email_delivery.py`, `backend/tests/test_attendance_email_api.py`
+- `web/src/app/page.tsx` (tarjeta «Cola de entrega de avisos», interruptor de la política), `web/src/app/api/admin/staff/notifications/deliveries/**`
+- `docs/05-decisiones/ADR-048-cola-de-correos-de-los-avisos-de-asistencia.md`

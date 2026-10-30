@@ -9,7 +9,7 @@ import os
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -458,6 +458,18 @@ from app.modules.notifications import (
     unread_notification_count,
     unread_staff_notification_count,
 )
+from app.modules.notifications.delivery import (
+    AttendanceEmailDisabled,
+    NotificationDeliveryError,
+    NotificationDeliveryNotFound,
+    NotificationDeliveryRetryNotAllowed,
+    StaffNotificationDeliveryItem,
+    list_staff_notification_deliveries,
+    retry_staff_notification_delivery,
+    send_pending_staff_notification_emails,
+    send_pending_staff_notification_emails_from_engine,
+    staff_notification_delivery_counts,
+)
 from app.modules.portal.classes import (
     MemberClassItem,
     MemberClassNotAllowed,
@@ -553,6 +565,7 @@ from app.modules.staffing.service import (
     list_attendance_requests,
     list_shifts_with_attendance,
     list_staffing_settings_events,
+    read_attendance_email_enabled,
     read_attendance_policy,
     read_attendance_request_sla_hours,
     record_manual_attendance,
@@ -2502,6 +2515,46 @@ class StaffNotificationReadAllResponse(BaseModel):
     updated: int
 
 
+class StaffNotificationDeliveryCountsResponse(BaseModel):
+    pending: int
+    sent: int
+    simulated: int
+    failed: int
+
+
+class StaffNotificationDeliveryResponse(BaseModel):
+    id: UUID
+    notice_id: UUID
+    kind: str
+    title: str
+    recipient: str
+    status: str
+    attempts: int
+    error: str | None
+    created_at: datetime
+    last_attempt_at: datetime | None
+    sent_at: datetime | None
+
+
+class StaffNotificationDeliveryPageResponse(BaseModel):
+    enabled: bool
+    counts: StaffNotificationDeliveryCountsResponse
+    items: list[StaffNotificationDeliveryResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class StaffNotificationDeliveryPassResponse(BaseModel):
+    enabled: bool
+    attempted: int
+    sent: int
+    simulated: int
+    failed: int
+    remaining: int
+
+
 class EquipmentResponse(BaseModel):
     id: UUID
     name: str
@@ -3316,6 +3369,26 @@ def get_session():
 
 SessionDependency = Annotated[Session, Depends(get_session)]
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def flush_attendance_emails_after_response(
+    background: BackgroundTasks,
+    session: SessionDependency,
+) -> None:
+    """Queue one attendance-email pass to run after the response is sent.
+
+    The task opens its own session on the request's engine: FastAPI tears the
+    request session down before it runs, and the SMTP call must never sit inside
+    the transaction that recorded the mark. The pass re-reads the club switch and
+    the queue, so a stale task only finds nothing to do.
+    """
+
+    bind = session.get_bind()
+    if isinstance(bind, Engine):
+        background.add_task(send_pending_staff_notification_emails_from_engine, bind)
+
+
+AttendanceEmailFlush = Annotated[None, Depends(flush_attendance_emails_after_response)]
 
 
 def get_current_principal(
@@ -4310,6 +4383,7 @@ def staff_notifications(
 def staff_notifications_unread(
     principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
 ) -> StaffNotificationCountResponse:
     warn_expiring_kiosk_tokens(session)
     return StaffNotificationCountResponse(
@@ -4346,6 +4420,82 @@ def staff_notifications_read_all(
     return StaffNotificationReadAllResponse(
         updated=mark_all_staff_notifications_read(session, principal.user_id)
     )
+
+
+@app.get(
+    "/admin/staff/notifications/deliveries",
+    response_model=StaffNotificationDeliveryPageResponse,
+    tags=["staff administration"],
+)
+def staff_notification_deliveries(
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.read"))],
+    session: SessionDependency,
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> StaffNotificationDeliveryPageResponse:
+    try:
+        inbox = list_staff_notification_deliveries(
+            session, status_filter=status_filter, page=page, page_size=page_size
+        )
+    except NotificationDeliveryError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    counts = staff_notification_delivery_counts(session)
+    return StaffNotificationDeliveryPageResponse(
+        enabled=read_attendance_email_enabled(session),
+        counts=StaffNotificationDeliveryCountsResponse(
+            pending=counts.pending,
+            sent=counts.sent,
+            simulated=counts.simulated,
+            failed=counts.failed,
+        ),
+        items=[_staff_notification_delivery_response(item) for item in inbox.items],
+        total=inbox.total,
+        page=inbox.page,
+        page_size=inbox.page_size,
+        pages=inbox.pages,
+    )
+
+
+@app.post(
+    "/admin/staff/notifications/deliveries/send",
+    response_model=StaffNotificationDeliveryPassResponse,
+    tags=["staff administration"],
+)
+def send_staff_notification_deliveries(
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+    session: SessionDependency,
+) -> StaffNotificationDeliveryPassResponse:
+    result = send_pending_staff_notification_emails(session)
+    return StaffNotificationDeliveryPassResponse(
+        enabled=result.enabled,
+        attempted=result.attempted,
+        sent=result.sent,
+        simulated=result.simulated,
+        failed=result.failed,
+        remaining=result.remaining,
+    )
+
+
+@app.post(
+    "/admin/staff/notifications/deliveries/{delivery_id}/retry",
+    response_model=StaffNotificationDeliveryResponse,
+    tags=["staff administration"],
+)
+def retry_staff_notification_delivery_endpoint(
+    delivery_id: UUID,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+    session: SessionDependency,
+) -> StaffNotificationDeliveryResponse:
+    try:
+        item = retry_staff_notification_delivery(session, delivery_id)
+    except NotificationDeliveryNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (NotificationDeliveryRetryNotAllowed, AttendanceEmailDisabled) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    return _staff_notification_delivery_response(item)
 
 
 @app.get("/admin/roles", tags=["staff administration"])
@@ -4577,6 +4727,7 @@ def correct_registered_attendance(
     attendance_id: UUID,
     request: AttendanceCorrectionRequest,
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
 ) -> dict[str, object]:
     if request.occurred_at.tzinfo is None or request.occurred_at.utcoffset() is None:
@@ -4645,6 +4796,7 @@ def void_registered_attendance_mark(
     attendance_id: UUID,
     request: AttendanceVoidRequest,
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
 ) -> dict[str, object]:
     try:
@@ -4693,6 +4845,7 @@ def create_attendance_request(
     attendance_id: UUID,
     request: AttendanceChangeRequest,
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.self"))],
 ) -> dict[str, object]:
     if principal.employee_id is None:
@@ -4757,6 +4910,7 @@ def decide_attendance_request_endpoint(
     request_id: UUID,
     request: AttendanceRequestDecisionRequest,
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
 ) -> dict[str, object]:
     try:
@@ -10056,6 +10210,24 @@ def _staff_notification_response(item: StaffNotificationItem) -> StaffNotificati
         created_at=item.created_at,
         read_at=item.read_at,
         resolved_at=item.resolved_at,
+    )
+
+
+def _staff_notification_delivery_response(
+    item: StaffNotificationDeliveryItem,
+) -> StaffNotificationDeliveryResponse:
+    return StaffNotificationDeliveryResponse(
+        id=item.id,
+        notice_id=item.notice_id,
+        kind=item.kind,
+        title=item.title,
+        recipient=item.recipient,
+        status=item.status,
+        attempts=item.attempts,
+        error=item.error,
+        created_at=item.created_at,
+        last_attempt_at=item.last_attempt_at,
+        sent_at=item.sent_at,
     )
 
 

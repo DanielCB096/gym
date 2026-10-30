@@ -148,6 +148,7 @@ type AttendancePolicy = {
   check_in_early_grace_minutes: number;
   lateness_tolerance_minutes: number;
   attendance_request_sla_hours: number;
+  attendance_email_enabled?: boolean;
   updated_at?: string | null;
 };
 
@@ -203,6 +204,32 @@ type AttendanceAnnulmentReport = {
   items: AttendanceAnnulment[];
 };
 
+type NotificationDeliveryStatus = "pending" | "sent" | "simulated" | "failed";
+
+type NotificationDelivery = {
+  id: string;
+  notice_id: string;
+  kind: string;
+  title: string;
+  recipient: string;
+  status: NotificationDeliveryStatus;
+  attempts: number;
+  error: string | null;
+  created_at: string;
+  last_attempt_at: string | null;
+  sent_at: string | null;
+};
+
+type NotificationDeliveryBoard = {
+  enabled: boolean;
+  counts: Record<NotificationDeliveryStatus, number>;
+  items: NotificationDelivery[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+};
+
 type StaffingSettingsEvent = {
   id: string;
   changed_at: string;
@@ -211,9 +238,11 @@ type StaffingSettingsEvent = {
   previous_check_in_early_grace_minutes: number;
   previous_lateness_tolerance_minutes: number;
   previous_attendance_request_sla_hours: number;
+  previous_attendance_email_enabled: boolean;
   check_in_early_grace_minutes: number;
   lateness_tolerance_minutes: number;
   attendance_request_sla_hours: number;
+  attendance_email_enabled: boolean;
 };
 
 type AttendanceLogEntry = {
@@ -3882,11 +3911,11 @@ function AccessTable({ events, compact = false }: { events: AccessEvent[]; compa
 }
 
 function StatusBadge({ state, detail }: { state: AccessState | string; detail?: string }) {
-  const statusClass = state === "Autorizado" || state === "Activa" || state === "Activo" || state === "En turno" || state === "Programado" || state === "Presente"
+  const statusClass = state === "Autorizado" || state === "Activa" || state === "Activo" || state === "En turno" || state === "Programado" || state === "Presente" || state === "Enviado"
     ? "status-good"
-    : state === "Manual" || state === "Por vencer" || state === "Pago pendiente" || state === "Congelada" || state === "Tarde"
+    : state === "Manual" || state === "Por vencer" || state === "Pago pendiente" || state === "Congelada" || state === "Tarde" || state === "Simulado"
       ? "status-warn"
-      : state === "Denegado" || state === "Vencida" || state === "Baja" || state === "Suspendida" || state === "Cancelada" || state === "Cancelado" || state === "Caducado"
+      : state === "Denegado" || state === "Vencida" || state === "Baja" || state === "Suspendida" || state === "Cancelada" || state === "Cancelado" || state === "Caducado" || state === "Con error"
         ? "status-bad"
         : "status-neutral";
   return <span className={`status-badge ${statusClass}`} title={detail}><i />{state}</span>;
@@ -4959,6 +4988,12 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
   const [annulmentDays, setAnnulmentDays] = useState(30);
   const [annulmentReport, setAnnulmentReport] = useState<AttendanceAnnulmentReport | null>(null);
   const [annulmentError, setAnnulmentError] = useState("");
+  const [policyEmail, setPolicyEmail] = useState(true);
+  const [deliveryBoard, setDeliveryBoard] = useState<NotificationDeliveryBoard | null>(null);
+  const [deliveryError, setDeliveryError] = useState("");
+  const [deliveryStatus, setDeliveryStatus] = useState<"" | NotificationDeliveryStatus>("");
+  const [deliveryPage, setDeliveryPage] = useState(1);
+  const [deliveryBusy, setDeliveryBusy] = useState<string | null>(null);
   const refreshStaffing = () => { setRequestsRefresh((value) => value + 1); onIdentityChanged(); };
   const pendingMarks = useRef(new Map<string, string>());
   const [clockNow, setClockNow] = useState(() => Date.now());
@@ -4979,6 +5014,7 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
         setPolicyGrace(String(settings.check_in_early_grace_minutes));
         setPolicyTolerance(String(settings.lateness_tolerance_minutes));
         setPolicySla(String(settings.attendance_request_sla_hours));
+        setPolicyEmail(settings.attendance_email_enabled !== false);
       } catch {
         // The card stays read-only until the settings endpoint responds.
       }
@@ -5045,6 +5081,66 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
     })();
     return () => { active = false; };
   }, [canViewAttendance, annulmentDays, requestsRefresh]);
+  useEffect(() => {
+    if (!canViewAttendance) return;
+    let active = true;
+    void (async () => {
+      try {
+        const query = new URLSearchParams({ page: String(deliveryPage) });
+        if (deliveryStatus) query.set("status", deliveryStatus);
+        const response = await fetch(`/api/admin/staff/notifications/deliveries?${query.toString()}`, { cache: "no-store" });
+        if (!active) return;
+        if (!response.ok) {
+          setDeliveryError("No se pudo cargar la cola de correos.");
+          return;
+        }
+        const board = await response.json() as NotificationDeliveryBoard;
+        setDeliveryBoard(board);
+        setDeliveryError("");
+      } catch {
+        if (active) setDeliveryError("No se pudo cargar la cola de correos.");
+      }
+    })();
+    return () => { active = false; };
+  }, [canViewAttendance, deliveryStatus, deliveryPage, requestsRefresh]);
+  const sendQueuedAttendanceEmails = async () => {
+    setDeliveryBusy("send");
+    try {
+      const response = await fetch("/api/admin/staff/notifications/deliveries/send", { method: "POST" });
+      const payload = await response.json().catch(() => ({})) as { detail?: string; enabled?: boolean; attempted?: number; sent?: number; simulated?: number; failed?: number };
+      if (!response.ok) {
+        onToast(payload.detail || "No se pudo enviar la cola de correos.");
+        return;
+      }
+      if (payload.enabled === false) onToast("El correo de asistencia está apagado en la política del club.");
+      else if ((payload.attempted ?? 0) === 0) onToast("No hay correos pendientes.");
+      else onToast(`${payload.attempted} intento(s): ${payload.sent} enviado(s), ${payload.simulated} simulado(s), ${payload.failed} con error.`);
+      setRequestsRefresh((value) => value + 1);
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setDeliveryBusy(null);
+    }
+  };
+  const retryNotificationDelivery = async (delivery: NotificationDelivery) => {
+    setDeliveryBusy(delivery.id);
+    try {
+      const response = await fetch(`/api/admin/staff/notifications/deliveries/${delivery.id}/retry`, { method: "POST" });
+      const payload = await response.json().catch(() => ({})) as Partial<NotificationDelivery> & { detail?: string };
+      if (!response.ok) {
+        onToast(payload.detail || "No se pudo reintentar el envío.");
+        return;
+      }
+      if (payload.status === "sent") onToast(`Correo enviado a ${delivery.recipient}.`);
+      else if (payload.status === "simulated") onToast("El correo se simuló: la vista previa no contacta al servidor SMTP.");
+      else onToast(`El intento volvió a fallar: ${payload.error ?? "sin detalle"}`);
+      setRequestsRefresh((value) => value + 1);
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setDeliveryBusy(null);
+    }
+  };
   const saveAttendancePolicy = async () => {
     const grace = Number(policyGrace);
     const tolerance = Number(policyTolerance);
@@ -5066,6 +5162,7 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
           check_in_early_grace_minutes: grace,
           lateness_tolerance_minutes: tolerance,
           attendance_request_sla_hours: sla,
+          attendance_email_enabled: policyEmail,
         }),
       });
       if (!response.ok) {
@@ -5078,6 +5175,7 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
       setPolicyGrace(String(settings.check_in_early_grace_minutes));
       setPolicyTolerance(String(settings.lateness_tolerance_minutes));
       setPolicySla(String(settings.attendance_request_sla_hours));
+      setPolicyEmail(settings.attendance_email_enabled !== false);
       onToast("Política de asistencia guardada.");
       refreshStaffing();
     } catch {
@@ -5111,6 +5209,12 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
   const teamShiftForAttendance = (attendanceId: string) =>
     shiftList.find((shift) => shift.attendance?.id === attendanceId) ?? null;
   const pendingRequestCount = (myRequests ?? []).filter((request) => request.status === "pending").length;
+  const policyEmailEnabled = policy?.attendance_email_enabled !== false;
+  const policyDirty = policy === null
+    || policyGrace !== String(policy.check_in_early_grace_minutes)
+    || policyTolerance !== String(policy.lateness_tolerance_minutes)
+    || policySla !== String(policy.attendance_request_sla_hours)
+    || policyEmail !== policyEmailEnabled;
 
   const markAttendance = async (shift: BackendShift, eventType: "check_in" | "check_out") => {
     const key = `${shift.id}:${eventType}`;
@@ -5349,12 +5453,16 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
               <label htmlFor="attendance-tolerance">Tolerancia de retardo (minutos)</label>
               <input id="attendance-tolerance" className="kiosk-limit-input" type="number" min={0} max={240} step={1} inputMode="numeric" value={policyTolerance} disabled={policyBusy || policy === null} onChange={(event) => setPolicyTolerance(event.target.value)} />
               <span className="kiosk-antipassback-state">{policy === null ? "" : policy.lateness_tolerance_minutes === 0 ? "Sin tolerancia: cualquier marca después del inicio es retardo." : `Hasta ${policy.lateness_tolerance_minutes} min tarde se considera presente.`}</span>
-              <button type="button" className="button button-secondary" disabled={policyBusy || policy === null || (policyGrace === String(policy.check_in_early_grace_minutes) && policyTolerance === String(policy.lateness_tolerance_minutes) && policySla === String(policy.attendance_request_sla_hours))} onClick={() => void saveAttendancePolicy()}>{policyBusy ? "Guardando…" : "Guardar"}</button>
+              <button type="button" className="button button-secondary" disabled={policyBusy || !policyDirty} onClick={() => void saveAttendancePolicy()}>{policyBusy ? "Guardando…" : "Guardar"}</button>
             </div>
             <div className="kiosk-occupancy-row">
               <label htmlFor="attendance-sla">Plazo para decidir solicitudes (horas)</label>
               <input id="attendance-sla" className="kiosk-limit-input" type="number" min={0} max={720} step={1} inputMode="numeric" value={policySla} disabled={policyBusy || policy === null} onChange={(event) => setPolicySla(event.target.value)} />
               <span className="kiosk-antipassback-state">{policy === null ? "" : policy.attendance_request_sla_hours === 0 ? "Sin plazo: las solicitudes no vencen." : `Si una solicitud sigue pendiente después de ${policy.attendance_request_sla_hours} h, la dirección recibe el aviso de vencimiento.`}</span>
+            </div>
+            <div className="kiosk-occupancy-row">
+              <label className="form-check"><input type="checkbox" checked={policyEmail} disabled={policyBusy || policy === null} onChange={(event) => setPolicyEmail(event.target.checked)} /><span>Enviar por correo los avisos de asistencia</span></label>
+              <span className="kiosk-antipassback-state">{policy === null ? "" : policyEmailEnabled ? "Las correcciones, anulaciones y decisiones de solicitud también salen por correo a la cuenta del panel." : "Apagado: los avisos siguen en la campana y no se encolan correos nuevos; los que ya esperan se conservan."}</span>
             </div>
             <div className="kiosk-occupancy-row">
               <span className="kiosk-antipassback-state">{policy?.updated_at ? `Última modificación: ${formatSessionTime(policy.updated_at)}` : "Sin cambios registrados todavía."}</span>
@@ -5375,6 +5483,30 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
                 })}
             </tbody></table></div>
             <div className="table-bottom"><span>{pendingRequests?.length ?? 0} solicitudes esperando decisión</span><span>{(() => { const overdue = (pendingRequests ?? []).filter((request) => request.overdue).length; return `${overdue} ${overdue === 1 ? "vencida" : "vencidas"} · el solicitante recibe un aviso con la decisión`; })()}</span></div>
+          </section>}
+          {canViewAttendance && <section className="panel full-panel">
+            <div className="panel-header access-list-heading">
+              <div><p className="section-kicker">CORREOS DE ASISTENCIA</p><h2>Cola de entrega de avisos</h2></div>
+              <div className="staff-row-actions">
+                <label className="table-select"><span>Estado</span><select value={deliveryStatus} onChange={(event) => { setDeliveryStatus(event.target.value as "" | NotificationDeliveryStatus); setDeliveryPage(1); }}><option value="">Todos</option><option value="pending">En cola</option><option value="sent">Enviados</option><option value="simulated">Simulados</option><option value="failed">Con error</option></select></label>
+                {canManageAttendance && <button className="button button-primary" disabled={deliveryBusy !== null || deliveryBoard?.enabled === false} onClick={() => void sendQueuedAttendanceEmails()}><Mail size={16} />{deliveryBusy === "send" ? "Enviando…" : "Enviar pendientes"}</button>}
+              </div>
+            </div>
+            <p className="panel-hint">Cada aviso del ciclo de asistencia se guarda como una entrega y sale por correo después de que el panel responde, nunca dentro de la transacción que registra la marca. El destinatario es la cuenta del panel que recibe el aviso, y el interruptor de la política decide si se encola. En la vista previa el envío queda marcado como simulado.</p>
+            <div className="table-toolbar">
+              <span className={`status-badge ${deliveryBoard === null ? "status-neutral" : deliveryBoard.enabled ? "status-good" : "status-bad"}`}><i />{deliveryBoard === null ? "Consultando…" : deliveryBoard.enabled ? "Correo activo" : "Correo apagado"}</span>
+              <span className="table-hint">{deliveryBoard === null ? "" : `${deliveryBoard.counts.pending} en cola · ${deliveryBoard.counts.sent} enviados · ${deliveryBoard.counts.simulated} simulados · ${deliveryBoard.counts.failed} con error`}</span>
+            </div>
+            <div className="table-scroll"><table className="data-table"><thead><tr><th>DESTINATARIO</th><th>AVISO</th><th>ESTADO</th><th>INTENTOS</th><th>ÚLTIMO INTENTO</th><th>DETALLE</th><th /></tr></thead><tbody>
+              {deliveryError ? <tr><td colSpan={7} className="empty-row">{deliveryError}</td></tr>
+                : deliveryBoard === null ? <tr><td colSpan={7} className="empty-row">Cargando la cola…</td></tr>
+                : deliveryBoard.items.length === 0 ? <tr><td colSpan={7} className="empty-row">{deliveryStatus ? "No hay entregas en ese estado." : "Todavía no hay correos encolados."}</td></tr>
+                : deliveryBoard.items.map((delivery) => <tr key={delivery.id}><td><div className="person-cell"><span className="person-avatar lavender">{delivery.recipient.slice(0, 1).toUpperCase()}</span><span><strong>{delivery.recipient}</strong><small>{formatSessionTime(delivery.created_at)}</small></span></div></td><td><strong>{delivery.title}</strong><small className="staff-request-current">{delivery.kind}</small></td><td><StatusBadge state={NOTIFICATION_DELIVERY_LABELS[delivery.status]} /></td><td className="time-cell">{delivery.attempts}</td><td className="time-cell">{delivery.last_attempt_at ? formatSessionTime(delivery.last_attempt_at) : "—"}</td><td>{delivery.error ? <small className="request-overdue">{delivery.error}</small> : delivery.sent_at ? <span className="time-cell">{formatSessionTime(delivery.sent_at)}</span> : <span className="table-hint">en espera</span>}</td><td>{delivery.status === "failed" && canManageAttendance ? <button className="button button-secondary" disabled={deliveryBusy !== null} onClick={() => void retryNotificationDelivery(delivery)}>{deliveryBusy === delivery.id ? "Reintentando…" : "Reintentar"}</button> : null}</td></tr>)}
+            </tbody></table></div>
+            <div className="table-bottom">
+              <span>{deliveryBoard?.total ?? 0} entregas registradas</span>
+              {deliveryBoard !== null && deliveryBoard.pages > 1 && <span className="member-pagination"><span>Página {deliveryBoard.page} de {deliveryBoard.pages}</span><button type="button" aria-label="Página anterior" disabled={deliveryBoard.page <= 1} onClick={() => setDeliveryPage(Math.max(1, deliveryBoard.page - 1))}>‹</button><button type="button" aria-label="Página siguiente" disabled={deliveryBoard.page >= deliveryBoard.pages} onClick={() => setDeliveryPage(Math.min(deliveryBoard.pages, deliveryBoard.page + 1))}>›</button></span>}
+            </div>
           </section>}
           <section className="panel full-panel"><div className="panel-header access-list-heading"><div><p className="section-kicker">DIRECTORIO DE PERSONAL</p><h2>Colaboradores</h2></div>{canManageStaff && <button className="button button-secondary" onClick={() => setNewEmployeeOpen(true)}><Plus size={16} />Nuevo colaborador</button>}</div><div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>PUESTO</th><th>HORARIO</th><th>ESTADO</th><th /></tr></thead><tbody>{loading ? <tr><td colSpan={5} className="empty-row">Cargando directorio…</td></tr> : error ? <tr><td colSpan={5} className="empty-row">{error}</td></tr> : employeeList.length === 0 ? <tr><td colSpan={5} className="empty-row">No hay colaboradores registrados.</td></tr> : employeeList.map((employee, index) => { const fullName = `${employee.first_name} ${employee.last_name}`; const initials = `${employee.first_name[0] ?? ""}${employee.last_name[0] ?? ""}`.toUpperCase(); const state = employee.status === "active" ? "Activo" : employee.status === "inactive" ? "Inactivo" : "Baja"; const color = ["mint", "peach", "lavender", "blue", "yellow"][index % 5]; return <tr key={employee.id}><td><div className="person-cell"><span className={`person-avatar ${color}`}>{initials}</span><span><strong>{fullName}</strong><small>{employee.email ?? employee.employee_number}</small></span></div></td><td>{employee.job_title}</td><td className="time-cell">{(() => { const shift = nextShiftFor(employee.id); return shift ? `${shiftDayLabel(shift.starts_at)} · ${shiftClock(shift.starts_at)}–${shiftClock(shift.ends_at)}` : "Sin turno"; })()}</td><td><StatusBadge state={state} /></td><td><button className="icon-button row-menu" aria-label={`Opciones de ${fullName}`}><MoreHorizontal size={17} /></button></td></tr>; })}</tbody></table></div><div className="table-bottom"><span>{employeeList.length} colaboradores registrados</span><span>Horario según los turnos del backend</span></div></section>
           {canViewAttendance && <section className="panel full-panel">
@@ -5431,9 +5563,9 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
       {newEmployeeOpen && canManageStaff && <NewEmployeeModal canCreateAccount={canManageRoles} roles={availableRoles} onClose={() => setNewEmployeeOpen(false)} onCreated={(message) => { onToast(message); onIdentityChanged(); }} />}
       {newShiftOpen && canManageAttendance && <ScheduleShiftModal employees={employeeList} onClose={() => setNewShiftOpen(false)} onCreated={(message) => { onToast(message); onIdentityChanged(); }} />}
       {manualShift && canManageAttendance && <ManualAttendanceModal shift={manualShift} employee={employeeById.get(manualShift.employee_id) ?? null} onClose={() => setManualShift(null)} onCreated={(message) => { onToast(message); onIdentityChanged(); }} />}
-      {correctionShift && canManageAttendance && <AttendanceCorrectionModal shift={correctionShift} employee={employeeById.get(correctionShift.employee_id) ?? null} onClose={() => setCorrectionShift(null)} onSaved={(message) => { onToast(message); onIdentityChanged(); }} />}
+      {correctionShift && canManageAttendance && <AttendanceCorrectionModal shift={correctionShift} employee={employeeById.get(correctionShift.employee_id) ?? null} onClose={() => setCorrectionShift(null)} onSaved={(message) => { onToast(message); refreshStaffing(); }} />}
       {logShift && canViewAttendance && logShift.attendance && <AttendanceLogModal attendance={logShift.attendance} employee={employeeById.get(logShift.employee_id) ?? null} shift={logShift} onClose={() => setLogShift(null)} />}
-      {voidShift && canManageAttendance && voidShift.attendance && <AttendanceVoidModal shift={voidShift} attendance={voidShift.attendance} employee={employeeById.get(voidShift.employee_id) ?? null} onClose={() => setVoidShift(null)} onSaved={(message) => { onToast(message); onIdentityChanged(); }} />}
+      {voidShift && canManageAttendance && voidShift.attendance && <AttendanceVoidModal shift={voidShift} attendance={voidShift.attendance} employee={employeeById.get(voidShift.employee_id) ?? null} onClose={() => setVoidShift(null)} onSaved={(message) => { onToast(message); refreshStaffing(); }} />}
       {requestShift && requestShift.attendance && canSelfAttendance && <AttendanceRequestModal shift={requestShift} attendance={requestShift.attendance} onClose={() => setRequestShift(null)} onCreated={(message) => { onToast(message); refreshStaffing(); }} />}
       {decisionRequest && canManageAttendance && <AttendanceRequestDecisionModal request={decisionRequest} shift={teamShiftForAttendance(decisionRequest.attendance_id)} onClose={() => setDecisionRequest(null)} onDecided={(message) => { onToast(message); refreshStaffing(); }} />}
       {policyHistoryOpen && canManageAttendance && <PolicyHistoryModal onClose={() => setPolicyHistoryOpen(false)} />}
@@ -15522,6 +15654,13 @@ const ATTENDANCE_REQUEST_STATUS_LABELS: Record<AttendanceRequestStatus, string> 
   rejected: "Rechazada",
 };
 
+const NOTIFICATION_DELIVERY_LABELS: Record<NotificationDeliveryStatus, string> = {
+  pending: "En cola",
+  sent: "Enviado",
+  simulated: "Simulado",
+  failed: "Con error",
+};
+
 function attendanceMarkLabel(mark: "check_in" | "check_out"): string {
   return mark === "check_in" ? "Entrada" : "Salida";
 }
@@ -15799,7 +15938,7 @@ function PolicyHistoryModal({ onClose }: { onClose: () => void }) {
         {error ? <div className="login-error" role="alert">{error}</div>
           : events === null ? <p className="panel-hint">Cargando el historial…</p>
           : events.length === 0 ? <p className="panel-hint">La política conserva sus valores iniciales; todavía no hay cambios registrados.</p>
-          : <ol className="staff-log-list">{events.map((entry) => <li key={entry.id} className="staff-log-item"><div className="staff-log-head"><strong>{entry.previous_check_in_early_grace_minutes}/{entry.previous_lateness_tolerance_minutes} → {entry.check_in_early_grace_minutes}/{entry.lateness_tolerance_minutes} min{entry.previous_attendance_request_sla_hours !== entry.attendance_request_sla_hours ? ` · plazo ${entry.previous_attendance_request_sla_hours} → ${entry.attendance_request_sla_hours} h` : ""}</strong><span className="time-cell">{formatSessionTime(entry.changed_at)}</span></div><div className="staff-log-meta">{entry.actor_name ?? entry.actor_email ?? "Cuenta eliminada"} · apertura / tolerancia{entry.previous_attendance_request_sla_hours === entry.attendance_request_sla_hours ? "" : " / plazo"}</div></li>)}</ol>}
+          : <ol className="staff-log-list">{events.map((entry) => <li key={entry.id} className="staff-log-item"><div className="staff-log-head"><strong>{entry.previous_check_in_early_grace_minutes}/{entry.previous_lateness_tolerance_minutes} → {entry.check_in_early_grace_minutes}/{entry.lateness_tolerance_minutes} min{entry.previous_attendance_request_sla_hours !== entry.attendance_request_sla_hours ? ` · plazo ${entry.previous_attendance_request_sla_hours} → ${entry.attendance_request_sla_hours} h` : ""}{entry.previous_attendance_email_enabled !== entry.attendance_email_enabled ? ` · correo ${entry.previous_attendance_email_enabled ? "encendido → apagado" : "apagado → encendido"}` : ""}</strong><span className="time-cell">{formatSessionTime(entry.changed_at)}</span></div><div className="staff-log-meta">{entry.actor_name ?? entry.actor_email ?? "Cuenta eliminada"} · apertura / tolerancia{entry.previous_attendance_request_sla_hours === entry.attendance_request_sla_hours ? "" : " / plazo"}{entry.previous_attendance_email_enabled === entry.attendance_email_enabled ? "" : " / correo"}</div></li>)}</ol>}
         <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cerrar</button></div>
       </section>
     </div>
