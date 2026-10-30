@@ -126,6 +126,8 @@ class StaffingSettings(SQLModel, table=True):
     self-service check-in opens; ``lateness_tolerance_minutes`` is how late an
     entry can be and still count as ``present`` instead of ``late``. Both are
     zero-or-positive minute counts and are edited from the panel.
+    ``attendance_request_sla_hours`` is how long a supervisor has to decide an
+    employee's change request before it counts as overdue; zero means no term.
     """
 
     __tablename__ = "staffing_settings"
@@ -138,11 +140,19 @@ class StaffingSettings(SQLModel, table=True):
             "lateness_tolerance_minutes >= 0 AND lateness_tolerance_minutes <= 240",
             name="ck_staffing_settings_lateness",
         ),
+        CheckConstraint(
+            "attendance_request_sla_hours >= 0 AND attendance_request_sla_hours <= 720",
+            name="ck_staffing_settings_request_sla",
+        ),
     )
 
     id: int = Field(default=1, primary_key=True)
     check_in_early_grace_minutes: int = Field(default=15)
     lateness_tolerance_minutes: int = Field(default=0)
+    attendance_request_sla_hours: int = Field(
+        default=24,
+        sa_column=Column(Integer, nullable=False, server_default=text("24")),
+    )
     updated_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
@@ -170,6 +180,12 @@ class StaffingSettingsEvent(SQLModel, table=True):
     previous_lateness_tolerance_minutes: int = Field(sa_type=Integer)
     check_in_early_grace_minutes: int = Field(sa_type=Integer)
     lateness_tolerance_minutes: int = Field(sa_type=Integer)
+    previous_attendance_request_sla_hours: int = Field(
+        sa_column=Column(Integer, nullable=False, server_default=text("24"))
+    )
+    attendance_request_sla_hours: int = Field(
+        sa_column=Column(Integer, nullable=False, server_default=text("24"))
+    )
     changed_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
@@ -206,6 +222,8 @@ class StaffAttendanceRequest(SQLModel, table=True):
         ),
         Index("ix_staff_attendance_requests_status_time", "status", "created_at"),
         Index("ix_staff_attendance_requests_employee_time", "employee_id", "created_at"),
+        # Overdue evaluation walks the pending requests whose term already passed.
+        Index("ix_staff_attendance_requests_status_due", "status", "due_at"),
         # One open request per mark and action; a rejected or approved one stops
         # blocking a new request for the same mark.
         Index(
@@ -233,6 +251,7 @@ class StaffAttendanceRequest(SQLModel, table=True):
     action: str = Field(max_length=16)
     proposed_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     justification: str = Field(max_length=500)
+    due_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     status: str = Field(
         default="pending",
         sa_column=Column(String(16), nullable=False, server_default=text("'pending'")),

@@ -906,7 +906,11 @@ def mark_all_notifications_read(
 # them does not take it off the badge: only the work does. A kind without a
 # closure path yet stays on the unread rule, so the badge can still be cleared
 # by acknowledging it.
-CLOSABLE_STAFF_KINDS = ("workout_pending_review", "attendance_request_pending")
+CLOSABLE_STAFF_KINDS = (
+    "workout_pending_review",
+    "attendance_request_pending",
+    "attendance_request_overdue",
+)
 
 
 def _staff_pending_condition():
@@ -921,6 +925,21 @@ def _staff_pending_condition():
     )
 
 
+def _ensure_attendance_request_escalations(
+    session: Session, *, now: datetime | None = None
+) -> None:
+    """Escalate expired change requests to the owners while someone reads.
+
+    Imported here for the same reason as the class reminder: the staffing service
+    imports this module to write its own notices, and a top-level import would
+    close the cycle at startup. Escalation deduplicates itself, so this is safe
+    on every read of the staff inbox and of its badge.
+    """
+    from app.modules.staffing.service import escalate_overdue_attendance_requests
+
+    escalate_overdue_attendance_requests(session, now=now)
+
+
 def list_staff_notifications(
     session: Session,
     user_id: UUID,
@@ -928,6 +947,7 @@ def list_staff_notifications(
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> StaffNotificationPage:
+    _ensure_attendance_request_escalations(session)
     page, page_size, rows, total, pages, unread_total = _paginate_inbox(
         session,
         StaffNotification,
@@ -954,6 +974,7 @@ def unread_staff_notification_count(session: Session, user_id: UUID) -> int:
     an unread one is gone too unless its work is still owed. Marking a workout
     review as read leaves it on the badge until the workout is actually reviewed.
     """
+    _ensure_attendance_request_escalations(session)
     return int(
         session.exec(
             select(func.count(StaffNotification.id)).where(

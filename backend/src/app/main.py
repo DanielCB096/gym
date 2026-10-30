@@ -540,6 +540,7 @@ from app.modules.staffing.service import (
     ManualAttendanceReasonRequired,
     ShiftNotAvailable,
     ShiftOverlap,
+    attendance_request_is_overdue,
     clock_in,
     clock_out,
     correct_attendance,
@@ -552,6 +553,7 @@ from app.modules.staffing.service import (
     list_shifts_with_attendance,
     list_staffing_settings_events,
     read_attendance_policy,
+    read_attendance_request_sla_hours,
     record_manual_attendance,
     request_attendance_change,
     update_staffing_settings,
@@ -968,6 +970,7 @@ class AttendanceVoidRequest(BaseModel):
 class StaffingSettingsRequest(BaseModel):
     check_in_early_grace_minutes: int = Field(ge=0, le=240)
     lateness_tolerance_minutes: int = Field(ge=0, le=240)
+    attendance_request_sla_hours: int = Field(ge=0, le=720)
 
 
 class AttendanceChangeRequest(BaseModel):
@@ -4416,6 +4419,7 @@ def update_staffing_settings_endpoint(
         session,
         check_in_early_grace_minutes=request.check_in_early_grace_minutes,
         lateness_tolerance_minutes=request.lateness_tolerance_minutes,
+        attendance_request_sla_hours=request.attendance_request_sla_hours,
         actor_id=principal.user_id,
     )
     return _staffing_settings_payload(settings)
@@ -4442,6 +4446,8 @@ def list_staffing_settings_events_endpoint(
                 "previous_lateness_tolerance_minutes": event.previous_lateness_tolerance_minutes,
                 "check_in_early_grace_minutes": event.check_in_early_grace_minutes,
                 "lateness_tolerance_minutes": event.lateness_tolerance_minutes,
+                "previous_attendance_request_sla_hours": event.previous_attendance_request_sla_hours,
+                "attendance_request_sla_hours": event.attendance_request_sla_hours,
             }
             for event, actor, employee in rows
         ]
@@ -4498,11 +4504,13 @@ def my_attendance(
         to_at=now + timedelta(days=days),
     )
     early_grace_minutes, lateness_tolerance_minutes = read_attendance_policy(session)
+    request_sla_hours = read_attendance_request_sla_hours(session)
     return {
         "employee_id": principal.employee_id,
         "settings": {
             "check_in_early_grace_minutes": early_grace_minutes,
             "lateness_tolerance_minutes": lateness_tolerance_minutes,
+            "attendance_request_sla_hours": request_sla_hours,
         },
         "items": [_shift_payload(shift, attendance) for shift, attendance in rows],
     }
@@ -4888,6 +4896,8 @@ def _attendance_request_payload(
         "justification": request.justification,
         "status": request.status,
         "requested_by": request.requested_by,
+        "due_at": request.due_at,
+        "overdue": attendance_request_is_overdue(request),
         "decided_at": request.decided_at,
         "decision_note": request.decision_note,
         "created_at": request.created_at,
@@ -4908,6 +4918,7 @@ def _staffing_settings_payload(settings: StaffingSettings) -> dict[str, object]:
     return {
         "check_in_early_grace_minutes": settings.check_in_early_grace_minutes,
         "lateness_tolerance_minutes": settings.lateness_tolerance_minutes,
+        "attendance_request_sla_hours": settings.attendance_request_sla_hours,
         "updated_at": settings.updated_at,
     }
 

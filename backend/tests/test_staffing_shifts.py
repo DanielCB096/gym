@@ -29,6 +29,7 @@ from app.modules.staffing.service import (
     list_attendance_events,
     list_shifts_with_attendance,
     read_attendance_policy,
+    read_attendance_request_sla_hours,
     record_manual_attendance,
     update_staffing_settings,
     void_attendance_mark,
@@ -565,30 +566,55 @@ def test_attendance_policy_defaults_and_validation(session: Session) -> None:
     settings = get_staffing_settings(session)
     assert settings.check_in_early_grace_minutes == 15
     assert settings.lateness_tolerance_minutes == 0
+    assert settings.attendance_request_sla_hours == 24
 
     updated = update_staffing_settings(
-        session, check_in_early_grace_minutes=30, lateness_tolerance_minutes=10
+        session,
+        check_in_early_grace_minutes=30,
+        lateness_tolerance_minutes=10,
+        attendance_request_sla_hours=48,
     )
     assert (updated.check_in_early_grace_minutes, updated.lateness_tolerance_minutes) == (30, 10)
+    assert updated.attendance_request_sla_hours == 48
     assert read_attendance_policy(session) == (30, 10)
+    assert read_attendance_request_sla_hours(session) == 48
 
     for invalid in (-1, 241):
         with pytest.raises(ValueError):
             update_staffing_settings(
-                session, check_in_early_grace_minutes=invalid, lateness_tolerance_minutes=0
+                session,
+                check_in_early_grace_minutes=invalid,
+                lateness_tolerance_minutes=0,
+                attendance_request_sla_hours=24,
             )
         with pytest.raises(ValueError):
             update_staffing_settings(
-                session, check_in_early_grace_minutes=0, lateness_tolerance_minutes=invalid
+                session,
+                check_in_early_grace_minutes=0,
+                lateness_tolerance_minutes=invalid,
+                attendance_request_sla_hours=24,
+            )
+    # Zero disables the term; negative or beyond 30 days is rejected.
+    for invalid in (-1, 721):
+        with pytest.raises(ValueError):
+            update_staffing_settings(
+                session,
+                check_in_early_grace_minutes=15,
+                lateness_tolerance_minutes=0,
+                attendance_request_sla_hours=invalid,
             )
     # A rejected update does not partially persist.
     assert read_attendance_policy(session) == (30, 10)
+    assert read_attendance_request_sla_hours(session) == 48
 
 
 def test_configurable_grace_and_tolerance_change_the_window_and_status(session: Session) -> None:
     employee, manager = seed_employee_and_manager(session)
     update_staffing_settings(
-        session, check_in_early_grace_minutes=30, lateness_tolerance_minutes=10
+        session,
+        check_in_early_grace_minutes=30,
+        lateness_tolerance_minutes=10,
+        attendance_request_sla_hours=24,
     )
     shift = create_shift(
         session,
@@ -633,7 +659,10 @@ def test_configurable_grace_and_tolerance_change_the_window_and_status(session: 
 def test_status_uses_the_configured_tolerance_on_the_first_mark(session: Session) -> None:
     employee, manager = seed_employee_and_manager(session)
     update_staffing_settings(
-        session, check_in_early_grace_minutes=15, lateness_tolerance_minutes=10
+        session,
+        check_in_early_grace_minutes=15,
+        lateness_tolerance_minutes=10,
+        attendance_request_sla_hours=24,
     )
     shift = create_shift(
         session,

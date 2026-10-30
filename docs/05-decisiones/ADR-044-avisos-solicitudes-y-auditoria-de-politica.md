@@ -21,7 +21,7 @@ ADR-043 dejó anotados tres huecos en la asistencia del personal: **la anulació
 ## Consecuencias y límites
 
 - **No hay notificación por correo ni push.** Los avisos viven en la bandeja del personal y en la campana del panel; quien no abre el panel no se entera fuera de «Mi jornada».
-- **El ciclo no tiene plazo ni recordatorio.** Una solicitud pendiente se queda pendiente hasta que alguien la decide; no hay escalado ni caducidad, y el índice único parcial la bloquea indefinidamente para esa marca y acción.
+- **El ciclo no tenía plazo ni recordatorio** (cerrado por ADR-045). Una solicitud pendiente se quedaba pendiente hasta que alguien la decidiera; ahora el club configura un plazo (24 horas por defecto) que se congela en cada solicitud como `due_at` y, al cumplirse, escala un aviso `attendance_request_overdue` a la dirección. Vencer sigue sin rechazar: la solicitud queda abierta hasta que alguien decide.
 - **La corrección aplicada no guarda la solicitud.** La bitácora del turno registra el evento con el motivo del colaborador, pero no el identificador de la solicitud; para reconstruir el vínculo hay que cruzar `staff_attendance_requests.decided_at` con el instante del evento.
 - **La política sigue siendo global y sin excepciones.** El historial dice quién cambió qué y cuándo, pero no permite programar valores futuros ni comparar contra un periodo; y sigue sin haber reglas por colaborador, área o turno.
 - **El reporte de anulaciones no exporta.** Es consulta en pantalla; no hay CSV ni envío por correo, igual que el resto de bitácoras operativas de personal.

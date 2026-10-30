@@ -10,6 +10,7 @@ from app.modules.notifications.models import StaffNotification
 from app.modules.staffing.models import (
     AttendanceEvent,
     StaffAttendance,
+    StaffAttendanceRequest,
     StaffingSettingsEvent,
 )
 from app.modules.staffing.service import (
@@ -19,11 +20,13 @@ from app.modules.staffing.service import (
     AttendanceRequestNotFound,
     InvalidAttendanceTime,
     ManualAttendanceReasonRequired,
+    attendance_request_is_overdue,
     clock_in,
     clock_out,
     correct_attendance,
     create_shift,
     decide_attendance_request,
+    escalate_overdue_attendance_requests,
     list_attendance_annulments,
     list_attendance_requests,
     list_staffing_settings_events,
@@ -96,6 +99,7 @@ def test_policy_changes_are_audited_with_actor_and_previous_values(session: Sess
         session,
         check_in_early_grace_minutes=15,
         lateness_tolerance_minutes=0,
+        attendance_request_sla_hours=24,
         actor_id=manager.id,
     )
     assert session.exec(select(StaffingSettingsEvent)).all() == []
@@ -104,12 +108,14 @@ def test_policy_changes_are_audited_with_actor_and_previous_values(session: Sess
         session,
         check_in_early_grace_minutes=30,
         lateness_tolerance_minutes=10,
+        attendance_request_sla_hours=48,
         actor_id=manager.id,
     )
     update_staffing_settings(
         session,
         check_in_early_grace_minutes=30,
         lateness_tolerance_minutes=10,
+        attendance_request_sla_hours=48,
         actor_id=manager.id,
     )
     history = list_staffing_settings_events(session)
@@ -120,8 +126,10 @@ def test_policy_changes_are_audited_with_actor_and_previous_values(session: Sess
     assert (
         event.previous_check_in_early_grace_minutes,
         event.previous_lateness_tolerance_minutes,
-    ) == (15, 0)
+        event.previous_attendance_request_sla_hours,
+    ) == (15, 0, 24)
     assert (event.check_in_early_grace_minutes, event.lateness_tolerance_minutes) == (30, 10)
+    assert event.attendance_request_sla_hours == 48
     assert event.changed_at == event.changed_at.astimezone(timezone.utc)
 
 
@@ -361,6 +369,108 @@ def test_employee_request_validation_and_rejection(session: Session) -> None:
         decide_attendance_request(
             session, request_id=uuid4(), actor_id=manager.id, decision="approved"
         )
+
+
+def test_overdue_request_escalates_once_to_the_owners(session: Session) -> None:
+    employee, account, manager = seed_employee_with_account(session)
+    owner = register_user(
+        session,
+        email="owner@example.test",
+        password="owner-password-long-enough",
+        role_codes=("owner",),
+    )
+    attendance = seed_attendance(session, employee.id, manager.id, late_minutes=12)
+    request = request_attendance_change(
+        session,
+        attendance_id=attendance.id,
+        actor_id=account.id,
+        employee_id=employee.id,
+        mark="check_in",
+        action="correct",
+        proposed_at=START,
+        justification="Marqué doce minutos tarde por error",
+    )
+
+    # The term is frozen on the request, not read again when it is evaluated.
+    assert request.due_at == request.created_at + timedelta(hours=24)
+    assert attendance_request_is_overdue(request) is False
+
+    before_due = request.created_at + timedelta(hours=23, minutes=59)
+    assert escalate_overdue_attendance_requests(session, now=before_due) == 0
+    overdue_query = select(StaffNotification).where(
+        StaffNotification.kind == "attendance_request_overdue"
+    )
+    assert session.exec(overdue_query).all() == []
+
+    # Past the term the owners hear it once; the requester never does.
+    assert escalate_overdue_attendance_requests(session, now=before_due + timedelta(minutes=2)) == 1
+    overdue = session.exec(overdue_query).one()
+    assert overdue.user_id == owner.id
+    assert "Lucía Mendoza" in overdue.body
+    assert overdue.dedupe_key == f"attendance_request_overdue:{request.id}:{owner.id}"
+
+    # Reopening the queue (a read path) does not repeat the notice.
+    after = request.created_at + timedelta(days=3)
+    assert escalate_overdue_attendance_requests(session, now=after) == 0
+    list_attendance_requests(session, status="pending")
+    assert len(session.exec(overdue_query).all()) == 1
+
+    decide_attendance_request(
+        session,
+        request_id=request.id,
+        actor_id=manager.id,
+        decision="rejected",
+        note="El reloj de recepción marca la hora original",
+    )
+    session.refresh(overdue)
+    assert overdue.resolved_at is not None
+
+
+def test_zero_term_disables_the_deadline(session: Session) -> None:
+    employee, account, manager = seed_employee_with_account(session)
+    register_user(
+        session,
+        email="owner2@example.test",
+        password="owner-password-long-enough",
+        role_codes=("owner",),
+    )
+    update_staffing_settings(
+        session,
+        check_in_early_grace_minutes=15,
+        lateness_tolerance_minutes=0,
+        attendance_request_sla_hours=0,
+        actor_id=manager.id,
+    )
+    attendance = seed_attendance(session, employee.id, manager.id, late_minutes=7)
+    request = request_attendance_change(
+        session,
+        attendance_id=attendance.id,
+        actor_id=account.id,
+        employee_id=employee.id,
+        mark="check_in",
+        action="correct",
+        proposed_at=START,
+        justification="Llegué a la hora y marqué tarde",
+    )
+    assert request.due_at is None
+    assert attendance_request_is_overdue(request, now=request.created_at + timedelta(days=30)) is False
+    assert escalate_overdue_attendance_requests(session, now=request.created_at + timedelta(days=30)) == 0
+    assert (
+        session.exec(
+            select(StaffNotification).where(StaffNotification.kind == "attendance_request_overdue")
+        ).all()
+        == []
+    )
+
+    # Raising the term again only affects requests created afterwards.
+    update_staffing_settings(
+        session,
+        check_in_early_grace_minutes=15,
+        lateness_tolerance_minutes=0,
+        attendance_request_sla_hours=24,
+        actor_id=manager.id,
+    )
+    assert session.get(StaffAttendanceRequest, request.id).due_at is None
 
 
 def test_annulment_report_groups_by_operator(session: Session) -> None:

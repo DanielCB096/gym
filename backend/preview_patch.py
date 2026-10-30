@@ -58,6 +58,12 @@ ADDED_COLUMNS = {
     "progress_photos": {"origin": "VARCHAR(8) NOT NULL DEFAULT 'staff'"},
     "kiosk_devices": {"token_expires_at": "DATETIME"},
     "staff_notifications": {"resolved_at": "DATETIME"},
+    "staffing_settings": {"attendance_request_sla_hours": "INTEGER NOT NULL DEFAULT 24"},
+    "staffing_settings_events": {
+        "previous_attendance_request_sla_hours": "INTEGER NOT NULL DEFAULT 24",
+        "attendance_request_sla_hours": "INTEGER NOT NULL DEFAULT 24",
+    },
+    "staff_attendance_requests": {"due_at": "DATETIME"},
     "access_settings": {
         "max_occupancy": "INTEGER",
         "occupancy_window_seconds": "INTEGER NOT NULL DEFAULT 7200",
@@ -249,14 +255,17 @@ CHECK_UPGRADES = {
         (
             "CONSTRAINT ck_staff_notifications_kind CHECK (kind IN "
             "('workout_pending_review', 'maintenance_ticket_assigned', "
-            "'kiosk_token_expiring'))",
+            "'kiosk_token_expiring', 'attendance_corrected', 'attendance_voided', "
+            "'attendance_request_pending', 'attendance_request_approved', "
+            "'attendance_request_rejected'))",
             "CONSTRAINT ck_staff_notifications_kind CHECK (kind IN "
             "('workout_pending_review', 'maintenance_ticket_assigned', "
             "'kiosk_token_expiring', 'attendance_corrected', 'attendance_voided', "
             "'attendance_request_pending', 'attendance_request_approved', "
-            "'attendance_request_rejected'))",
+            "'attendance_request_rejected', 'attendance_request_overdue'))",
         ),
     ),
+    "staffing_settings": (),
     "staff_attendance_events": (
         (
             "CONSTRAINT ck_staff_attendance_events_type CHECK "
@@ -281,6 +290,13 @@ CHECK_UPGRADES = {
 # detect whether the constraint is already present; the second is the SQL
 # fragment inserted before the closing parenthesis of CREATE TABLE.
 ADDED_CONSTRAINTS = {
+    "staffing_settings": (
+        (
+            "ck_staffing_settings_request_sla",
+            "CONSTRAINT ck_staffing_settings_request_sla CHECK "
+            "(attendance_request_sla_hours >= 0 AND attendance_request_sla_hours <= 720)",
+        ),
+    ),
     "physio_packs": (
         (
             "ck_physio_packs_voided_range",
@@ -520,6 +536,7 @@ def main(reset_maintenance: bool) -> None:
     try:
         connection.execute("PRAGMA foreign_keys=OFF")
         tables = table_names(connection)
+        added: set[tuple[str, str]] = set()
 
         for table, columns in ADDED_COLUMNS.items():
             if table not in tables:
@@ -530,7 +547,17 @@ def main(reset_maintenance: bool) -> None:
                     print(f"{table}.{column} already present")
                     continue
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+                added.add((table, column))
                 print(f"Added {table}.{column}")
+
+        # Match the migration: requests that were already pending before the
+        # term existed get the 24-hour default measured from their creation.
+        if ("staff_attendance_requests", "due_at") in added:
+            connection.execute(
+                "UPDATE staff_attendance_requests "
+                "SET due_at = datetime(created_at, '+24 hours') "
+                "WHERE status = 'pending' AND due_at IS NULL"
+            )
 
         # Match the migration's backfill: devices that existed before the column
         # get a full 90-day window instead of expiring retroactively.
@@ -562,6 +589,11 @@ def main(reset_maintenance: bool) -> None:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS ix_staff_attendance_events_type_time "
                 "ON staff_attendance_events (event_type, occurred_at)"
+            )
+        if "staff_attendance_requests" in tables:
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS ix_staff_attendance_requests_status_due "
+                "ON staff_attendance_requests (status, due_at)"
             )
 
         seed_preview_permissions(connection)

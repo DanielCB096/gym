@@ -147,6 +147,7 @@ type BackendAttendance = {
 type AttendancePolicy = {
   check_in_early_grace_minutes: number;
   lateness_tolerance_minutes: number;
+  attendance_request_sla_hours: number;
   updated_at?: string | null;
 };
 
@@ -162,6 +163,8 @@ type AttendanceRequest = {
   proposed_at: string | null;
   justification: string;
   status: AttendanceRequestStatus;
+  due_at: string | null;
+  overdue: boolean;
   decided_at: string | null;
   decision_note: string | null;
   created_at: string;
@@ -206,8 +209,10 @@ type StaffingSettingsEvent = {
   actor_name: string | null;
   previous_check_in_early_grace_minutes: number;
   previous_lateness_tolerance_minutes: number;
+  previous_attendance_request_sla_hours: number;
   check_in_early_grace_minutes: number;
   lateness_tolerance_minutes: number;
+  attendance_request_sla_hours: number;
 };
 
 type AttendanceLogEntry = {
@@ -3059,7 +3064,7 @@ export default function HomePage() {
   const [backendShifts, setBackendShifts] = useState<BackendShift[] | null>(null);
   const [myShifts, setMyShifts] = useState<BackendShift[] | null>(null);
   const [myAttendanceState, setMyAttendanceState] = useState<"hidden" | "loading" | "ready" | "unlinked" | "error">("hidden");
-  const [myAttendancePolicy, setMyAttendancePolicy] = useState<AttendancePolicy>({ check_in_early_grace_minutes: 15, lateness_tolerance_minutes: 0 });
+  const [myAttendancePolicy, setMyAttendancePolicy] = useState<AttendancePolicy>({ check_in_early_grace_minutes: 15, lateness_tolerance_minutes: 0, attendance_request_sla_hours: 24 });
   const [staffLoading, setStaffLoading] = useState(false);
   const [staffError, setStaffError] = useState("");
   const [staffRefresh, setStaffRefresh] = useState(0);
@@ -4938,6 +4943,7 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
   const [policy, setPolicy] = useState<AttendancePolicy | null>(null);
   const [policyGrace, setPolicyGrace] = useState("");
   const [policyTolerance, setPolicyTolerance] = useState("");
+  const [policySla, setPolicySla] = useState("");
   const [policyBusy, setPolicyBusy] = useState(false);
   const [busyMarkShiftId, setBusyMarkShiftId] = useState<string | null>(null);
   const [requestShift, setRequestShift] = useState<BackendShift | null>(null);
@@ -4970,6 +4976,7 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
         setPolicy(settings);
         setPolicyGrace(String(settings.check_in_early_grace_minutes));
         setPolicyTolerance(String(settings.lateness_tolerance_minutes));
+        setPolicySla(String(settings.attendance_request_sla_hours));
       } catch {
         // The card stays read-only until the settings endpoint responds.
       }
@@ -5039,8 +5046,13 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
   const saveAttendancePolicy = async () => {
     const grace = Number(policyGrace);
     const tolerance = Number(policyTolerance);
+    const sla = Number(policySla);
     if (!Number.isInteger(grace) || grace < 0 || grace > 240 || !Number.isInteger(tolerance) || tolerance < 0 || tolerance > 240) {
       onToast("Los minutos deben ser enteros entre 0 y 240.");
+      return;
+    }
+    if (!Number.isInteger(sla) || sla < 0 || sla > 720) {
+      onToast("El plazo debe ser un número entero de horas entre 0 y 720.");
       return;
     }
     setPolicyBusy(true);
@@ -5048,7 +5060,11 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
       const response = await fetch("/api/admin/staff/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ check_in_early_grace_minutes: grace, lateness_tolerance_minutes: tolerance }),
+        body: JSON.stringify({
+          check_in_early_grace_minutes: grace,
+          lateness_tolerance_minutes: tolerance,
+          attendance_request_sla_hours: sla,
+        }),
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({})) as { detail?: string };
@@ -5059,6 +5075,7 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
       setPolicy(settings);
       setPolicyGrace(String(settings.check_in_early_grace_minutes));
       setPolicyTolerance(String(settings.lateness_tolerance_minutes));
+      setPolicySla(String(settings.attendance_request_sla_hours));
       onToast("Política de asistencia guardada.");
       refreshStaffing();
     } catch {
@@ -5308,7 +5325,7 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
                   : myRequests.length === 0 ? <tr><td colSpan={5} className="empty-row">No has pedido cambios. Usa «Solicitar cambio» en un turno con marca.</td></tr>
                   : myRequests.map((request) => {
                     const shift = myShiftForAttendance(request.attendance_id);
-                    return <tr key={request.id}><td>{shift ? `${shiftDayLabel(shift.starts_at)} · ${shiftClock(shift.starts_at)}–${shiftClock(shift.ends_at)}` : "Turno"}</td><td>{attendanceMarkLabel(request.mark)}</td><td className="time-cell">{request.action === "void" ? "Anular la marca" : request.proposed_at ? `Cambiar a ${shiftClock(request.proposed_at)}` : "Corregir la hora"}</td><td><StatusBadge state={ATTENDANCE_REQUEST_STATUS_LABELS[request.status]} /></td><td><div className="staff-request-decision">{request.status === "pending" ? <span className="table-hint">En revisión</span> : <><span className="time-cell">{formatSessionTime(request.decided_at)}</span>{request.decision_note ? <small>{request.decision_note}</small> : null}</>}</div></td></tr>;
+                    return <tr key={request.id}><td>{shift ? `${shiftDayLabel(shift.starts_at)} · ${shiftClock(shift.starts_at)}–${shiftClock(shift.ends_at)}` : "Turno"}</td><td>{attendanceMarkLabel(request.mark)}</td><td className="time-cell">{request.action === "void" ? "Anular la marca" : request.proposed_at ? `Cambiar a ${shiftClock(request.proposed_at)}` : "Corregir la hora"}</td><td><StatusBadge state={ATTENDANCE_REQUEST_STATUS_LABELS[request.status]} /></td><td><div className="staff-request-decision">{request.status === "pending" ? <span className="table-hint">{request.overdue ? "Vencida · escalada a la dirección" : "En revisión"}</span> : <><span className="time-cell">{formatSessionTime(request.decided_at)}</span>{request.decision_note ? <small>{request.decision_note}</small> : null}</>}</div></td></tr>;
                   })}
               </tbody></table></div>
               <div className="table-bottom"><span>Las solicitudes quedan con su motivo y la decisión del supervisor</span><span>{myRequests?.filter((request) => request.status !== "pending").length ?? 0} resueltas</span></div>
@@ -5319,8 +5336,8 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
         <>
           <section className="member-stat-row staff-stat-row"><div><span>EMPLEADOS ACTIVOS</span><strong>{employeeList.filter((employee) => employee.status === "active").length}</strong><small>directorio del backend</small></div><div><span>TURNOS</span><strong>{canViewAttendance ? upcomingShifts.length : "—"}</strong><small>{canViewAttendance ? "próximos programados" : "acceso restringido"}</small></div><div><span>ASISTENCIA</span><strong>{canViewAttendance ? attendanceCount : "—"}</strong><small>{canViewAttendance ? "registros de entrada" : "acceso restringido"}</small></div><div><span>ROLES BASE</span><strong>{canManageRoles ? availableRoles.length : "—"}</strong><small>{canManageRoles ? "catálogo RBAC" : "acceso restringido"}</small></div></section>
           {canManageAttendance && <section className="panel full-panel">
-            <div className="panel-header access-list-heading"><div><p className="section-kicker">POLÍTICA DE ASISTENCIA</p><h2>Tolerancias del club</h2></div><span className="role-count">{policy ? `${policy.check_in_early_grace_minutes}/${policy.lateness_tolerance_minutes}` : "—"}</span></div>
-            <p className="panel-hint">La apertura anticipada define cuántos minutos antes del inicio se habilita la entrada; la tolerancia define cuántos minutos después del inicio siguen contando como presente. Aplica al marcaje del colaborador, a las correcciones y a los registros manuales.</p>
+            <div className="panel-header access-list-heading"><div><p className="section-kicker">POLÍTICA DE ASISTENCIA</p><h2>Tolerancias del club</h2></div><span className="role-count">{policy ? `${policy.check_in_early_grace_minutes}/${policy.lateness_tolerance_minutes} · ${policy.attendance_request_sla_hours} h` : "—"}</span></div>
+            <p className="panel-hint">La apertura anticipada define cuántos minutos antes del inicio se habilita la entrada; la tolerancia define cuántos minutos después del inicio siguen contando como presente. Aplica al marcaje del colaborador, a las correcciones y a los registros manuales. El plazo marca cuántas horas tiene la supervisión para decidir una solicitud de cambio antes de que la dirección reciba el aviso de vencimiento.</p>
             <div className="kiosk-occupancy-row">
               <label htmlFor="attendance-grace">Apertura anticipada (minutos)</label>
               <input id="attendance-grace" className="kiosk-limit-input" type="number" min={0} max={240} step={1} inputMode="numeric" value={policyGrace} disabled={policyBusy || policy === null} onChange={(event) => setPolicyGrace(event.target.value)} />
@@ -5330,7 +5347,12 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
               <label htmlFor="attendance-tolerance">Tolerancia de retardo (minutos)</label>
               <input id="attendance-tolerance" className="kiosk-limit-input" type="number" min={0} max={240} step={1} inputMode="numeric" value={policyTolerance} disabled={policyBusy || policy === null} onChange={(event) => setPolicyTolerance(event.target.value)} />
               <span className="kiosk-antipassback-state">{policy === null ? "" : policy.lateness_tolerance_minutes === 0 ? "Sin tolerancia: cualquier marca después del inicio es retardo." : `Hasta ${policy.lateness_tolerance_minutes} min tarde se considera presente.`}</span>
-              <button type="button" className="button button-secondary" disabled={policyBusy || policy === null || (policyGrace === String(policy.check_in_early_grace_minutes) && policyTolerance === String(policy.lateness_tolerance_minutes))} onClick={() => void saveAttendancePolicy()}>{policyBusy ? "Guardando…" : "Guardar"}</button>
+              <button type="button" className="button button-secondary" disabled={policyBusy || policy === null || (policyGrace === String(policy.check_in_early_grace_minutes) && policyTolerance === String(policy.lateness_tolerance_minutes) && policySla === String(policy.attendance_request_sla_hours))} onClick={() => void saveAttendancePolicy()}>{policyBusy ? "Guardando…" : "Guardar"}</button>
+            </div>
+            <div className="kiosk-occupancy-row">
+              <label htmlFor="attendance-sla">Plazo para decidir solicitudes (horas)</label>
+              <input id="attendance-sla" className="kiosk-limit-input" type="number" min={0} max={720} step={1} inputMode="numeric" value={policySla} disabled={policyBusy || policy === null} onChange={(event) => setPolicySla(event.target.value)} />
+              <span className="kiosk-antipassback-state">{policy === null ? "" : policy.attendance_request_sla_hours === 0 ? "Sin plazo: las solicitudes no vencen." : `Si una solicitud sigue pendiente después de ${policy.attendance_request_sla_hours} h, la dirección recibe el aviso de vencimiento.`}</span>
             </div>
             <div className="kiosk-occupancy-row">
               <span className="kiosk-antipassback-state">{policy?.updated_at ? `Última modificación: ${formatSessionTime(policy.updated_at)}` : "Sin cambios registrados todavía."}</span>
@@ -5339,7 +5361,7 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
           </section>}
           {canViewAttendance && <section className="panel full-panel">
             <div className="panel-header access-list-heading"><div><p className="section-kicker">SOLICITUDES DEL EQUIPO</p><h2>Cambios de marca por revisar</h2></div><span className="role-count">{pendingRequests?.length ?? 0}</span></div>
-            <p className="panel-hint">Cada colaborador puede pedir que se corrija la hora de una marca o que se anule. Aprobar aplica el cambio y deja el motivo en la bitácora del turno; rechazar exige explicar por qué. Nadie decide su propia solicitud.</p>
+            <p className="panel-hint">Cada colaborador puede pedir que se corrija la hora de una marca o que se anule. Aprobar aplica el cambio y deja el motivo en la bitácora del turno; rechazar exige explicar por qué. Nadie decide su propia solicitud. Si una solicitud sigue pendiente al cumplirse el plazo del club, la dirección recibe un aviso de vencimiento.</p>
             <div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>TURNO</th><th>MARCA</th><th>CAMBIO PROPUESTO</th><th>MOTIVO</th><th /></tr></thead><tbody>
               {requestsError ? <tr><td colSpan={6} className="empty-row">{requestsError}</td></tr>
                 : pendingRequests === null ? <tr><td colSpan={6} className="empty-row">Cargando solicitudes…</td></tr>
@@ -5347,10 +5369,10 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
                 : pendingRequests.map((request) => {
                   const shift = teamShiftForAttendance(request.attendance_id);
                   const mine = request.requested_by === currentUserId;
-                  return <tr key={request.id}><td><div className="person-cell"><span className="person-avatar peach">{(request.employee_name ?? "C").slice(0, 1).toUpperCase()}</span><span><strong>{request.employee_name ?? "Colaborador"}</strong><small>{formatSessionTime(request.created_at)}</small></span></div></td><td>{shift ? <span className="time-cell">{shiftDayLabel(shift.starts_at)} · {shiftClock(shift.starts_at)}–{shiftClock(shift.ends_at)}</span> : "Turno"}</td><td>{attendanceMarkLabel(request.mark)}<small className="staff-request-current">{request.mark === "check_in" ? `Actual: ${shiftClock(request.current_check_in_at)}` : request.current_check_out_at ? `Actual: ${shiftClock(request.current_check_out_at)}` : "Sin marca"}</small></td><td className="time-cell">{request.action === "void" ? "Anular la marca" : request.proposed_at ? `Cambiar a ${shiftClock(request.proposed_at)}` : "Corregir la hora"}</td><td>{request.justification}</td><td>{mine ? <span className="table-hint">Tu solicitud</span> : canManageAttendance ? <button className="button button-secondary" onClick={() => setDecisionRequest(request)}>Revisar</button> : <span className="table-hint">Solo lectura</span>}</td></tr>;
+                  return <tr key={request.id}><td><div className="person-cell"><span className="person-avatar peach">{(request.employee_name ?? "C").slice(0, 1).toUpperCase()}</span><span><strong>{request.employee_name ?? "Colaborador"}</strong>{request.overdue ? <small className="request-overdue">Vencida · avisada la dirección</small> : <small>{formatSessionTime(request.created_at)}</small>}</span></div></td><td>{shift ? <span className="time-cell">{shiftDayLabel(shift.starts_at)} · {shiftClock(shift.starts_at)}–{shiftClock(shift.ends_at)}</span> : "Turno"}</td><td>{attendanceMarkLabel(request.mark)}<small className="staff-request-current">{request.mark === "check_in" ? `Actual: ${shiftClock(request.current_check_in_at)}` : request.current_check_out_at ? `Actual: ${shiftClock(request.current_check_out_at)}` : "Sin marca"}</small></td><td className="time-cell">{request.action === "void" ? "Anular la marca" : request.proposed_at ? `Cambiar a ${shiftClock(request.proposed_at)}` : "Corregir la hora"}</td><td>{request.justification}</td><td>{mine ? <span className="table-hint">Tu solicitud</span> : canManageAttendance ? <button className="button button-secondary" onClick={() => setDecisionRequest(request)}>Revisar</button> : <span className="table-hint">Solo lectura</span>}</td></tr>;
                 })}
             </tbody></table></div>
-            <div className="table-bottom"><span>{pendingRequests?.length ?? 0} solicitudes esperando decisión</span><span>El solicitante recibe un aviso con la decisión</span></div>
+            <div className="table-bottom"><span>{pendingRequests?.length ?? 0} solicitudes esperando decisión</span><span>{(() => { const overdue = (pendingRequests ?? []).filter((request) => request.overdue).length; return `${overdue} ${overdue === 1 ? "vencida" : "vencidas"} · el solicitante recibe un aviso con la decisión`; })()}</span></div>
           </section>}
           <section className="panel full-panel"><div className="panel-header access-list-heading"><div><p className="section-kicker">DIRECTORIO DE PERSONAL</p><h2>Colaboradores</h2></div>{canManageStaff && <button className="button button-secondary" onClick={() => setNewEmployeeOpen(true)}><Plus size={16} />Nuevo colaborador</button>}</div><div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>PUESTO</th><th>HORARIO</th><th>ESTADO</th><th /></tr></thead><tbody>{loading ? <tr><td colSpan={5} className="empty-row">Cargando directorio…</td></tr> : error ? <tr><td colSpan={5} className="empty-row">{error}</td></tr> : employeeList.length === 0 ? <tr><td colSpan={5} className="empty-row">No hay colaboradores registrados.</td></tr> : employeeList.map((employee, index) => { const fullName = `${employee.first_name} ${employee.last_name}`; const initials = `${employee.first_name[0] ?? ""}${employee.last_name[0] ?? ""}`.toUpperCase(); const state = employee.status === "active" ? "Activo" : employee.status === "inactive" ? "Inactivo" : "Baja"; const color = ["mint", "peach", "lavender", "blue", "yellow"][index % 5]; return <tr key={employee.id}><td><div className="person-cell"><span className={`person-avatar ${color}`}>{initials}</span><span><strong>{fullName}</strong><small>{employee.email ?? employee.employee_number}</small></span></div></td><td>{employee.job_title}</td><td className="time-cell">{(() => { const shift = nextShiftFor(employee.id); return shift ? `${shiftDayLabel(shift.starts_at)} · ${shiftClock(shift.starts_at)}–${shiftClock(shift.ends_at)}` : "Sin turno"; })()}</td><td><StatusBadge state={state} /></td><td><button className="icon-button row-menu" aria-label={`Opciones de ${fullName}`}><MoreHorizontal size={17} /></button></td></tr>; })}</tbody></table></div><div className="table-bottom"><span>{employeeList.length} colaboradores registrados</span><span>Horario según los turnos del backend</span></div></section>
           {canViewAttendance && <section className="panel full-panel">
@@ -15770,12 +15792,12 @@ function PolicyHistoryModal({ onClose }: { onClose: () => void }) {
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="modal member-modal" role="dialog" aria-modal="true" aria-labelledby="policy-history-title">
         <div className="modal-header"><span className="modal-icon"><History size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
-        <p className="section-kicker">POLÍTICA DE ASISTENCIA</p><h2 id="policy-history-title">Historial de tolerancias</h2>
+        <p className="section-kicker">POLÍTICA DE ASISTENCIA</p><h2 id="policy-history-title">Historial de la política</h2>
         <p className="modal-subtitle">Cada cambio conserva la cuenta responsable, la fecha y los valores anteriores. Guardar sin cambios no registra nada.</p>
         {error ? <div className="login-error" role="alert">{error}</div>
           : events === null ? <p className="panel-hint">Cargando el historial…</p>
           : events.length === 0 ? <p className="panel-hint">La política conserva sus valores iniciales; todavía no hay cambios registrados.</p>
-          : <ol className="staff-log-list">{events.map((entry) => <li key={entry.id} className="staff-log-item"><div className="staff-log-head"><strong>{entry.previous_check_in_early_grace_minutes}/{entry.previous_lateness_tolerance_minutes} → {entry.check_in_early_grace_minutes}/{entry.lateness_tolerance_minutes} min</strong><span className="time-cell">{formatSessionTime(entry.changed_at)}</span></div><div className="staff-log-meta">{entry.actor_name ?? entry.actor_email ?? "Cuenta eliminada"} · apertura / tolerancia</div></li>)}</ol>}
+          : <ol className="staff-log-list">{events.map((entry) => <li key={entry.id} className="staff-log-item"><div className="staff-log-head"><strong>{entry.previous_check_in_early_grace_minutes}/{entry.previous_lateness_tolerance_minutes} → {entry.check_in_early_grace_minutes}/{entry.lateness_tolerance_minutes} min{entry.previous_attendance_request_sla_hours !== entry.attendance_request_sla_hours ? ` · plazo ${entry.previous_attendance_request_sla_hours} → ${entry.attendance_request_sla_hours} h` : ""}</strong><span className="time-cell">{formatSessionTime(entry.changed_at)}</span></div><div className="staff-log-meta">{entry.actor_name ?? entry.actor_email ?? "Cuenta eliminada"} · apertura / tolerancia{entry.previous_attendance_request_sla_hours === entry.attendance_request_sla_hours ? "" : " / plazo"}</div></li>)}</ol>}
         <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cerrar</button></div>
       </section>
     </div>

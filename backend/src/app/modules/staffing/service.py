@@ -11,7 +11,8 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.modules.identity.models import AppUser, Employee
-from app.modules.identity.service import user_ids_with_permission
+from app.modules.identity.service import user_ids_with_permission, user_ids_with_role
+from app.modules.notifications.models import StaffNotification
 from app.modules.notifications.service import (
     create_staff_notification,
     resolve_staff_notifications,
@@ -38,6 +39,10 @@ _RecordT = TypeVar("_RecordT", bound=SQLModel)
 DEFAULT_CHECK_IN_EARLY_GRACE_MINUTES = 15
 DEFAULT_LATENESS_TOLERANCE_MINUTES = 0
 MAX_ATTENDANCE_POLICY_MINUTES = 240
+# How long a supervisor has to decide a change request before the owners hear
+# that it expired. Zero disables the term; the panel edits both.
+DEFAULT_ATTENDANCE_REQUEST_SLA_HOURS = 24
+MAX_ATTENDANCE_REQUEST_SLA_HOURS = 720
 VOIDABLE_MARKS = ("check_in", "check_out")
 
 
@@ -143,6 +148,14 @@ def read_attendance_policy(session: Session) -> tuple[int, int]:
     return settings.check_in_early_grace_minutes, settings.lateness_tolerance_minutes
 
 
+def read_attendance_request_sla_hours(session: Session) -> int:
+    """Return the club's term for deciding a request, in hours (zero = none)."""
+    settings = session.get(StaffingSettings, 1)
+    if settings is None:
+        return DEFAULT_ATTENDANCE_REQUEST_SLA_HOURS
+    return settings.attendance_request_sla_hours
+
+
 def get_staffing_settings(session: Session) -> StaffingSettings:
     """Return the singleton settings row, creating it with defaults if needed."""
     settings = session.get(StaffingSettings, 1)
@@ -159,28 +172,42 @@ def update_staffing_settings(
     *,
     check_in_early_grace_minutes: int,
     lateness_tolerance_minutes: int,
+    attendance_request_sla_hours: int,
     actor_id: UUID | None = None,
 ) -> StaffingSettings:
     """Save the club policy, recording who changed what and the previous values.
 
     ``staffing_settings`` only carries ``updated_at``; the audit row is what lets
     the panel answer who moved the check-in window. A save that changes nothing
-    writes no row, so the history only shows real changes.
+    writes no row, so the history only shows real changes. The request term is
+    frozen on each pending request when it is created, so changing it here never
+    re-times a request that is already waiting.
     """
-    for value, label in (
-        (check_in_early_grace_minutes, "check_in_early_grace_minutes"),
-        (lateness_tolerance_minutes, "lateness_tolerance_minutes"),
+    for value, label, limit in (
+        (check_in_early_grace_minutes, "check_in_early_grace_minutes", MAX_ATTENDANCE_POLICY_MINUTES),
+        (lateness_tolerance_minutes, "lateness_tolerance_minutes", MAX_ATTENDANCE_POLICY_MINUTES),
+        (
+            attendance_request_sla_hours,
+            "attendance_request_sla_hours",
+            MAX_ATTENDANCE_REQUEST_SLA_HOURS,
+        ),
     ):
-        if not 0 <= value <= MAX_ATTENDANCE_POLICY_MINUTES:
-            raise ValueError(f"{label} must be between 0 and {MAX_ATTENDANCE_POLICY_MINUTES}")
+        if not 0 <= value <= limit:
+            raise ValueError(f"{label} must be between 0 and {limit}")
     settings = get_staffing_settings(session)
     previous_grace = settings.check_in_early_grace_minutes
     previous_tolerance = settings.lateness_tolerance_minutes
-    if previous_grace == check_in_early_grace_minutes and previous_tolerance == lateness_tolerance_minutes:
+    previous_sla = settings.attendance_request_sla_hours
+    if (
+        previous_grace == check_in_early_grace_minutes
+        and previous_tolerance == lateness_tolerance_minutes
+        and previous_sla == attendance_request_sla_hours
+    ):
         return _normalize_datetimes(settings, ("updated_at",))
     now = utc_now()
     settings.check_in_early_grace_minutes = check_in_early_grace_minutes
     settings.lateness_tolerance_minutes = lateness_tolerance_minutes
+    settings.attendance_request_sla_hours = attendance_request_sla_hours
     settings.updated_at = now
     session.add(settings)
     session.add(
@@ -190,6 +217,8 @@ def update_staffing_settings(
             previous_lateness_tolerance_minutes=previous_tolerance,
             check_in_early_grace_minutes=check_in_early_grace_minutes,
             lateness_tolerance_minutes=lateness_tolerance_minutes,
+            previous_attendance_request_sla_hours=previous_sla,
+            attendance_request_sla_hours=attendance_request_sla_hours,
             changed_at=now,
         )
     )
@@ -725,6 +754,8 @@ def request_attendance_change(
     if pending is not None:
         raise AttendanceRequestConflict("There is already a pending request for that mark")
 
+    now = utc_now()
+    sla_hours = read_attendance_request_sla_hours(session)
     request = StaffAttendanceRequest(
         attendance_id=record.id,
         employee_id=employee_id,
@@ -733,6 +764,8 @@ def request_attendance_change(
         action=action,
         proposed_at=proposed,
         justification=notes,
+        created_at=now,
+        due_at=now + timedelta(hours=sla_hours) if sla_hours > 0 else None,
     )
     session.add(request)
     session.flush()
@@ -746,6 +779,57 @@ def request_attendance_change(
     return _normalize_datetimes(request, _REQUEST_DATETIME_FIELDS)
 
 
+def attendance_request_is_overdue(
+    request: StaffAttendanceRequest, *, now: datetime | None = None
+) -> bool:
+    """Whether a still-pending request already passed the club's term."""
+    if request.status != "pending" or request.due_at is None:
+        return False
+    return _as_utc(request.due_at) <= _as_utc(now or utc_now())
+
+
+def escalate_overdue_attendance_requests(
+    session: Session, *, now: datetime | None = None
+) -> int:
+    """Tell the owners about every pending request whose term already passed.
+
+    There is no scheduler, so this runs from the read paths that show requests
+    (the employee's list, the supervisor queue and the staff inbox). The dedupe
+    key keeps it to one notice per request and owner, so reopening the queue
+    writes nothing; deciding the request resolves the notice.
+    """
+    occurred = _as_utc(now or utc_now())
+    rows = session.exec(
+        select(StaffAttendanceRequest, StaffAttendance)
+        .join(StaffAttendance, StaffAttendance.id == StaffAttendanceRequest.attendance_id)
+        .where(
+            StaffAttendanceRequest.status == "pending",
+            StaffAttendanceRequest.due_at.is_not(None),
+            StaffAttendanceRequest.due_at <= occurred,
+        )
+    ).all()
+    if not rows:
+        return 0
+    owners = user_ids_with_role(session, "owner", now=occurred)
+    written = 0
+    for request, record in rows:
+        for user_id in owners:
+            if user_id == request.requested_by:
+                continue
+            key = f"attendance_request_overdue:{request.id}:{user_id}"
+            if session.exec(
+                select(StaffNotification.id).where(StaffNotification.dedupe_key == key)
+            ).first():
+                continue
+            _notify_request_overdue(
+                session, request=request, record=record, user_id=user_id, now=occurred
+            )
+            written += 1
+    if written:
+        session.commit()
+    return written
+
+
 def list_attendance_requests(
     session: Session,
     *,
@@ -756,6 +840,7 @@ def list_attendance_requests(
     """List change requests newest first, optionally for one employee or state."""
     if status is not None and status not in REQUEST_STATUSES:
         raise ValueError("Unsupported attendance request status")
+    escalate_overdue_attendance_requests(session)
     query = (
         select(StaffAttendanceRequest, StaffAttendance, Employee)
         .join(StaffAttendance, StaffAttendance.id == StaffAttendanceRequest.attendance_id)
@@ -850,6 +935,9 @@ def decide_attendance_request(
     session.add(request)
     resolve_staff_notifications(
         session, kind="attendance_request_pending", ref_id=request.id, now=now
+    )
+    resolve_staff_notifications(
+        session, kind="attendance_request_overdue", ref_id=request.id, now=now
     )
     record = session.get(StaffAttendance, request.attendance_id)
     if record is not None:
@@ -1054,6 +1142,41 @@ def _notify_request_pending(
         )
 
 
+def _notify_request_overdue(
+    session: Session,
+    *,
+    request: StaffAttendanceRequest,
+    record: StaffAttendance,
+    user_id: UUID,
+    now: datetime,
+) -> None:
+    """Escalate an expired request to an owner who can push the decision."""
+    label = MARK_LABELS[request.mark]
+    day = _day_label(record.check_in_at)
+    employee = session.get(Employee, request.employee_id)
+    employee_name = (
+        f"{employee.first_name} {employee.last_name}".strip()
+        if employee is not None
+        else "Un colaborador"
+    )
+    verb = "corregir" if request.action == "correct" else "anular"
+    create_staff_notification(
+        session,
+        user_id=user_id,
+        kind="attendance_request_overdue",
+        title="Solicitud de asistencia vencida",
+        body=(
+            f"{employee_name} pidió {verb} su {label} del {day} el "
+            f"{_day_label(request.created_at)} a las {_time_label(request.created_at)} "
+            "y la solicitud sigue sin decisión. Ya pasó el plazo del club: "
+            "revísala o pide a la supervisión que la atienda."
+        ),
+        ref_id=request.id,
+        dedupe_key=f"attendance_request_overdue:{request.id}:{user_id}",
+        now=now,
+    )
+
+
 def _notify_request_decided(
     session: Session,
     *,
@@ -1246,6 +1369,7 @@ _ATTENDANCE_DATETIME_FIELDS = (
 
 _REQUEST_DATETIME_FIELDS = (
     "proposed_at",
+    "due_at",
     "decided_at",
     "created_at",
     "updated_at",

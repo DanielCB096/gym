@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import event
@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.main import app, get_session
 from app.modules.identity.models import Employee
 from app.modules.identity.service import ensure_default_access_control, register_user
+from app.modules.staffing.models import StaffAttendanceRequest
 
 
 def test_attendance_scheduling_and_self_service() -> None:
@@ -234,12 +235,17 @@ def test_attendance_scheduling_and_self_service() -> None:
             assert client.get("/staff/attendance", headers=ana).json()["settings"] == {
                 "check_in_early_grace_minutes": 15,
                 "lateness_tolerance_minutes": 0,
+                "attendance_request_sla_hours": 24,
             }
             assert client.get("/admin/staff/settings", headers=trainer).status_code == 403
             assert client.get("/admin/staff/settings", headers=owner).json()[
                 "lateness_tolerance_minutes"
             ] == 0
-            policy = {"check_in_early_grace_minutes": 30, "lateness_tolerance_minutes": 10}
+            policy = {
+                "check_in_early_grace_minutes": 30,
+                "lateness_tolerance_minutes": 10,
+                "attendance_request_sla_hours": 48,
+            }
             assert client.patch(
                 "/admin/staff/settings", json=policy, headers=trainer
             ).status_code == 403
@@ -336,8 +342,10 @@ def test_attendance_scheduling_and_self_service() -> None:
             assert (
                 history[0]["previous_check_in_early_grace_minutes"],
                 history[0]["previous_lateness_tolerance_minutes"],
-            ) == (15, 0)
+                history[0]["previous_attendance_request_sla_hours"],
+            ) == (15, 0, 24)
             assert (history[0]["check_in_early_grace_minutes"], history[0]["lateness_tolerance_minutes"]) == (30, 10)
+            assert history[0]["attendance_request_sla_hours"] == 48
             assert client.patch("/admin/staff/settings", json=policy, headers=owner).status_code == 200
             assert len(client.get(events_path, headers=owner).json()["items"]) == 1
 
@@ -391,6 +399,39 @@ def test_attendance_scheduling_and_self_service() -> None:
             inbox = client.get("/admin/notifications", headers=owner).json()["items"]
             assert any(item["kind"] == "attendance_request_pending" for item in inbox)
 
+            # A request that passes the club's term is flagged as overdue and the
+            # owner —not the requester— is escalated in the inbox. The notice is
+            # written once even if the queue is opened again.
+            with Session(engine) as session:
+                row = session.get(StaffAttendanceRequest, UUID(request_id))
+                assert row is not None
+                row.due_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+                session.add(row)
+                session.commit()
+            overdue_queue = client.get(f"{queue_path}?status=pending", headers=trainer)
+            assert overdue_queue.json()["items"][0]["overdue"] is True
+            assert overdue_queue.json()["items"][0]["due_at"].endswith("Z")
+            assert client.get("/staff/attendance/requests", headers=ana).json()["items"][0][
+                "overdue"
+            ] is True
+            owner_inbox = client.get("/admin/notifications", headers=owner).json()["items"]
+            overdue_notices = [
+                item for item in owner_inbox if item["kind"] == "attendance_request_overdue"
+            ]
+            assert len(overdue_notices) == 1
+            assert overdue_notices[0]["resolved_at"] is None
+            assert "Ana Ruiz" in overdue_notices[0]["body"]
+            client.get(f"{queue_path}?status=pending", headers=trainer)
+            assert len(
+                [
+                    item
+                    for item in client.get("/admin/notifications", headers=owner).json()["items"]
+                    if item["kind"] == "attendance_request_overdue"
+                ]
+            ) == 1
+            ana_inbox = client.get("/admin/notifications", headers=ana).json()["items"]
+            assert all(item["kind"] != "attendance_request_overdue" for item in ana_inbox)
+
             # Nobody decides their own request, even holding attendance.manage.
             decision_path = f"{queue_path}/{request_id}/decision"
             assert client.post(
@@ -414,6 +455,12 @@ def test_attendance_scheduling_and_self_service() -> None:
             corrected_row = client.get("/staff/attendance", headers=ana).json()["items"][0]["attendance"]
             assert corrected_row["check_in_source"] == "correction"
             assert datetime.fromisoformat(corrected_row["check_in_at"]) == now - timedelta(minutes=10)
+            resolved_notice = next(
+                item
+                for item in client.get("/admin/notifications", headers=owner).json()["items"]
+                if item["kind"] == "attendance_request_overdue"
+            )
+            assert resolved_notice["resolved_at"] is not None
             assert client.post(
                 decision_path, json={"decision": "approved"}, headers=owner
             ).status_code == 409

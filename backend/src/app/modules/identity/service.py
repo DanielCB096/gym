@@ -723,6 +723,40 @@ def user_ids_with_permission(
     )
 
 
+def user_ids_with_role(
+    session: Session,
+    role_code: str,
+    *,
+    now: datetime | None = None,
+) -> list[UUID]:
+    """Return the active panel accounts that currently hold a role.
+
+    Used by producers that escalate to a fixed authority (the owner) instead of
+    to whoever holds a permission, with the same assignment window that builds
+    a principal at login.
+    """
+    occurred_at = _as_utc(now or utc_now())
+    return list(
+        session.exec(
+            select(AppUser.id)
+            .join(UserRoleAssignment, UserRoleAssignment.user_id == AppUser.id)
+            .join(Role, Role.id == UserRoleAssignment.role_id)
+            .where(
+                AppUser.status == "active",
+                Role.code == role_code,
+                UserRoleAssignment.revoked_at.is_(None),
+                UserRoleAssignment.assigned_at <= occurred_at,
+                or_(
+                    UserRoleAssignment.expires_at.is_(None),
+                    UserRoleAssignment.expires_at > occurred_at,
+                ),
+            )
+            .distinct()
+            .order_by(AppUser.id)
+        ).all()
+    )
+
+
 def list_roles_and_permissions(session: Session) -> list[dict[str, object]]:
     roles = session.exec(select(Role).order_by(Role.name)).all()
     result: list[dict[str, object]] = []
