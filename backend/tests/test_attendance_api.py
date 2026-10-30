@@ -324,6 +324,157 @@ def test_attendance_scheduling_and_self_service() -> None:
             assert {item["id"] for item in listing.json()} >= {shift_id, other_shift}
             manual_row = next(item for item in listing.json() if item["id"] == other_shift)
             assert manual_row["attendance"]["check_in_source"] == "manual"
+
+            # Every policy change keeps its actor and the previous values; an
+            # identical save writes nothing.
+            events_path = "/admin/staff/settings/events"
+            assert client.get(events_path, headers=trainer).status_code == 403
+            assert client.get(events_path, headers=maintenance).status_code == 403
+            history = client.get(events_path, headers=owner).json()["items"]
+            assert len(history) == 1
+            assert history[0]["actor_email"] == "owner@example.com"
+            assert (
+                history[0]["previous_check_in_early_grace_minutes"],
+                history[0]["previous_lateness_tolerance_minutes"],
+            ) == (15, 0)
+            assert (history[0]["check_in_early_grace_minutes"], history[0]["lateness_tolerance_minutes"]) == (30, 10)
+            assert client.patch("/admin/staff/settings", json=policy, headers=owner).status_code == 200
+            assert len(client.get(events_path, headers=owner).json()["items"]) == 1
+
+            # The employee asks for a correction; it does not touch the mark
+            # until a supervisor decides.
+            own = client.get("/staff/attendance", headers=ana).json()["items"][0]["attendance"]
+            request_body = {
+                "mark": "check_in",
+                "action": "correct",
+                "proposed_at": (now - timedelta(minutes=10)).isoformat(),
+                "justification": "Entré antes de las 14:00 y marqué tarde",
+            }
+            requests_path = f"/staff/attendance/{own['id']}/requests"
+            assert client.post(
+                requests_path,
+                json={**request_body, "proposed_at": "2026-10-16T14:00:00"},
+                headers=ana,
+            ).status_code == 422
+            assert client.post(requests_path, json=request_body, headers=owner).status_code == 409
+            created = client.post(requests_path, json=request_body, headers=ana)
+            assert created.status_code == 201
+            request_id = created.json()["id"]
+            assert created.json()["status"] == "pending"
+            # Every instant in the payload carries UTC, so the panel can render it
+            # in the club's timezone instead of reading a naive string as local time.
+            assert created.json()["proposed_at"].endswith("Z")
+            assert created.json()["current_check_in_at"].endswith("Z")
+            assert created.json()["current_check_out_at"] is None
+            assert client.post(
+                requests_path,
+                json={**request_body, "justification": "Quiero cambiarla otra vez"},
+                headers=ana,
+            ).status_code == 409
+
+            mine = client.get("/staff/attendance/requests", headers=ana)
+            assert mine.status_code == 200
+            assert [(item["id"], item["status"]) for item in mine.json()["items"]] == [
+                (request_id, "pending")
+            ]
+            assert mine.json()["items"][0]["current_check_in_at"].endswith("Z")
+            assert client.get("/staff/attendance/requests", headers=owner).status_code == 409
+
+            queue_path = "/admin/staff/attendance/requests"
+            assert client.get(queue_path, headers=maintenance).status_code == 403
+            queue = client.get(f"{queue_path}?status=pending", headers=trainer)
+            assert queue.status_code == 200
+            assert [item["id"] for item in queue.json()["items"]] == [request_id]
+            assert queue.json()["items"][0]["employee_name"] == "Ana Ruiz"
+            assert queue.json()["items"][0]["current_check_in_at"].endswith("Z")
+            assert client.get(f"{queue_path}?status=nope", headers=trainer).status_code == 422
+            inbox = client.get("/admin/notifications", headers=owner).json()["items"]
+            assert any(item["kind"] == "attendance_request_pending" for item in inbox)
+
+            # Nobody decides their own request, even holding attendance.manage.
+            decision_path = f"{queue_path}/{request_id}/decision"
+            assert client.post(
+                decision_path, json={"decision": "approved"}, headers=ana
+            ).status_code == 403
+            assert client.post(
+                decision_path, json={"decision": "approved"}, headers=trainer
+            ).status_code == 403
+            decided = client.post(
+                decision_path,
+                json={"decision": "approved", "note": "Confirmado con recepción"},
+                headers=owner,
+            )
+            assert decided.status_code == 200
+            assert decided.json()["status"] == "approved"
+            assert decided.json()["decision_note"] == "Confirmado con recepción"
+            assert decided.json()["current_check_in_at"].endswith("Z")
+            assert datetime.fromisoformat(decided.json()["current_check_in_at"]) == now - timedelta(
+                minutes=10
+            )
+            corrected_row = client.get("/staff/attendance", headers=ana).json()["items"][0]["attendance"]
+            assert corrected_row["check_in_source"] == "correction"
+            assert datetime.fromisoformat(corrected_row["check_in_at"]) == now - timedelta(minutes=10)
+            assert client.post(
+                decision_path, json={"decision": "approved"}, headers=owner
+            ).status_code == 409
+            paid = client.post(
+                f"{queue_path}/{uuid4()}/decision", json={"decision": "approved"}, headers=owner
+            )
+            assert paid.status_code == 404
+
+            # A rejected request needs a reason and leaves the mark untouched.
+            second = client.post(
+                requests_path,
+                json={
+                    "mark": "check_in",
+                    "action": "correct",
+                    "proposed_at": (now - timedelta(minutes=25)).isoformat(),
+                    "justification": "Quiero registrar la hora exacta",
+                },
+                headers=ana,
+            )
+            assert second.status_code == 201
+            second_id = second.json()["id"]
+            assert client.post(
+                f"{queue_path}/{second_id}/decision", json={"decision": "rejected"}, headers=owner
+            ).status_code == 422
+            rejected = client.post(
+                f"{queue_path}/{second_id}/decision",
+                json={"decision": "rejected", "note": "La cámara no lo confirma"},
+                headers=owner,
+            )
+            assert rejected.status_code == 200
+            assert rejected.json()["status"] == "rejected"
+            assert client.get("/staff/attendance", headers=ana).json()["items"][0]["attendance"][
+                "check_in_source"
+            ] == "correction"
+            assert [
+                item["status"]
+                for item in client.get("/staff/attendance/requests", headers=ana).json()["items"]
+            ] == ["rejected", "approved"]
+
+            # The annulment log groups the voids by operator.
+            annulments_path = "/admin/staff/attendance/annulments"
+            assert client.get(f"{annulments_path}?days=7", headers=maintenance).status_code == 403
+            assert client.get(f"{annulments_path}?days=0", headers=owner).status_code == 422
+            report = client.get(f"{annulments_path}?days=7", headers=trainer)
+            assert report.status_code == 200
+            payload = report.json()
+            assert payload["total"] == 2
+            assert {row["actor_email"] for row in payload["by_operator"]} == {"ana@example.com"}
+            assert {row["total"] for row in payload["by_operator"]} == {2}
+            assert {item["event_type"] for item in payload["items"]} == {
+                "attendance_voided",
+                "check_out_voided",
+            }
+            only_voids = client.get(
+                f"{annulments_path}?days=7&employee_id={first_id}", headers=owner
+            ).json()
+            assert only_voids["total"] == 2
+            empty = client.get(
+                f"{annulments_path}?days=7&employee_id={second_id}", headers=owner
+            ).json()
+            assert empty["total"] == 0 and empty["by_operator"] == []
     finally:
         app.dependency_overrides.pop(get_session, None)
         engine.dispose()

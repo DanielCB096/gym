@@ -521,13 +521,21 @@ from app.modules.portal.service import (
     revoke_member_session,
     verify_login_code,
 )
-from app.modules.staffing.models import StaffAttendance, StaffShift, StaffingSettings
+from app.modules.staffing.models import (
+    StaffAttendance,
+    StaffAttendanceRequest,
+    StaffShift,
+    StaffingSettings,
+)
 from app.modules.staffing.service import (
     AttendanceAlreadyRecorded,
     AttendanceEventConflict,
     AttendanceMarkMissing,
     AttendanceNotAllowed,
     AttendanceNotFound,
+    AttendanceRequestConflict,
+    AttendanceRequestNotAllowed,
+    AttendanceRequestNotFound,
     InvalidAttendanceTime,
     ManualAttendanceReasonRequired,
     ShiftNotAvailable,
@@ -536,11 +544,16 @@ from app.modules.staffing.service import (
     clock_out,
     correct_attendance,
     create_shift,
+    decide_attendance_request,
     get_staffing_settings,
+    list_attendance_annulments,
     list_attendance_events,
+    list_attendance_requests,
     list_shifts_with_attendance,
+    list_staffing_settings_events,
     read_attendance_policy,
     record_manual_attendance,
+    request_attendance_change,
     update_staffing_settings,
     void_attendance_mark,
 )
@@ -955,6 +968,18 @@ class AttendanceVoidRequest(BaseModel):
 class StaffingSettingsRequest(BaseModel):
     check_in_early_grace_minutes: int = Field(ge=0, le=240)
     lateness_tolerance_minutes: int = Field(ge=0, le=240)
+
+
+class AttendanceChangeRequest(BaseModel):
+    mark: Literal["check_in", "check_out"]
+    action: Literal["correct", "void"]
+    proposed_at: datetime | None = None
+    justification: str = Field(min_length=3, max_length=500)
+
+
+class AttendanceRequestDecisionRequest(BaseModel):
+    decision: Literal["approved", "rejected"]
+    note: str | None = Field(default=None, max_length=300)
 
 
 class ProductResponse(BaseModel):
@@ -4385,14 +4410,42 @@ def get_staffing_settings_endpoint(
 def update_staffing_settings_endpoint(
     request: StaffingSettingsRequest,
     session: SessionDependency,
-    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
 ) -> dict[str, object]:
     settings = update_staffing_settings(
         session,
         check_in_early_grace_minutes=request.check_in_early_grace_minutes,
         lateness_tolerance_minutes=request.lateness_tolerance_minutes,
+        actor_id=principal.user_id,
     )
     return _staffing_settings_payload(settings)
+
+
+@app.get("/admin/staff/settings/events", tags=["staff administration"])
+def list_staffing_settings_events_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+) -> dict[str, object]:
+    rows = list_staffing_settings_events(session)
+    return {
+        "items": [
+            {
+                "id": event.id,
+                "changed_at": event.changed_at,
+                "actor_email": actor.email if actor is not None else None,
+                "actor_name": (
+                    f"{employee.first_name} {employee.last_name}"
+                    if employee is not None
+                    else None
+                ),
+                "previous_check_in_early_grace_minutes": event.previous_check_in_early_grace_minutes,
+                "previous_lateness_tolerance_minutes": event.previous_lateness_tolerance_minutes,
+                "check_in_early_grace_minutes": event.check_in_early_grace_minutes,
+                "lateness_tolerance_minutes": event.lateness_tolerance_minutes,
+            }
+            for event, actor, employee in rows
+        ]
+    }
 
 
 @app.post(
@@ -4598,6 +4651,171 @@ def void_registered_attendance_mark(
     return _attendance_payload(attendance)
 
 
+@app.get("/staff/attendance/requests", tags=["staff self-service"])
+def my_attendance_requests(
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.self"))],
+) -> dict[str, object]:
+    if principal.employee_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The account is not linked to an employee",
+        )
+    rows = list_attendance_requests(session, employee_id=principal.employee_id, limit=20)
+    return {
+        "items": [
+            _attendance_request_payload(request, record, employee)
+            for request, record, employee in rows
+        ]
+    }
+
+
+@app.post(
+    "/staff/attendance/{attendance_id}/requests",
+    status_code=status.HTTP_201_CREATED,
+    tags=["staff self-service"],
+)
+def create_attendance_request(
+    attendance_id: UUID,
+    request: AttendanceChangeRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.self"))],
+) -> dict[str, object]:
+    if principal.employee_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The account is not linked to an employee",
+        )
+    if request.proposed_at is not None and (
+        request.proposed_at.tzinfo is None or request.proposed_at.utcoffset() is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Attendance timestamps must include a timezone",
+        )
+    try:
+        created = request_attendance_change(
+            session,
+            attendance_id=attendance_id,
+            actor_id=principal.user_id,
+            employee_id=principal.employee_id,
+            mark=request.mark,
+            action=request.action,
+            proposed_at=request.proposed_at,
+            justification=request.justification,
+        )
+    except ManualAttendanceReasonRequired as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    except AttendanceNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except AttendanceRequestNotAllowed as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except (ShiftNotAvailable, AttendanceMarkMissing, AttendanceRequestConflict) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except InvalidAttendanceTime as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    record = session.get(StaffAttendance, created.attendance_id)
+    employee = session.get(Employee, created.employee_id)
+    return _attendance_request_payload(created, record, employee)
+
+
+@app.get("/admin/staff/attendance/requests", tags=["staff administration"])
+def list_attendance_requests_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.read"))],
+    status_filter: Annotated[Literal["pending", "approved", "rejected"] | None, Query(alias="status")] = None,
+    employee_id: Annotated[UUID | None, Query()] = None,
+) -> dict[str, object]:
+    rows = list_attendance_requests(session, employee_id=employee_id, status=status_filter)
+    return {
+        "items": [
+            _attendance_request_payload(request, record, employee)
+            for request, record, employee in rows
+        ]
+    }
+
+
+@app.post(
+    "/admin/staff/attendance/requests/{request_id}/decision",
+    tags=["staff administration"],
+)
+def decide_attendance_request_endpoint(
+    request_id: UUID,
+    request: AttendanceRequestDecisionRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+) -> dict[str, object]:
+    try:
+        decided = decide_attendance_request(
+            session,
+            request_id=request_id,
+            actor_id=principal.user_id,
+            decision=request.decision,
+            note=request.note,
+        )
+    except ManualAttendanceReasonRequired as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    except AttendanceRequestNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except AttendanceRequestNotAllowed as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except AttendanceNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (AttendanceRequestConflict, ShiftNotAvailable, AttendanceMarkMissing, AttendanceEventConflict) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except InvalidAttendanceTime as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    record = session.get(StaffAttendance, decided.attendance_id)
+    employee = session.get(Employee, decided.employee_id)
+    return _attendance_request_payload(decided, record, employee)
+
+
+@app.get("/admin/staff/attendance/annulments", tags=["staff administration"])
+def list_attendance_annulments_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.read"))],
+    days: Annotated[int, Query(ge=1, le=365)] = 30,
+    employee_id: Annotated[UUID | None, Query()] = None,
+    actor_id: Annotated[UUID | None, Query()] = None,
+) -> dict[str, object]:
+    report = list_attendance_annulments(
+        session,
+        from_at=utc_now() - timedelta(days=days),
+        employee_id=employee_id,
+        actor_id=actor_id,
+    )
+    return {
+        "total": report.total,
+        "by_operator": [
+            {
+                "actor_id": row.actor_id,
+                "actor_email": row.actor_email,
+                "actor_name": row.actor_name,
+                "check_ins": row.check_ins,
+                "check_outs": row.check_outs,
+                "total": row.total,
+                "last_at": row.last_at,
+            }
+            for row in report.by_operator
+        ],
+        "items": [
+            {
+                "event_id": item.event_id,
+                "event_type": item.event_type,
+                "occurred_at": item.occurred_at,
+                "reason": item.reason,
+                "attendance_id": item.attendance_id,
+                "employee_id": item.employee_id,
+                "employee_name": item.employee_name,
+                "actor_id": item.actor_id,
+                "actor_email": item.actor_email,
+                "actor_name": item.actor_name,
+            }
+            for item in report.items
+        ],
+    }
+
+
 def _self_attendance_mark(
     session: Session,
     principal: AuthenticatedUser,
@@ -4649,6 +4867,40 @@ def _attendance_payload(attendance: StaffAttendance) -> dict[str, object]:
         "check_out_at": attendance.check_out_at,
         "check_out_source": attendance.check_out_source,
         "voided_at": attendance.voided_at,
+    }
+
+
+def _attendance_request_payload(
+    request: StaffAttendanceRequest,
+    attendance: StaffAttendance | None,
+    employee: Employee | None,
+) -> dict[str, object]:
+    return {
+        "id": request.id,
+        "attendance_id": request.attendance_id,
+        "employee_id": request.employee_id,
+        "employee_name": (
+            f"{employee.first_name} {employee.last_name}" if employee is not None else None
+        ),
+        "mark": request.mark,
+        "action": request.action,
+        "proposed_at": request.proposed_at,
+        "justification": request.justification,
+        "status": request.status,
+        "requested_by": request.requested_by,
+        "decided_at": request.decided_at,
+        "decision_note": request.decision_note,
+        "created_at": request.created_at,
+        "current_check_in_at": (
+            _as_utc(attendance.check_in_at)
+            if attendance is not None and attendance.check_in_at is not None
+            else None
+        ),
+        "current_check_out_at": (
+            _as_utc(attendance.check_out_at)
+            if attendance is not None and attendance.check_out_at is not None
+            else None
+        ),
     }
 
 

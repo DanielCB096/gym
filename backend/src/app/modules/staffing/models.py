@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -148,6 +149,115 @@ class StaffingSettings(SQLModel, table=True):
     )
 
 
+class StaffingSettingsEvent(SQLModel, table=True):
+    """One before/after snapshot of a change to the club attendance policy.
+
+    ``staffing_settings`` only keeps ``updated_at``, so without this table the
+    club could not tell who moved the check-in window or the lateness tolerance.
+    The row is appended in the same transaction as the change; the actor is null
+    only for changes made outside a signed-in request (tests, seeds).
+    """
+
+    __tablename__ = "staffing_settings_events"
+    __table_args__ = (Index("ix_staffing_settings_events_changed", "changed_at"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    actor_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="RESTRICT")),
+    )
+    previous_check_in_early_grace_minutes: int = Field(sa_type=Integer)
+    previous_lateness_tolerance_minutes: int = Field(sa_type=Integer)
+    check_in_early_grace_minutes: int = Field(sa_type=Integer)
+    lateness_tolerance_minutes: int = Field(sa_type=Integer)
+    changed_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
+class StaffAttendanceRequest(SQLModel, table=True):
+    """A change the employee asks for on one of their own marks.
+
+    Employees never edit or void their own attendance; they ask a supervisor to
+    do it. The request keeps the employee's justification and the decision with
+    the supervisor's note, while the applied change still lands in
+    ``staff_attendance_events`` through the normal correction/annulment path, so
+    the mark history is identical whichever door started it.
+    """
+
+    __tablename__ = "staff_attendance_requests"
+    __table_args__ = (
+        CheckConstraint("mark IN ('check_in', 'check_out')", name="ck_staff_attendance_requests_mark"),
+        CheckConstraint("action IN ('correct', 'void')", name="ck_staff_attendance_requests_action"),
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected')",
+            name="ck_staff_attendance_requests_status",
+        ),
+        CheckConstraint(
+            "(action = 'correct' AND proposed_at IS NOT NULL) OR "
+            "(action = 'void' AND proposed_at IS NULL)",
+            name="ck_staff_attendance_requests_proposed",
+        ),
+        CheckConstraint(
+            "(status = 'pending' AND decided_by IS NULL AND decided_at IS NULL) OR "
+            "(status <> 'pending' AND decided_by IS NOT NULL AND decided_at IS NOT NULL)",
+            name="ck_staff_attendance_requests_decision",
+        ),
+        Index("ix_staff_attendance_requests_status_time", "status", "created_at"),
+        Index("ix_staff_attendance_requests_employee_time", "employee_id", "created_at"),
+        # One open request per mark and action; a rejected or approved one stops
+        # blocking a new request for the same mark.
+        Index(
+            "uq_staff_attendance_requests_pending",
+            "attendance_id",
+            "mark",
+            "action",
+            unique=True,
+            sqlite_where=text("status = 'pending'"),
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    attendance_id: UUID = Field(
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("staff_attendance.id", ondelete="RESTRICT"), nullable=False)
+    )
+    employee_id: UUID = Field(
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("employees.id", ondelete="RESTRICT"), nullable=False)
+    )
+    requested_by: UUID = Field(
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="RESTRICT"), nullable=False)
+    )
+    mark: str = Field(max_length=16)
+    action: str = Field(max_length=16)
+    proposed_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    justification: str = Field(max_length=500)
+    status: str = Field(
+        default="pending",
+        sa_column=Column(String(16), nullable=False, server_default=text("'pending'")),
+    )
+    decided_by: UUID | None = Field(
+        default=None,
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="RESTRICT")),
+    )
+    decided_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    decision_note: str | None = Field(default=None, max_length=300)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+            onupdate=func.now(),
+        ),
+    )
+
+
 class AttendanceEvent(SQLModel, table=True):
     __tablename__ = "staff_attendance_events"
     __table_args__ = (
@@ -159,6 +269,8 @@ class AttendanceEvent(SQLModel, table=True):
         CheckConstraint("source IN ('staff_app', 'manual', 'access_reader')", name="ck_staff_attendance_events_source"),
         UniqueConstraint("request_id", name="uq_staff_attendance_events_request"),
         Index("ix_staff_attendance_events_attendance_time", "attendance_id", "occurred_at"),
+        # The annulments report filters by kind over a period.
+        Index("ix_staff_attendance_events_type_time", "event_type", "occurred_at"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)

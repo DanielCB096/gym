@@ -246,6 +246,16 @@ CHECK_UPGRADES = {
             "('workout_pending_review', 'maintenance_ticket_assigned', "
             "'kiosk_token_expiring'))",
         ),
+        (
+            "CONSTRAINT ck_staff_notifications_kind CHECK (kind IN "
+            "('workout_pending_review', 'maintenance_ticket_assigned', "
+            "'kiosk_token_expiring'))",
+            "CONSTRAINT ck_staff_notifications_kind CHECK (kind IN "
+            "('workout_pending_review', 'maintenance_ticket_assigned', "
+            "'kiosk_token_expiring', 'attendance_corrected', 'attendance_voided', "
+            "'attendance_request_pending', 'attendance_request_approved', "
+            "'attendance_request_rejected'))",
+        ),
     ),
     "staff_attendance_events": (
         (
@@ -548,6 +558,11 @@ def main(reset_maintenance: bool) -> None:
 
         if "staff_attendance" in tables:
             relax_attendance_shift_uniqueness(connection)
+        if "staff_attendance_events" in tables:
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS ix_staff_attendance_events_type_time "
+                "ON staff_attendance_events (event_type, occurred_at)"
+            )
 
         seed_preview_permissions(connection)
 

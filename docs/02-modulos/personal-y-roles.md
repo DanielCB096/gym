@@ -46,7 +46,8 @@ Este módulo cubre la gestión de personal del gimnasio: alta y baja de empleado
 1. El empleado marca entrada/salida por QR, RFID o app del personal.
 2. El sistema valida ubicación y horario del empleado.
 3. Si falta un registro, el gerente puede corregirlo con motivo y justificación.
-4. El cierre del día provoca el resumen de asistencia y faltas.
+4. Si la marca quedó mal, el empleado **pide** la corrección o la anulación desde «Mi jornada» con una justificación; un supervisor con `attendance.manage` la aprueba —aplicando el cambio y dejando la bitácora del turno como si se hubiera hecho desde el panel— o la rechaza con una nota obligatoria. El colaborador recibe el aviso con la decisión.
+5. El cierre del día provoca el resumen de asistencia y faltas.
 
 ### Flujo de cierre de nómina
 1. El contador valida nómina del periodo.
@@ -107,6 +108,8 @@ Este módulo cubre la gestión de personal del gimnasio: alta y baja de empleado
 - ContratoTrabajo
 - HorarioTurno
 - AsistenciaEmpleado
+- SolicitudCambioAsistencia
+- EventoPoliticaAsistencia
 - FaltaEmpleado
 - PermisoEmpleado
 - VacacionEmpleado
@@ -122,6 +125,8 @@ Este módulo cubre la gestión de personal del gimnasio: alta y baja de empleado
 - Empleado: nombre, fecha de nacimiento, RFC, CURP, NSS, telefonos, dirección
 - ContratoTrabajo: tipo, fecha inicio, fecha fin, sueldo, horario, modalidad (nomina/honorarios)
 - AsistenciaEmpleado: empleado_id, fecha, hora_entrada, hora_salida, origen, estado
+- SolicitudCambioAsistencia: asistencia_id, empleado_id, marca, acción (corregir/anular), hora propuesta, justificación, estado, decidida_por, nota
+- EventoPoliticaAsistencia: actor_id, valores anteriores, valores nuevos, fecha
 - Nomina: periodo, subtotal, deducciones, neto, estado, usuario_cierre
 
 ## 7. Integraciones con otros módulos
@@ -130,11 +135,12 @@ Este módulo cubre la gestión de personal del gimnasio: alta y baja de empleado
 - Clases: el instructor se asocia a agenda, asistencia y comisiones por clase.
 - Control de acceso: el personal también tiene asistencia por puerta/lector.
 - Facturación: los recibos de nómina y pagos de honorarios se acompañan de CFDI.
-- Comunicación: avisos de vacaciones, cambios de horario y fin de contrato. **Ninguno está implementado**; lo que sí existe es la bandeja del personal (`staff_notifications`, ADR-017), que hoy solo recibe avisos de otros módulos (entrenamientos del socio pendientes de revisión y tickets de mantenimiento asignados).
+- Comunicación: avisos de vacaciones, cambios de horario y fin de contrato. **Ninguno está implementado**; lo que sí existe es la bandeja del personal (`staff_notifications`, ADR-017), que hoy recibe avisos de otros módulos (entrenamientos del socio pendientes de revisión y tickets de mantenimiento asignados) y, desde ADR-044, los cinco del ciclo de asistencia: corrección, anulación, solicitud pendiente, solicitud aprobada y solicitud rechazada.
 
 ## 8. Notificaciones y automatizaciones
 
 - Bandeja real del panel (campana con insignia de no leídos) alimentada por eventos del dominio: ver `docs/02-modulos/notificaciones-del-socio.md` y ADR-017. El destinatario se resuelve con `employee_id`, así que el aviso llega a la cuenta del colaborador y no al rol.
+- Avisos del ciclo de asistencia (ADR-044): `attendance_corrected` y `attendance_voided` avisan al colaborador cuando un supervisor corrige o anula su marca, con la hora anterior y nueva, el motivo y quién lo hizo; `attendance_request_pending` avisa a los supervisores de una solicitud nueva —es cerrable desde la campana— y `attendance_request_approved`/`attendance_request_rejected` anuncian la decisión al colaborador con la nota del supervisor. No se avisa a quien actúa sobre su propia marca ni a un expediente sin cuenta.
 - Lo demás de esta lista sigue siendo diseño, sin emisor ni tabla: aviso de faltas o retrasos.
 - Recordatorio de vencimiento de capacitación o certificación.
 - Nómina cerrada y recibo disponible para revisión.
@@ -175,7 +181,7 @@ Este módulo cubre la gestión de personal del gimnasio: alta y baja de empleado
 
 ## 13. Estado
 
-Roles, usuarios, directorio de personal, turnos y asistencia: implementación inicial. Nómina, contratos y expedición de recibos o CFDI: pendientes. Los avisos del panel ya existen (ADR-017) pero los del propio módulo Personal (faltas, certificaciones, vacaciones, nómina) no.
+Roles, usuarios, directorio de personal, turnos y asistencia: implementación inicial. Nómina, contratos y expedición de recibos o CFDI: pendientes. Los avisos del panel ya existen (ADR-017), incluidos los del ciclo de asistencia (ADR-044), pero los del propio módulo Personal (faltas, certificaciones, vacaciones, nómina) no.
 
 ## 14. Historial de cambios
 
@@ -184,6 +190,7 @@ Roles, usuarios, directorio de personal, turnos y asistencia: implementación in
 - 2026-10-30: el colaborador marca su entrada y salida en la pestaña «Mi jornada» (ADR-041); la entrada abre 15 minutos antes y recepción registra marcas faltantes con motivo auditado.
 - 2026-10-30: recepción corrige una marca **ya registrada** con motivo obligatorio (`POST /admin/staff/attendance/{id}/corrections`), la anterior queda en la bitácora del turno y el estado se recalcula (ADR-042).
 - 2026-10-30: la gracia de entrada y la tolerancia de retardo se configuran en el club (`staffing_settings`), una marca se puede **anular** —salida sola o entrada completa— con motivo y la bitácora del turno se consulta desde el panel (ADR-043).
+- 2026-10-30: el colaborador recibe aviso al corregirle o anularle una marca, **pide** el cambio con su justificación desde «Mi jornada», el supervisor decide con nota y todo queda con su aviso; la política de asistencia registra quién la cambió y con qué valores anteriores, y las anulaciones se reportan por operador (ADR-044).
 
 ## 15. Implementación inicial
 
@@ -199,5 +206,6 @@ Roles, usuarios, directorio de personal, turnos y asistencia: implementación in
 - La pestaña «Equipo y turnos» consulta los turnos del personal (`GET /admin/staff/shifts`), muestra cuántos están programados y cuántas asistencias hay registradas, la siguiente jornada de cada colaborador en la columna «Horario» y una tabla de turnos con su estado y marcaje de entrada/salida. El botón «Programar turno» (permiso `attendance.manage`) agenda un turno (`POST /admin/staff/{employee_id}/shifts`); el backend rechaza traslapes (`409`) y horarios inválidos o sin zona horaria (`422`). La columna «Asistencia» etiqueta las marcas registradas por un operador con «(manual)» y las corregidas con «(corregido)». «Registrar entrada/salida» solo aparece cuando falta esa marca: `POST /admin/staff/attendance` registra la marca ausente con motivo obligatorio y `source = "manual"` y nunca reescribe una existente (`409`). «Corregir» aparece cuando el turno está programado y tiene asistencia: el modal «Corregir marcas» prellena entrada y salida, exige un motivo de 3 a 500 caracteres y envía una petición por marca a `POST /admin/staff/attendance/{attendance_id}/corrections`; la asistencia queda con `check_in_source`/`check_out_source = "correction"` y la bitácora suma el evento `check_in_correction`/`check_out_correction` con el motivo y el actor sin borrar el original. El orden se valida en el servicio (la salida no precede a la entrada y la entrada no sigue a la salida) y el estado se recalcula contra `starts_at` (ADR-042). «Bitácora» abre el modal «Bitácora del turno», que lee `GET /admin/staff/attendance/{attendance_id}/events` (`attendance.read`) y lista del más viejo al más nuevo cada evento con su etiqueta legible, hora, correo y nombre de quien actuó, origen y motivo. «Anular» abre «Anular una marca»: deja elegir la entrada o la salida —la salida viene preseleccionada si existe— y envía `POST /admin/staff/attendance/{attendance_id}/voids` con el motivo; anular la salida la limpia y conserva la entrada, anular la entrada marca la asistencia completa como anulada y el turno vuelve a quedar libre para marcarse de nuevo (ADR-043).
 - La tarjeta «Tolerancias del club» (solo con `attendance.manage`) edita la política de asistencia con dos campos de 0 a 240 minutos: la **apertura anticipada** (cuánto antes del inicio se habilita la entrada) y la **tolerancia de retardo** (cuántos minutos después del inicio siguen contando como presente). Lee `GET /admin/staff/settings`, guarda con `PATCH /admin/staff/settings` y avisa «Política de asistencia guardada.»; el botón queda deshabilitado mientras los valores coincidan con los guardados.
 - La pestaña «Mi jornada» (permiso `attendance.self`) es el auto-marcaje del colaborador: reloj, turno vigente con su botón de entrada o salida y los turnos de los últimos y próximos 14 días con estado (`Programado`, `Presente`, `Tarde`, `Cancelado`) y marca. El panel llama a `GET /staff/attendance` y a `POST /staff/attendance/clock-in|clock-out`; la cuenta debe estar enlazada a un expediente y, si no lo está, la pestaña explica el `409`. La entrada abre los minutos configurados antes del inicio —15 por defecto— y cierra al terminar el turno; el tablero devuelve `settings` para que el pie anuncie «Puedes marcar desde 15 minutos antes del inicio» y la tolerancia vigente. La página Personal abre con `staff.read` **o** `attendance.self`, así que entrenadores, mantenimiento y contadores marcan sin ver el directorio (ADR-041).
+- Las solicitudes de cambio (ADR-044) viven en `staff_attendance_requests`: el colaborador las crea con `POST /staff/attendance/{attendance_id}/requests` (`attendance.self`) —marca, `correct` con hora propuesta u `void` sin ella, y justificación de 3 a 500 caracteres— y las consulta con `GET /staff/attendance/requests`; el índice único parcial `uq_staff_attendance_requests_pending` impide dos abiertas para la misma marca y acción. La cola del supervisor es `GET /admin/staff/attendance/requests?status=` (`attendance.read`) y la decisión `POST /admin/staff/attendance/requests/{request_id}/decision` (`attendance.manage`): aprobar aplica la corrección o anulación por el camino normal con `commit=False`, así la bitácora del turno no distingue el origen, y rechazar exige nota; decidir la solicitud propia responde `403`. El ciclo escribe los cinco avisos nuevos en `staff_notifications`. La política deja rastro en `staffing_settings_events` —actor, valores anteriores y nuevos— que lee `GET /admin/staff/settings/events`, y `GET /admin/staff/attendance/annulments?days=&employee_id=&actor_id=` (`attendance.read`) reporta las anulaciones del periodo con desglose por operador. El panel suma «Solicitar cambio» y «Mis solicitudes» en «Mi jornada», «Solicitudes del equipo» con su modal de revisión, «Historial de cambios» en la tarjeta de política y «Anulaciones» con selector de 7/30/90 días. Las horas de la solicitud se entregan en UTC con zona explícita para que el panel las pinte en la zona del club.
 - Las tres tablas del turno y del marcaje (`staff_shifts`, `staff_attendance`, `staff_attendance_events`) **existieron solo en los modelos hasta el 2026-10-27**: la vista previa las creaba `create_all`, por eso el panel funcionaba, pero ninguna migración las definía y una base PostgreSQL con `alembic upgrade head` no las tenía. La migración `20261027_0038_staffing_shifts_and_attendance.py` las agrega con la forma que los modelos publican; la detectó `alembic check`, que desde ese día corre en CI. Reglas que quedan en la base: un turno no puede terminar antes de empezar, un turno admite **un solo** marcaje vivo —índice único parcial `uq_staff_attendance_shift WHERE voided_at IS NULL` desde `20261030_0060`—, la salida no puede ser anterior a la entrada y la bitácora de marcajes es append-only idempotente por `request_id` (`uq_staff_attendance_events_request` + `request_sha256`). Se escriben `source = "staff_app"` desde «Mi jornada», `source = "manual"` desde el registro de una marca faltante, la corrección de una existente y la anulación con `attendance.manage` (con `event_type` `check_in_correction`/`check_out_correction` desde `20261030_0059` y `check_out_voided`/`attendance_voided` desde `20261030_0060`); `access_reader` sigue declarado en el `CHECK` sin llamador. La política —gracia de entrada y tolerancia de retardo— vive en `staffing_settings`, una fila que la primera lectura del panel crea con 15 y 0 minutos y que `read_attendance_policy` lee sin escribir (ADR-043).
-- MFA, limitación de intentos, recuperación de contraseña, el marcaje por lector físico o QR, el aviso al colaborador cuando se le anula una marca, la justificación del empleado, un reporte de anulaciones o de bitácoras anuladas y el cierre de nómina siguen pendientes; este corte no sustituye revisión de seguridad profesional.
+- MFA, limitación de intentos, recuperación de contraseña, el marcaje por lector físico o QR, el aviso por correo o push del ciclo de asistencia, el plazo o escalado de una solicitud pendiente, la exportación del reporte de anulaciones y el cierre de nómina siguen pendientes; este corte no sustituye revisión de seguridad profesional.

@@ -124,6 +124,11 @@ STAFF_NOTIFICATION_KINDS = (
     "workout_pending_review",
     "maintenance_ticket_assigned",
     "kiosk_token_expiring",
+    "attendance_corrected",
+    "attendance_voided",
+    "attendance_request_pending",
+    "attendance_request_approved",
+    "attendance_request_rejected",
 )
 
 
@@ -134,7 +139,9 @@ class StaffNotification(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint(
             "kind IN ('workout_pending_review', 'maintenance_ticket_assigned', "
-            "'kiosk_token_expiring')",
+            "'kiosk_token_expiring', 'attendance_corrected', 'attendance_voided', "
+            "'attendance_request_pending', 'attendance_request_approved', "
+            "'attendance_request_rejected')",
             name="ck_staff_notifications_kind",
         ),
         CheckConstraint(

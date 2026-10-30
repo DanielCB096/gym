@@ -906,7 +906,7 @@ def mark_all_notifications_read(
 # them does not take it off the badge: only the work does. A kind without a
 # closure path yet stays on the unread rule, so the badge can still be cleared
 # by acknowledging it.
-CLOSABLE_STAFF_KINDS = ("workout_pending_review",)
+CLOSABLE_STAFF_KINDS = ("workout_pending_review", "attendance_request_pending")
 
 
 def _staff_pending_condition():

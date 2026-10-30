@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -6,10 +7,26 @@ from uuid import UUID, uuid4
 
 from sqlmodel import Session, SQLModel, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import aliased
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.modules.identity.models import AppUser, Employee
-from app.modules.staffing.models import AttendanceEvent, StaffAttendance, StaffShift, StaffingSettings, utc_now
+from app.modules.identity.service import user_ids_with_permission
+from app.modules.notifications.service import (
+    create_staff_notification,
+    resolve_staff_notifications,
+    staff_user_for_employee,
+)
+from app.modules.staffing.models import (
+    AttendanceEvent,
+    StaffAttendance,
+    StaffAttendanceRequest,
+    StaffShift,
+    StaffingSettings,
+    StaffingSettingsEvent,
+    utc_now,
+)
+from app.timezone import to_club_timezone
 
 
 _RecordT = TypeVar("_RecordT", bound=SQLModel)
@@ -64,6 +81,56 @@ class AttendanceMarkMissing(StaffingError):
     pass
 
 
+class AttendanceRequestNotFound(StaffingError):
+    pass
+
+
+class AttendanceRequestConflict(StaffingError):
+    pass
+
+
+class AttendanceRequestNotAllowed(StaffingError):
+    pass
+
+
+ANNULMENT_EVENT_TYPES = ("attendance_voided", "check_out_voided")
+MARK_LABELS = {"check_in": "entrada", "check_out": "salida"}
+REQUEST_ACTIONS = ("correct", "void")
+REQUEST_STATUSES = ("pending", "approved", "rejected")
+
+
+@dataclass(frozen=True)
+class AttendanceAnnulment:
+    event_id: UUID
+    event_type: str
+    occurred_at: datetime
+    reason: str | None
+    attendance_id: UUID
+    employee_id: UUID
+    employee_name: str
+    actor_id: UUID
+    actor_email: str
+    actor_name: str | None
+
+
+@dataclass(frozen=True)
+class AnnulmentOperatorSummary:
+    actor_id: UUID
+    actor_email: str
+    actor_name: str | None
+    check_ins: int
+    check_outs: int
+    total: int
+    last_at: datetime
+
+
+@dataclass(frozen=True)
+class AttendanceAnnulmentReport:
+    items: list[AttendanceAnnulment]
+    by_operator: list[AnnulmentOperatorSummary]
+    total: int
+
+
 def read_attendance_policy(session: Session) -> tuple[int, int]:
     """Return the club's check-in grace and lateness tolerance, in minutes.
 
@@ -92,7 +159,14 @@ def update_staffing_settings(
     *,
     check_in_early_grace_minutes: int,
     lateness_tolerance_minutes: int,
+    actor_id: UUID | None = None,
 ) -> StaffingSettings:
+    """Save the club policy, recording who changed what and the previous values.
+
+    ``staffing_settings`` only carries ``updated_at``; the audit row is what lets
+    the panel answer who moved the check-in window. A save that changes nothing
+    writes no row, so the history only shows real changes.
+    """
     for value, label in (
         (check_in_early_grace_minutes, "check_in_early_grace_minutes"),
         (lateness_tolerance_minutes, "lateness_tolerance_minutes"),
@@ -100,13 +174,45 @@ def update_staffing_settings(
         if not 0 <= value <= MAX_ATTENDANCE_POLICY_MINUTES:
             raise ValueError(f"{label} must be between 0 and {MAX_ATTENDANCE_POLICY_MINUTES}")
     settings = get_staffing_settings(session)
+    previous_grace = settings.check_in_early_grace_minutes
+    previous_tolerance = settings.lateness_tolerance_minutes
+    if previous_grace == check_in_early_grace_minutes and previous_tolerance == lateness_tolerance_minutes:
+        return _normalize_datetimes(settings, ("updated_at",))
+    now = utc_now()
     settings.check_in_early_grace_minutes = check_in_early_grace_minutes
     settings.lateness_tolerance_minutes = lateness_tolerance_minutes
-    settings.updated_at = utc_now()
+    settings.updated_at = now
     session.add(settings)
+    session.add(
+        StaffingSettingsEvent(
+            actor_id=actor_id,
+            previous_check_in_early_grace_minutes=previous_grace,
+            previous_lateness_tolerance_minutes=previous_tolerance,
+            check_in_early_grace_minutes=check_in_early_grace_minutes,
+            lateness_tolerance_minutes=lateness_tolerance_minutes,
+            changed_at=now,
+        )
+    )
     session.commit()
     session.refresh(settings)
     return _normalize_datetimes(settings, ("updated_at",))
+
+
+def list_staffing_settings_events(
+    session: Session, *, limit: int = 20
+) -> list[tuple[StaffingSettingsEvent, AppUser | None, Employee | None]]:
+    """Return the policy history newest first, with the account that changed it."""
+    rows = session.exec(
+        select(StaffingSettingsEvent, AppUser, Employee)
+        .join(AppUser, StaffingSettingsEvent.actor_id == AppUser.id, isouter=True)
+        .join(Employee, AppUser.employee_id == Employee.id, isouter=True)
+        .order_by(StaffingSettingsEvent.changed_at.desc(), StaffingSettingsEvent.id.desc())
+        .limit(max(1, min(limit, 100)))
+    ).all()
+    return [
+        (_normalize_datetimes(event, ("changed_at",)), user, employee)
+        for event, user, employee in rows
+    ]
 
 
 def create_shift(
@@ -306,6 +412,8 @@ def correct_attendance(
     event_type: str,
     occurred_at: datetime,
     reason: str,
+    commit: bool = True,
+    notify_employee: bool = True,
 ) -> StaffAttendance:
     """Rewrite a mark the employee already registered.
 
@@ -315,6 +423,9 @@ def correct_attendance(
     with its reason, so the history survives the edit. The shift window is not
     re-checked — corrections usually happen once the shift is over — but the
     check-in/check-out order must stay valid.
+
+    ``commit=False`` lets the approval of an employee request apply the change in
+    the same transaction that marks the request as decided; the caller commits.
     """
     if event_type not in {"check_in", "check_out"}:
         raise ValueError("Unsupported attendance event")
@@ -357,6 +468,7 @@ def correct_attendance(
         _, lateness_tolerance_minutes = read_attendance_policy(session)
         if record.check_out_at is not None and event_time > _as_utc(record.check_out_at):
             raise InvalidAttendanceTime("Check-in cannot be after check-out")
+        previous_at = record.check_in_at
         record.check_in_at = event_time
         record.check_in_source = "correction"
         record.check_in_actor_id = actor_id
@@ -366,25 +478,41 @@ def correct_attendance(
             raise AttendanceMarkMissing("Attendance has no check-out to correct")
         if event_time < _as_utc(record.check_in_at):
             raise InvalidAttendanceTime("Check-out cannot precede check-in")
+        previous_at = record.check_out_at
         record.check_out_at = event_time
         record.check_out_source = "correction"
         record.check_out_actor_id = actor_id
     record.updated_at = utc_now()
 
-    session.add(
-        AttendanceEvent(
-            request_id=request_id,
-            request_sha256=fingerprint,
-            attendance_id=record.id,
+    event = AttendanceEvent(
+        request_id=request_id,
+        request_sha256=fingerprint,
+        attendance_id=record.id,
+        actor_id=actor_id,
+        event_type=stored_type,
+        source="manual",
+        occurred_at=event_time,
+        reason=notes,
+    )
+    session.add(event)
+    if notify_employee:
+        _notify_mark_changed(
+            session,
+            record=record,
+            employee_id=record.employee_id,
             actor_id=actor_id,
-            event_type=stored_type,
-            source="manual",
-            occurred_at=event_time,
+            event_id=event.id,
+            mark=event_type,
+            action="correct",
+            previous_at=previous_at,
+            new_at=event_time,
             reason=notes,
         )
-    )
     try:
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
     except IntegrityError as error:
         session.rollback()
         prior_event = session.exec(
@@ -408,6 +536,8 @@ def void_attendance_mark(
     request_id: UUID,
     mark: str,
     reason: str,
+    commit: bool = True,
+    notify_employee: bool = True,
 ) -> StaffAttendance:
     """Remove a mark that should never have been recorded.
 
@@ -416,6 +546,9 @@ def void_attendance_mark(
     while voiding the check-out only clears the exit and keeps the entry. The
     log keeps every previous event and appends the annulment with its reason,
     its actor and the instant it was made.
+
+    ``commit=False`` exists for the request approval, which records the decision
+    in the same transaction.
     """
     if mark not in VOIDABLE_MARKS:
         raise ValueError("Unsupported attendance mark")
@@ -456,29 +589,46 @@ def void_attendance_mark(
     if mark == "check_out":
         if record.check_out_at is None:
             raise AttendanceMarkMissing("Attendance has no check-out to void")
+        previous_at = record.check_out_at
         record.check_out_at = None
         record.check_out_source = None
         record.check_out_actor_id = None
     else:
+        previous_at = record.check_in_at
         record.voided_at = now
         record.voided_by = actor_id
         record.void_reason = notes
     record.updated_at = now
 
-    session.add(
-        AttendanceEvent(
-            request_id=request_id,
-            request_sha256=fingerprint,
-            attendance_id=record.id,
+    event = AttendanceEvent(
+        request_id=request_id,
+        request_sha256=fingerprint,
+        attendance_id=record.id,
+        actor_id=actor_id,
+        event_type=stored_type,
+        source="manual",
+        occurred_at=now,
+        reason=notes,
+    )
+    session.add(event)
+    if notify_employee:
+        _notify_mark_changed(
+            session,
+            record=record,
+            employee_id=record.employee_id,
             actor_id=actor_id,
-            event_type=stored_type,
-            source="manual",
-            occurred_at=now,
+            event_id=event.id,
+            mark=mark,
+            action="void",
+            previous_at=previous_at,
+            new_at=None,
             reason=notes,
         )
-    )
     try:
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
     except IntegrityError as error:
         session.rollback()
         prior_event = session.exec(
@@ -512,6 +662,472 @@ def list_attendance_events(
         (_normalize_datetimes(event, ("occurred_at",)), actor, employee)
         for event, actor, employee in rows
     ]
+
+
+def request_attendance_change(
+    session: Session,
+    *,
+    attendance_id: UUID,
+    actor_id: UUID,
+    employee_id: UUID,
+    mark: str,
+    action: str,
+    proposed_at: datetime | None,
+    justification: str,
+) -> StaffAttendanceRequest:
+    """Let an employee ask a supervisor to correct or void one of their marks.
+
+    The request does not touch the attendance; it only records what the employee
+    wants and why. It is validated against the current row — the mark must exist
+    and the proposed instant must keep the entry before the exit — so a
+    supervisor never approves something the correction path would reject.
+    """
+    if mark not in VOIDABLE_MARKS:
+        raise ValueError("Unsupported attendance mark")
+    if action not in REQUEST_ACTIONS:
+        raise ValueError("Unsupported attendance request action")
+    notes = justification.strip()
+    if not notes:
+        raise ManualAttendanceReasonRequired("Attendance request requires a justification")
+
+    record = session.exec(
+        select(StaffAttendance).where(StaffAttendance.id == attendance_id).with_for_update()
+    ).first()
+    if record is None or record.voided_at is not None:
+        raise AttendanceNotFound("Attendance record was not found")
+    shift = session.get(StaffShift, record.shift_id)
+    if shift is None or shift.status != "scheduled":
+        raise ShiftNotAvailable("Scheduled shift is required")
+    if record.employee_id != employee_id:
+        raise AttendanceRequestNotAllowed("The attendance does not belong to the employee")
+    if mark == "check_out" and record.check_out_at is None:
+        raise AttendanceMarkMissing("Attendance has no check-out to request a change for")
+
+    proposed: datetime | None = None
+    if action == "correct":
+        if proposed_at is None:
+            raise InvalidAttendanceTime("A correction request needs the proposed instant")
+        _require_aware(proposed_at)
+        proposed = _as_utc(proposed_at)
+        if mark == "check_in" and record.check_out_at is not None and proposed > _as_utc(record.check_out_at):
+            raise InvalidAttendanceTime("Check-in cannot be after check-out")
+        if mark == "check_out" and proposed < _as_utc(record.check_in_at):
+            raise InvalidAttendanceTime("Check-out cannot precede check-in")
+
+    pending = session.exec(
+        select(StaffAttendanceRequest).where(
+            StaffAttendanceRequest.attendance_id == attendance_id,
+            StaffAttendanceRequest.mark == mark,
+            StaffAttendanceRequest.action == action,
+            StaffAttendanceRequest.status == "pending",
+        )
+    ).first()
+    if pending is not None:
+        raise AttendanceRequestConflict("There is already a pending request for that mark")
+
+    request = StaffAttendanceRequest(
+        attendance_id=record.id,
+        employee_id=employee_id,
+        requested_by=actor_id,
+        mark=mark,
+        action=action,
+        proposed_at=proposed,
+        justification=notes,
+    )
+    session.add(request)
+    session.flush()
+    _notify_request_pending(session, request=request, record=record, actor_id=actor_id)
+    try:
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        raise AttendanceRequestConflict("A conflicting request was created concurrently") from error
+    session.refresh(request)
+    return _normalize_datetimes(request, _REQUEST_DATETIME_FIELDS)
+
+
+def list_attendance_requests(
+    session: Session,
+    *,
+    employee_id: UUID | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[tuple[StaffAttendanceRequest, StaffAttendance, Employee]]:
+    """List change requests newest first, optionally for one employee or state."""
+    if status is not None and status not in REQUEST_STATUSES:
+        raise ValueError("Unsupported attendance request status")
+    query = (
+        select(StaffAttendanceRequest, StaffAttendance, Employee)
+        .join(StaffAttendance, StaffAttendance.id == StaffAttendanceRequest.attendance_id)
+        .join(Employee, Employee.id == StaffAttendanceRequest.employee_id)
+        .order_by(StaffAttendanceRequest.created_at.desc(), StaffAttendanceRequest.id.desc())
+        .limit(max(1, min(limit, 200)))
+    )
+    if employee_id is not None:
+        query = query.where(StaffAttendanceRequest.employee_id == employee_id)
+    if status is not None:
+        query = query.where(StaffAttendanceRequest.status == status)
+    rows = session.exec(query).all()
+    return [
+        (
+            _normalize_datetimes(request, _REQUEST_DATETIME_FIELDS),
+            _normalize_datetimes(record, _ATTENDANCE_DATETIME_FIELDS),
+            employee,
+        )
+        for request, record, employee in rows
+    ]
+
+
+def decide_attendance_request(
+    session: Session,
+    *,
+    request_id: UUID,
+    actor_id: UUID,
+    decision: str,
+    note: str | None = None,
+) -> StaffAttendanceRequest:
+    """Approve or reject a request; approval applies the change in one transaction.
+
+    Approving calls the regular correction/annulment path with ``commit=False``,
+    so the mark's event log stays identical to a change made directly from the
+    panel and the decision lands with it or not at all. The pending notices to
+    the supervisors close here and the employee is told the outcome.
+    """
+    if decision not in ("approved", "rejected"):
+        raise ValueError("Unsupported attendance request decision")
+    notes = (note or "").strip()
+    if decision == "rejected" and not notes:
+        raise ManualAttendanceReasonRequired("Rejecting a request requires a reason")
+
+    request = session.exec(
+        select(StaffAttendanceRequest)
+        .where(StaffAttendanceRequest.id == request_id)
+        .with_for_update()
+    ).first()
+    if request is None:
+        raise AttendanceRequestNotFound("Attendance request was not found")
+    if request.status != "pending":
+        raise AttendanceRequestConflict("Attendance request was already decided")
+    if request.requested_by == actor_id:
+        # A supervisor who also marks their own attendance must not approve
+        # themselves; that would turn the request into a self-service edit.
+        raise AttendanceRequestNotAllowed("Nobody can decide their own attendance request")
+
+    now = utc_now()
+    if decision == "approved":
+        reason = f"Solicitud del colaborador: {request.justification}"
+        if notes:
+            reason = f"{reason} · Nota del supervisor: {notes}"
+        if request.action == "correct":
+            correct_attendance(
+                session,
+                attendance_id=request.attendance_id,
+                actor_id=actor_id,
+                request_id=uuid4(),
+                event_type=request.mark,
+                occurred_at=request.proposed_at,
+                reason=reason,
+                commit=False,
+                notify_employee=False,
+            )
+        else:
+            void_attendance_mark(
+                session,
+                attendance_id=request.attendance_id,
+                actor_id=actor_id,
+                request_id=uuid4(),
+                mark=request.mark,
+                reason=reason,
+                commit=False,
+                notify_employee=False,
+            )
+
+    request.status = decision
+    request.decided_by = actor_id
+    request.decided_at = now
+    request.decision_note = notes or None
+    request.updated_at = now
+    session.add(request)
+    resolve_staff_notifications(
+        session, kind="attendance_request_pending", ref_id=request.id, now=now
+    )
+    record = session.get(StaffAttendance, request.attendance_id)
+    if record is not None:
+        _notify_request_decided(
+            session,
+            request=request,
+            record=record,
+            actor_id=actor_id,
+            note=notes,
+            now=now,
+        )
+    session.commit()
+    session.refresh(request)
+    return _normalize_datetimes(request, _REQUEST_DATETIME_FIELDS)
+
+
+def list_attendance_annulments(
+    session: Session,
+    *,
+    from_at: datetime,
+    to_at: datetime | None = None,
+    employee_id: UUID | None = None,
+    actor_id: UUID | None = None,
+    limit: int = 500,
+) -> AttendanceAnnulmentReport:
+    """Return the voided marks of a period and the count per operator.
+
+    The summary is computed from the same rows the table shows, so the report
+    and its totals can never disagree. ``from_at``/``to_at`` filter when the
+    annulment was made, not when the mark happened.
+    """
+    target_employee = aliased(Employee)
+    actor_employee = aliased(Employee)
+    query = (
+        select(
+            AttendanceEvent,
+            StaffAttendance,
+            target_employee,
+            AppUser,
+            actor_employee,
+        )
+        .join(StaffAttendance, StaffAttendance.id == AttendanceEvent.attendance_id)
+        .join(target_employee, target_employee.id == StaffAttendance.employee_id)
+        .join(AppUser, AppUser.id == AttendanceEvent.actor_id)
+        .join(actor_employee, actor_employee.id == AppUser.employee_id, isouter=True)
+        .where(
+            AttendanceEvent.event_type.in_(ANNULMENT_EVENT_TYPES),
+            AttendanceEvent.occurred_at >= _as_utc(from_at),
+        )
+        .order_by(AttendanceEvent.occurred_at.desc(), AttendanceEvent.id.desc())
+        .limit(max(1, min(limit, 1000)))
+    )
+    if to_at is not None:
+        query = query.where(AttendanceEvent.occurred_at <= _as_utc(to_at))
+    if employee_id is not None:
+        query = query.where(StaffAttendance.employee_id == employee_id)
+    if actor_id is not None:
+        query = query.where(AttendanceEvent.actor_id == actor_id)
+    rows = session.exec(query).all()
+
+    items: list[AttendanceAnnulment] = []
+    summaries: dict[UUID, AnnulmentOperatorSummary] = {}
+    for event, record, employee, actor, actor_employee in rows:
+        occurred = _as_utc(event.occurred_at)
+        actor_name = (
+            f"{actor_employee.first_name} {actor_employee.last_name}".strip()
+            if actor_employee is not None
+            else None
+        )
+        items.append(
+            AttendanceAnnulment(
+                event_id=event.id,
+                event_type=event.event_type,
+                occurred_at=occurred,
+                reason=event.reason,
+                attendance_id=record.id,
+                employee_id=record.employee_id,
+                employee_name=f"{employee.first_name} {employee.last_name}".strip(),
+                actor_id=actor.id,
+                actor_email=actor.email,
+                actor_name=actor_name,
+            )
+        )
+        summary = summaries.get(actor.id)
+        entry_void = 1 if event.event_type == "attendance_voided" else 0
+        exit_void = 1 if event.event_type == "check_out_voided" else 0
+        if summary is None:
+            summaries[actor.id] = AnnulmentOperatorSummary(
+                actor_id=actor.id,
+                actor_email=actor.email,
+                actor_name=actor_name,
+                check_ins=entry_void,
+                check_outs=exit_void,
+                total=1,
+                last_at=occurred,
+            )
+        else:
+            summaries[actor.id] = AnnulmentOperatorSummary(
+                actor_id=summary.actor_id,
+                actor_email=summary.actor_email,
+                actor_name=summary.actor_name,
+                check_ins=summary.check_ins + entry_void,
+                check_outs=summary.check_outs + exit_void,
+                total=summary.total + 1,
+                last_at=max(summary.last_at, occurred),
+            )
+    by_operator = sorted(summaries.values(), key=lambda row: (-row.total, row.actor_email))
+    return AttendanceAnnulmentReport(items=items, by_operator=by_operator, total=len(items))
+
+
+def _notify_mark_changed(
+    session: Session,
+    *,
+    record: StaffAttendance,
+    employee_id: UUID,
+    actor_id: UUID,
+    event_id: UUID,
+    mark: str,
+    action: str,
+    previous_at: datetime,
+    new_at: datetime | None,
+    reason: str,
+) -> None:
+    """Tell the employee that a mark of theirs changed and who changed it.
+
+    Skipped when the employee has no active panel account and when they are the
+    one who made the change, so nobody is notified about their own action. The
+    event id is the dedupe key: one notice per applied change, replays included.
+    """
+    user_id = staff_user_for_employee(session, employee_id)
+    if user_id is None or user_id == actor_id:
+        return
+    label = MARK_LABELS[mark]
+    day = _day_label(record.check_in_at)
+    actor = _actor_label(session, actor_id)
+    if action == "correct":
+        kind = "attendance_corrected"
+        title = "Se corrigió tu marca de asistencia"
+        body = (
+            f"Tu {label} del {day} se corrigió: era {_time_label(previous_at)} "
+            f"y ahora es {_time_label(new_at)}. Motivo: «{_clip(reason, 200)}». "
+            f"Lo hizo {actor}."
+        )
+    else:
+        kind = "attendance_voided"
+        title = "Se anuló tu marca de asistencia"
+        body = (
+            f"Tu {label} del {day} ({_time_label(previous_at)}) se anuló. "
+            f"Motivo: «{_clip(reason, 200)}». Lo hizo {actor}."
+        )
+    create_staff_notification(
+        session,
+        user_id=user_id,
+        kind=kind,
+        title=title,
+        body=body,
+        ref_id=record.id,
+        dedupe_key=f"{kind}:{event_id}",
+    )
+
+
+def _notify_request_pending(
+    session: Session,
+    *,
+    request: StaffAttendanceRequest,
+    record: StaffAttendance,
+    actor_id: UUID,
+) -> None:
+    """Ask everyone who can decide the request to look at it."""
+    label = MARK_LABELS[request.mark]
+    day = _day_label(record.check_in_at)
+    employee = session.get(Employee, request.employee_id)
+    employee_name = (
+        f"{employee.first_name} {employee.last_name}".strip() if employee is not None else "Un colaborador"
+    )
+    if request.action == "correct":
+        head = (
+            f"{employee_name} pidió corregir su {label} del {day}: de "
+            f"{_time_label(record.check_out_at if request.mark == 'check_out' else record.check_in_at)} "
+            f"a {_time_label(request.proposed_at)}."
+        )
+    else:
+        head = (
+            f"{employee_name} pidió anular su {label} del {day} "
+            f"({_time_label(record.check_out_at if request.mark == 'check_out' else record.check_in_at)})."
+        )
+    body = (
+        f"{head} Motivo: «{_clip(request.justification, 200)}». "
+        "Apruébala o recházala en Personal › Equipo."
+    )
+    for user_id in user_ids_with_permission(session, "attendance.manage"):
+        if user_id == actor_id:
+            continue
+        create_staff_notification(
+            session,
+            user_id=user_id,
+            kind="attendance_request_pending",
+            title="Solicitud de cambio de asistencia",
+            body=body,
+            ref_id=request.id,
+            dedupe_key=f"attendance_request_pending:{request.id}:{user_id}",
+        )
+
+
+def _notify_request_decided(
+    session: Session,
+    *,
+    request: StaffAttendanceRequest,
+    record: StaffAttendance,
+    actor_id: UUID,
+    note: str,
+    now: datetime,
+) -> None:
+    """Tell the employee what a supervisor decided about their request."""
+    user_id = request.requested_by
+    if user_id == actor_id:
+        return
+    label = MARK_LABELS[request.mark]
+    day = _day_label(record.check_in_at)
+    actor = _actor_label(session, actor_id)
+    if request.status == "approved":
+        kind = "attendance_request_approved"
+        title = "Se aprobó tu solicitud de asistencia"
+        if request.action == "correct":
+            head = (
+                f"Tu solicitud se aprobó: tu {label} del {day} quedó en "
+                f"{_time_label(request.proposed_at)}."
+            )
+        else:
+            head = f"Tu solicitud se aprobó: tu {label} del {day} quedó anulada."
+        tail = f" Nota: «{_clip(note, 120)}»." if note else ""
+        body = f"{head}{tail} Lo hizo {actor}."
+    else:
+        kind = "attendance_request_rejected"
+        title = "Se rechazó tu solicitud de asistencia"
+        verb = "corregir" if request.action == "correct" else "anular"
+        body = (
+            f"Tu solicitud para {verb} tu {label} del {day} se rechazó. "
+            f"Motivo: «{_clip(note, 200)}». Lo revisó {actor}."
+        )
+    create_staff_notification(
+        session,
+        user_id=user_id,
+        kind=kind,
+        title=title,
+        body=body,
+        ref_id=request.id,
+        dedupe_key=f"{kind}:{request.id}",
+        now=now,
+    )
+
+
+def _actor_label(session: Session, user_id: UUID) -> str:
+    user = session.get(AppUser, user_id)
+    if user is None:
+        return "El personal"
+    if user.employee_id is not None:
+        employee = session.get(Employee, user.employee_id)
+        if employee is not None:
+            name = f"{employee.first_name} {employee.last_name}".strip()
+            if name:
+                return name
+    return user.email
+
+
+def _day_label(moment: datetime) -> str:
+    return to_club_timezone(_as_utc(moment)).strftime("%d/%m/%Y")
+
+
+def _time_label(moment: datetime | None) -> str:
+    return "--:--" if moment is None else to_club_timezone(_as_utc(moment)).strftime("%H:%M")
+
+
+def _clip(value: str, limit: int) -> str:
+    clean = (value or "").strip()
+    if len(clean) <= limit:
+        return clean
+    return f"{clean[: limit - 1].rstrip()}…"
 
 
 def _record_attendance_event(
@@ -624,6 +1240,13 @@ _ATTENDANCE_DATETIME_FIELDS = (
     "check_in_at",
     "check_out_at",
     "voided_at",
+    "created_at",
+    "updated_at",
+)
+
+_REQUEST_DATETIME_FIELDS = (
+    "proposed_at",
+    "decided_at",
     "created_at",
     "updated_at",
 )
