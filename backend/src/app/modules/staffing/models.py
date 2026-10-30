@@ -107,7 +107,10 @@ class StaffAttendance(SQLModel, table=True):
 class AttendanceEvent(SQLModel, table=True):
     __tablename__ = "staff_attendance_events"
     __table_args__ = (
-        CheckConstraint("event_type IN ('check_in', 'check_out')", name="ck_staff_attendance_events_type"),
+        CheckConstraint(
+            "event_type IN ('check_in', 'check_out', 'check_in_correction', 'check_out_correction')",
+            name="ck_staff_attendance_events_type",
+        ),
         CheckConstraint("source IN ('staff_app', 'manual', 'access_reader')", name="ck_staff_attendance_events_source"),
         UniqueConstraint("request_id", name="uq_staff_attendance_events_request"),
         Index("ix_staff_attendance_events_attendance_time", "attendance_id", "occurred_at"),
@@ -122,7 +125,7 @@ class AttendanceEvent(SQLModel, table=True):
     actor_id: UUID = Field(
         sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="RESTRICT"), nullable=False)
     )
-    event_type: str = Field(max_length=16)
+    event_type: str = Field(max_length=32)
     source: str = Field(max_length=20)
     reason: str | None = Field(default=None, sa_type=Text)
     occurred_at: datetime = Field(

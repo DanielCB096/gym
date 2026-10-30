@@ -242,6 +242,15 @@ CHECK_UPGRADES = {
             "'kiosk_token_expiring'))",
         ),
     ),
+    "staff_attendance_events": (
+        (
+            "CONSTRAINT ck_staff_attendance_events_type CHECK "
+            "(event_type IN ('check_in', 'check_out'))",
+            "CONSTRAINT ck_staff_attendance_events_type CHECK "
+            "(event_type IN ('check_in', 'check_out', 'check_in_correction', "
+            "'check_out_correction'))",
+        ),
+    ),
     "physio_packs": (),
 }
 

@@ -525,13 +525,16 @@ from app.modules.staffing.models import StaffAttendance, StaffShift
 from app.modules.staffing.service import (
     AttendanceAlreadyRecorded,
     AttendanceEventConflict,
+    AttendanceMarkMissing,
     AttendanceNotAllowed,
+    AttendanceNotFound,
     InvalidAttendanceTime,
     ManualAttendanceReasonRequired,
     ShiftNotAvailable,
     ShiftOverlap,
     clock_in,
     clock_out,
+    correct_attendance,
     create_shift,
     list_shifts_with_attendance,
     record_manual_attendance,
@@ -925,6 +928,13 @@ class AttendanceMarkRequest(BaseModel):
 
 class ManualAttendanceRequest(BaseModel):
     shift_id: UUID
+    request_id: UUID
+    event_type: Literal["check_in", "check_out"]
+    occurred_at: datetime
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class AttendanceCorrectionRequest(BaseModel):
     request_id: UUID
     event_type: Literal["check_in", "check_out"]
     occurred_at: datetime
@@ -4444,6 +4454,42 @@ def register_manual_attendance(
     except ManualAttendanceReasonRequired as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
     except (ShiftNotAvailable, AttendanceAlreadyRecorded, AttendanceEventConflict) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except InvalidAttendanceTime as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    return _attendance_payload(attendance)
+
+
+@app.post(
+    "/admin/staff/attendance/{attendance_id}/corrections",
+    tags=["staff administration"],
+)
+def correct_registered_attendance(
+    attendance_id: UUID,
+    request: AttendanceCorrectionRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+) -> dict[str, object]:
+    if request.occurred_at.tzinfo is None or request.occurred_at.utcoffset() is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Attendance timestamps must include a timezone",
+        )
+    try:
+        attendance = correct_attendance(
+            session,
+            attendance_id=attendance_id,
+            actor_id=principal.user_id,
+            request_id=request.request_id,
+            event_type=request.event_type,
+            occurred_at=request.occurred_at,
+            reason=request.reason,
+        )
+    except ManualAttendanceReasonRequired as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    except AttendanceNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (ShiftNotAvailable, AttendanceMarkMissing, AttendanceEventConflict) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except InvalidAttendanceTime as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error

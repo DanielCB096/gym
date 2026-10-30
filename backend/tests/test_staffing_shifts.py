@@ -10,12 +10,15 @@ from app.modules.staffing.models import AttendanceEvent, StaffAttendance, StaffS
 from app.modules.staffing.service import (
     AttendanceAlreadyRecorded,
     AttendanceEventConflict,
+    AttendanceMarkMissing,
     AttendanceNotAllowed,
+    AttendanceNotFound,
     InvalidAttendanceTime,
     ManualAttendanceReasonRequired,
     ShiftOverlap,
     clock_in,
     clock_out,
+    correct_attendance,
     create_shift,
     list_shifts_with_attendance,
     record_manual_attendance,
@@ -381,3 +384,163 @@ def test_manual_attendance_fills_only_missing_marks(session: Session) -> None:
     )
     assert closed.check_out_source == "manual"
     assert closed.check_out_at == START + timedelta(hours=17)
+
+
+def test_correction_rewrites_a_mark_and_keeps_the_history(session: Session) -> None:
+    employee, manager = seed_employee_and_manager(session)
+    shift = create_shift(
+        session,
+        employee_id=employee.id,
+        starts_at=START,
+        ends_at=START + timedelta(hours=8),
+        created_by=manager.id,
+    )
+    attendance = clock_in(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START + timedelta(minutes=20),
+    )
+    assert attendance.status == "late"
+
+    corrected_at = START - timedelta(minutes=5)
+    correction_id = uuid4()
+    corrected = correct_attendance(
+        session,
+        attendance_id=attendance.id,
+        actor_id=manager.id,
+        request_id=correction_id,
+        event_type="check_in",
+        occurred_at=corrected_at,
+        reason="Marcó tarde por error; llegó antes de las 14:00",
+    )
+    assert corrected.check_in_at == corrected_at
+    assert corrected.check_in_source == "correction"
+    assert corrected.status == "present"
+
+    events = session.exec(select(AttendanceEvent)).all()
+    assert sorted(event.event_type for event in events) == ["check_in", "check_in_correction"]
+    correction_event = next(event for event in events if event.event_type == "check_in_correction")
+    assert correction_event.reason == "Marcó tarde por error; llegó antes de las 14:00"
+    assert correction_event.source == "manual"
+
+    # Replaying the same correction does not append another event.
+    replay = correct_attendance(
+        session,
+        attendance_id=attendance.id,
+        actor_id=manager.id,
+        request_id=correction_id,
+        event_type="check_in",
+        occurred_at=corrected_at,
+        reason="Marcó tarde por error; llegó a las 14:05",
+    )
+    assert replay.check_in_at == corrected_at
+    assert len(session.exec(select(AttendanceEvent)).all()) == 2
+
+    # The same request id cannot be reused for a different correction.
+    with pytest.raises(AttendanceEventConflict):
+        correct_attendance(
+            session,
+            attendance_id=attendance.id,
+            actor_id=manager.id,
+            request_id=correction_id,
+            event_type="check_in",
+            occurred_at=START + timedelta(minutes=40),
+            reason="Otra corrección",
+        )
+
+    # Rewriting the entry later than the shift start flips the status back.
+    late_again = correct_attendance(
+        session,
+        attendance_id=attendance.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        event_type="check_in",
+        occurred_at=START + timedelta(minutes=30),
+        reason="La primera corrección quedó temprano",
+    )
+    assert late_again.status == "late"
+
+
+def test_correction_respects_order_and_requires_the_mark(session: Session) -> None:
+    employee, manager = seed_employee_and_manager(session)
+    shift = create_shift(
+        session,
+        employee_id=employee.id,
+        starts_at=START,
+        ends_at=START + timedelta(hours=8),
+        created_by=manager.id,
+    )
+    attendance = clock_in(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START + timedelta(minutes=4),
+    )
+
+    with pytest.raises(ManualAttendanceReasonRequired):
+        correct_attendance(
+            session,
+            attendance_id=attendance.id,
+            actor_id=manager.id,
+            request_id=uuid4(),
+            event_type="check_in",
+            occurred_at=START,
+            reason="   ",
+        )
+
+    # A missing mark is filled from the manual path, not corrected.
+    with pytest.raises(AttendanceMarkMissing):
+        correct_attendance(
+            session,
+            attendance_id=attendance.id,
+            actor_id=manager.id,
+            request_id=uuid4(),
+            event_type="check_out",
+            occurred_at=START + timedelta(hours=8),
+            reason="Salida sin marca",
+        )
+
+    clock_out(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START + timedelta(hours=7),
+    )
+
+    with pytest.raises(InvalidAttendanceTime):
+        correct_attendance(
+            session,
+            attendance_id=attendance.id,
+            actor_id=manager.id,
+            request_id=uuid4(),
+            event_type="check_in",
+            occurred_at=START + timedelta(hours=8),
+            reason="Entrada posterior a la salida",
+        )
+
+    corrected = correct_attendance(
+        session,
+        attendance_id=attendance.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        event_type="check_out",
+        occurred_at=START + timedelta(hours=8),
+        reason="Salió una hora después de lo marcado",
+    )
+    assert corrected.check_out_at == START + timedelta(hours=8)
+    assert corrected.check_out_source == "correction"
+
+    with pytest.raises(AttendanceNotFound):
+        correct_attendance(
+            session,
+            attendance_id=uuid4(),
+            actor_id=manager.id,
+            request_id=uuid4(),
+            event_type="check_in",
+            occurred_at=START,
+            reason="Registro inexistente",
+        )

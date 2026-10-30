@@ -87,3 +87,41 @@ def test_preview_upgrade_is_idempotent() -> None:
 
     assert _table_sql(connection) == upgraded_sql
     assert connection.execute("SELECT COUNT(*) FROM member_notifications").fetchone()[0] == 1
+
+
+PRE_CORRECTION_TABLE = (
+    'CREATE TABLE "staff_attendance_events" (\n'
+    "\tid CHAR(32) NOT NULL, \n"
+    "\tevent_type VARCHAR(16) NOT NULL, \n"
+    "\tPRIMARY KEY (id), \n"
+    "\tCONSTRAINT ck_staff_attendance_events_type CHECK "
+    "(event_type IN ('check_in', 'check_out'))\n"
+    ")"
+)
+
+
+def test_preview_upgrade_accepts_attendance_corrections() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.execute(PRE_CORRECTION_TABLE)
+    connection.execute(
+        "INSERT INTO staff_attendance_events (id, event_type) VALUES ('e1', 'check_in')"
+    )
+    connection.commit()
+
+    preview_patch.upgrade_checks(
+        connection,
+        "staff_attendance_events",
+        preview_patch.CHECK_UPGRADES["staff_attendance_events"],
+        preview_patch.ADDED_CONSTRAINTS.get("staff_attendance_events", ()),
+    )
+
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='staff_attendance_events'"
+    ).fetchone()
+    create_sql = row[0]
+    assert "check_in_correction" in create_sql
+    assert connection.execute("SELECT COUNT(*) FROM staff_attendance_events").fetchone()[0] == 1
+    # The upgraded CHECK now accepts a correction event.
+    connection.execute(
+        "INSERT INTO staff_attendance_events (id, event_type) VALUES ('e2', 'check_out_correction')"
+    )

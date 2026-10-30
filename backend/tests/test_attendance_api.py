@@ -164,6 +164,49 @@ def test_attendance_scheduling_and_self_service() -> None:
             assert manual.status_code == 200
             assert manual.json()["check_in_source"] == "manual"
 
+            # A registered mark can be rewritten by attendance.manage; the
+            # original punch stays in the event log with the reason.
+            attendance_id = check_in.json()["id"]
+            correction_body = {
+                "request_id": str(uuid4()),
+                "event_type": "check_in",
+                "occurred_at": (now - timedelta(hours=1)).isoformat(),
+                "reason": "La marca anterior quedó mal",
+            }
+            assert client.post(
+                f"/admin/staff/attendance/{attendance_id}/corrections",
+                json=correction_body,
+                headers=trainer,
+            ).status_code == 403
+            corrected = client.post(
+                f"/admin/staff/attendance/{attendance_id}/corrections",
+                json=correction_body,
+                headers=ana,
+            )
+            assert corrected.status_code == 200
+            assert corrected.json()["check_in_source"] == "correction"
+            assert client.post(
+                f"/admin/staff/attendance/{attendance_id}/corrections",
+                json={**correction_body, "request_id": str(uuid4()), "occurred_at": "2026-10-16T14:00:00"},
+                headers=ana,
+            ).status_code == 422
+            # A mark that does not exist is filled, not corrected.
+            assert client.post(
+                f"/admin/staff/attendance/{manual.json()['id']}/corrections",
+                json={
+                    "request_id": str(uuid4()),
+                    "event_type": "check_out",
+                    "occurred_at": (now + timedelta(hours=7)).isoformat(),
+                    "reason": "Salida sin marca",
+                },
+                headers=ana,
+            ).status_code == 409
+            assert client.post(
+                f"/admin/staff/attendance/{uuid4()}/corrections",
+                json={**correction_body, "request_id": str(uuid4())},
+                headers=ana,
+            ).status_code == 404
+
             # Repeating the same mark is rejected, and a naive datetime never
             # reaches the service.
             assert client.post(

@@ -29,6 +29,7 @@ import {
   MonitorSmartphone,
   MoreHorizontal,
   Package,
+  PenLine,
   Plus,
   Receipt,
   RotateCcw,
@@ -4778,9 +4779,10 @@ function selfMarkFor(shift: BackendShift, now: number): SelfMark {
 
 function attendanceLabel(attendance: BackendAttendance | null): string {
   if (!attendance) return "Sin registro";
-  const entry = `${shiftClock(attendance.check_in_at)}${attendance.check_in_source === "manual" ? " (manual)" : ""}`;
+  const suffix = (source: string | null) => source === "manual" ? " (manual)" : source === "correction" ? " (corregido)" : "";
+  const entry = `${shiftClock(attendance.check_in_at)}${suffix(attendance.check_in_source)}`;
   if (!attendance.check_out_at) return `${entry} · en turno`;
-  return `${entry} → ${shiftClock(attendance.check_out_at)}${attendance.check_out_source === "manual" ? " (manual)" : ""}`;
+  return `${entry} → ${shiftClock(attendance.check_out_at)}${suffix(attendance.check_out_source)}`;
 }
 
 type MemberStateFilter = "" | "active" | "expiring_soon" | "frozen" | "pending";
@@ -4850,6 +4852,7 @@ function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, c
   const [newEmployeeOpen, setNewEmployeeOpen] = useState(false);
   const [newShiftOpen, setNewShiftOpen] = useState(false);
   const [manualShift, setManualShift] = useState<BackendShift | null>(null);
+  const [correctionShift, setCorrectionShift] = useState<BackendShift | null>(null);
   const [busyMarkShiftId, setBusyMarkShiftId] = useState<string | null>(null);
   const pendingMarks = useRef(new Map<string, string>());
   const [clockNow, setClockNow] = useState(() => Date.now());
@@ -5083,8 +5086,8 @@ function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, c
           <section className="panel full-panel"><div className="panel-header access-list-heading"><div><p className="section-kicker">DIRECTORIO DE PERSONAL</p><h2>Colaboradores</h2></div>{canManageStaff && <button className="button button-secondary" onClick={() => setNewEmployeeOpen(true)}><Plus size={16} />Nuevo colaborador</button>}</div><div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>PUESTO</th><th>HORARIO</th><th>ESTADO</th><th /></tr></thead><tbody>{loading ? <tr><td colSpan={5} className="empty-row">Cargando directorio…</td></tr> : error ? <tr><td colSpan={5} className="empty-row">{error}</td></tr> : employeeList.length === 0 ? <tr><td colSpan={5} className="empty-row">No hay colaboradores registrados.</td></tr> : employeeList.map((employee, index) => { const fullName = `${employee.first_name} ${employee.last_name}`; const initials = `${employee.first_name[0] ?? ""}${employee.last_name[0] ?? ""}`.toUpperCase(); const state = employee.status === "active" ? "Activo" : employee.status === "inactive" ? "Inactivo" : "Baja"; const color = ["mint", "peach", "lavender", "blue", "yellow"][index % 5]; return <tr key={employee.id}><td><div className="person-cell"><span className={`person-avatar ${color}`}>{initials}</span><span><strong>{fullName}</strong><small>{employee.email ?? employee.employee_number}</small></span></div></td><td>{employee.job_title}</td><td className="time-cell">{(() => { const shift = nextShiftFor(employee.id); return shift ? `${shiftDayLabel(shift.starts_at)} · ${shiftClock(shift.starts_at)}–${shiftClock(shift.ends_at)}` : "Sin turno"; })()}</td><td><StatusBadge state={state} /></td><td><button className="icon-button row-menu" aria-label={`Opciones de ${fullName}`}><MoreHorizontal size={17} /></button></td></tr>; })}</tbody></table></div><div className="table-bottom"><span>{employeeList.length} colaboradores registrados</span><span>Horario según los turnos del backend</span></div></section>
           {canViewAttendance && <section className="panel full-panel">
             <div className="panel-header access-list-heading"><div><p className="section-kicker">TURNOS DEL PERSONAL</p><h2>Turnos programados</h2></div>{canManageAttendance && <button className="button button-secondary" onClick={() => setNewShiftOpen(true)}><Plus size={16} />Programar turno</button>}</div>
-            <p className="panel-hint">Cada colaborador marca su entrada y salida en «Mi jornada». Desde aquí, quienes tienen el permiso de corregir asistencias registran una marca que el colaborador no pudo hacer; nunca se reescribe una marca ya existente.</p>
-            <div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>DÍA</th><th>HORARIO</th><th>ESTADO</th><th>ASISTENCIA</th><th /></tr></thead><tbody>{shiftList.length === 0 ? <tr><td colSpan={6} className="empty-row">No hay turnos programados.</td></tr> : shiftList.map((shift) => { const employee = employeeById.get(shift.employee_id); const fullName = employee ? `${employee.first_name} ${employee.last_name}` : "Colaborador"; const attendance = shift.attendance; const canRegister = canManageAttendance && shift.status === "scheduled" && (!attendance || !attendance.check_out_at); return <tr key={shift.id}><td><div className="person-cell"><span className="person-avatar mint">{fullName.slice(0, 1).toUpperCase()}</span><span><strong>{fullName}</strong><small>{employee?.employee_number ?? "—"}</small></span></div></td><td>{shiftDayLabel(shift.starts_at)}</td><td className="time-cell">{shiftClock(shift.starts_at)}–{shiftClock(shift.ends_at)}</td><td><StatusBadge state={shift.status === "scheduled" ? "Programado" : "Cancelado"} /></td><td className="time-cell">{attendanceLabel(attendance)}</td><td>{canRegister ? <button className="button button-secondary" onClick={() => setManualShift(shift)}>{!attendance ? "Registrar entrada" : "Registrar salida"}</button> : null}</td></tr>; })}</tbody></table></div>
+            <p className="panel-hint">Cada colaborador marca su entrada y salida en «Mi jornada». Desde aquí, quienes tienen el permiso de corregir asistencias registran una marca faltante o corrigen una ya registrada; toda corrección exige un motivo y conserva la marca anterior en la bitácora.</p>
+            <div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>DÍA</th><th>HORARIO</th><th>ESTADO</th><th>ASISTENCIA</th><th /></tr></thead><tbody>{shiftList.length === 0 ? <tr><td colSpan={6} className="empty-row">No hay turnos programados.</td></tr> : shiftList.map((shift) => { const employee = employeeById.get(shift.employee_id); const fullName = employee ? `${employee.first_name} ${employee.last_name}` : "Colaborador"; const attendance = shift.attendance; const canRegister = canManageAttendance && shift.status === "scheduled" && (!attendance || !attendance.check_out_at); const canCorrect = canManageAttendance && shift.status === "scheduled" && attendance !== null; return <tr key={shift.id}><td><div className="person-cell"><span className="person-avatar mint">{fullName.slice(0, 1).toUpperCase()}</span><span><strong>{fullName}</strong><small>{employee?.employee_number ?? "—"}</small></span></div></td><td>{shiftDayLabel(shift.starts_at)}</td><td className="time-cell">{shiftClock(shift.starts_at)}–{shiftClock(shift.ends_at)}</td><td><StatusBadge state={shift.status === "scheduled" ? "Programado" : "Cancelado"} /></td><td className="time-cell">{attendanceLabel(attendance)}</td><td><div className="staff-row-actions">{canRegister ? <button className="button button-secondary" onClick={() => setManualShift(shift)}>{!attendance ? "Registrar entrada" : "Registrar salida"}</button> : null}{canCorrect ? <button className="button button-secondary" onClick={() => setCorrectionShift(shift)}>Corregir</button> : null}</div></td></tr>; })}</tbody></table></div>
             <div className="table-bottom"><span>{scheduledShifts.length} turnos programados</span><span>{attendanceCount} asistencias registradas</span></div>
           </section>}
         </>
@@ -5120,6 +5123,7 @@ function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, c
       {newEmployeeOpen && canManageStaff && <NewEmployeeModal canCreateAccount={canManageRoles} roles={availableRoles} onClose={() => setNewEmployeeOpen(false)} onCreated={(message) => { onToast(message); onIdentityChanged(); }} />}
       {newShiftOpen && canManageAttendance && <ScheduleShiftModal employees={employeeList} onClose={() => setNewShiftOpen(false)} onCreated={(message) => { onToast(message); onIdentityChanged(); }} />}
       {manualShift && canManageAttendance && <ManualAttendanceModal shift={manualShift} employee={employeeById.get(manualShift.employee_id) ?? null} onClose={() => setManualShift(null)} onCreated={(message) => { onToast(message); onIdentityChanged(); }} />}
+      {correctionShift && canManageAttendance && <AttendanceCorrectionModal shift={correctionShift} employee={employeeById.get(correctionShift.employee_id) ?? null} onClose={() => setCorrectionShift(null)} onSaved={(message) => { onToast(message); onIdentityChanged(); }} />}
       <footer className="page-footer"><span>Centro Fit · Personal</span><span>DATOS DEL BACKEND · NÓMINA FUERA DE ESTA VISTA</span></footer>
     </>
   );
@@ -15062,6 +15066,121 @@ function ManualAttendanceModal({ shift, employee, onClose, onCreated }: { shift:
           {error && <div className="login-error" role="alert">{error}</div>}
           <div className="modal-note"><ShieldCheck size={16} /><span>La marca queda con tu cuenta como responsable y el motivo en la bitácora del turno.</span></div>
           <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}><Check size={16} />{busy ? "Guardando…" : "Registrar marca"}</button></div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function AttendanceCorrectionModal({ shift, employee, onClose, onSaved }: { shift: BackendShift; employee: BackendEmployee | null; onClose: () => void; onSaved: (message: string) => void }) {
+  const attendance = shift.attendance;
+  const name = employee ? `${employee.first_name} ${employee.last_name}` : "el colaborador";
+  const [checkInAt, setCheckInAt] = useState(() => toDateTimeLocal(shift.attendance?.check_in_at ?? shift.starts_at));
+  const [checkOutAt, setCheckOutAt] = useState(() => shift.attendance?.check_out_at ? toDateTimeLocal(shift.attendance.check_out_at) : "");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!attendance) return;
+    if (reason.trim().length < 3) {
+      setError("Escribe el motivo de la corrección.");
+      return;
+    }
+    const entry = new Date(checkInAt);
+    if (Number.isNaN(entry.getTime())) {
+      setError("Indica la fecha y hora de la entrada.");
+      return;
+    }
+    const originalEntry = new Date(attendance.check_in_at);
+    const originalExit = attendance.check_out_at ? new Date(attendance.check_out_at) : null;
+    const changes: { eventType: "check_in" | "check_out"; value: Date }[] = [];
+    if (entry.getTime() !== originalEntry.getTime()) changes.push({ eventType: "check_in", value: entry });
+    let exit: Date | null = originalExit;
+    if (originalExit) {
+      const parsedExit = new Date(checkOutAt);
+      if (Number.isNaN(parsedExit.getTime())) {
+        setError("Indica la fecha y hora de la salida.");
+        return;
+      }
+      exit = parsedExit;
+      if (parsedExit.getTime() !== originalExit.getTime()) changes.push({ eventType: "check_out", value: parsedExit });
+    }
+    if (changes.length === 0) {
+      setError("Cambia al menos una fecha u hora.");
+      return;
+    }
+    if (exit && entry.getTime() > exit.getTime()) {
+      setError("La entrada no puede quedar después de la salida.");
+      return;
+    }
+    // Each correction is validated against the stored marks, so the mark that
+    // still fits the current value is sent first.
+    const ordered = [...changes];
+    if (ordered.length === 2 && originalExit) {
+      const entryFirst = entry.getTime() <= originalExit.getTime();
+      ordered.sort((item) => (item.eventType === (entryFirst ? "check_in" : "check_out") ? -1 : 1));
+    }
+
+    setBusy(true);
+    setError("");
+    let applied = 0;
+    try {
+      for (const change of ordered) {
+        const response = await fetch(`/api/admin/staff/attendance/${attendance.id}/corrections`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            request_id: crypto.randomUUID(),
+            event_type: change.eventType,
+            occurred_at: change.value.toISOString(),
+            reason: reason.trim(),
+          }),
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({})) as { detail?: string };
+          if (applied > 0) {
+            onSaved("Se corrigió una marca; la otra no se pudo guardar. Revisa la tabla.");
+            onClose();
+            return;
+          }
+          setError(response.status === 409
+            ? "Ese turno cambió mientras corregías. Vuelve a abrir la corrección."
+            : payload.detail || "No se pudo corregir la marca.");
+          setBusy(false);
+          return;
+        }
+        applied += 1;
+      }
+      onSaved(applied === 1 ? `Marca de ${name} corregida.` : `Entrada y salida de ${name} corregidas.`);
+      onClose();
+    } catch {
+      if (applied > 0) {
+        onSaved("Se corrigió una marca; la otra no se pudo guardar. Revisa la tabla.");
+        onClose();
+        return;
+      }
+      setError("No se pudo conectar con el backend.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal member-modal" role="dialog" aria-modal="true" aria-labelledby="attendance-correction-title">
+        <div className="modal-header"><span className="modal-icon"><PenLine size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">ASISTENCIA DEL PERSONAL</p><h2 id="attendance-correction-title">Corregir marcas</h2>
+        <p className="modal-subtitle">{name} · {shiftDayLabel(shift.starts_at)} de {shiftClock(shift.starts_at)} a {shiftClock(shift.ends_at)}. La marca anterior y el motivo quedan en la bitácora del turno.</p>
+        <form onSubmit={submit}>
+          <label className="form-field"><span>Entrada</span><input type="datetime-local" value={checkInAt} onChange={(event) => setCheckInAt(event.target.value)} /></label>
+          {attendance?.check_out_at
+            ? <label className="form-field"><span>Salida</span><input type="datetime-local" value={checkOutAt} onChange={(event) => setCheckOutAt(event.target.value)} /></label>
+            : <p className="table-hint">La salida aún no existe: regístrala desde la tabla antes de corregirla.</p>}
+          <label className="form-field"><span>Motivo</span><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="La hora marcada no era la correcta…" maxLength={500} /></label>
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <div className="modal-note"><ShieldCheck size={16} /><span>El backend conserva la marca original, registra tu cuenta como responsable y rechaza una salida anterior a la entrada.</span></div>
+          <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}><Check size={16} />{busy ? "Guardando…" : "Corregir marca"}</button></div>
         </form>
       </section>
     </div>

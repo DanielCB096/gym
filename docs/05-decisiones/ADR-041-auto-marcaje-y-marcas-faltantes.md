@@ -3,6 +3,8 @@
 - Fecha: 2026-10-30
 - Estado: propuesta inicial
 
+> Actualización 2026-10-30: la edición de una marca ya registrada, que este ADR deja fuera de alcance, se incorporó en [ADR-042](ADR-042-correccion-de-marcas-registradas.md).
+
 ## Contexto
 
 El módulo de turnos nació con la API de auto-servicio ya escrita —`GET /staff/attendance`, `POST /staff/attendance/clock-in` y `clock-out` con el permiso `attendance.self`— y sus pruebas, pero **ninguna interfaz la llamaba**: el panel decía que la asistencia se marcaba «desde la app del colaborador», que no existe (la app Expo es solo del socio). En la práctica, un colaborador no tenía forma de marcar su entrada y recepción no tenía forma de registrar una marca que se hubiera olvidado.

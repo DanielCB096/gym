@@ -52,6 +52,14 @@ class ManualAttendanceReasonRequired(StaffingError):
     pass
 
 
+class AttendanceNotFound(StaffingError):
+    pass
+
+
+class AttendanceMarkMissing(StaffingError):
+    pass
+
+
 def create_shift(
     session: Session,
     *,
@@ -236,6 +244,108 @@ def record_manual_attendance(
     )
 
 
+def correct_attendance(
+    session: Session,
+    *,
+    attendance_id: UUID,
+    actor_id: UUID,
+    request_id: UUID,
+    event_type: str,
+    occurred_at: datetime,
+    reason: str,
+) -> StaffAttendance:
+    """Rewrite a mark the employee already registered.
+
+    Employees never edit their own marks: this path belongs to whoever holds
+    ``attendance.manage``. The attendance row keeps the current value while the
+    append-only event log keeps the original punch and appends the correction
+    with its reason, so the history survives the edit. The shift window is not
+    re-checked — corrections usually happen once the shift is over — but the
+    check-in/check-out order must stay valid.
+    """
+    if event_type not in {"check_in", "check_out"}:
+        raise ValueError("Unsupported attendance event")
+    notes = reason.strip()
+    if not notes:
+        raise ManualAttendanceReasonRequired("Manual attendance requires a reason")
+
+    event_time = _as_utc(occurred_at)
+    stored_type = f"{event_type}_correction"
+    fingerprint = _fingerprint(
+        {
+            "attendance_id": str(attendance_id),
+            "actor_id": str(actor_id),
+            "event_type": stored_type,
+            "occurred_at": event_time.isoformat(),
+        }
+    )
+    prior_event = session.exec(
+        select(AttendanceEvent).where(AttendanceEvent.request_id == request_id)
+    ).first()
+    if prior_event is not None:
+        if prior_event.request_sha256 != fingerprint:
+            raise AttendanceEventConflict("Request ID was reused for a different attendance correction")
+        record = session.get(StaffAttendance, prior_event.attendance_id)
+        if record is None:
+            raise StaffingError("Attendance record for replayed event is missing")
+        return _normalize_datetimes(record, ("check_in_at", "check_out_at", "created_at", "updated_at"))
+
+    record = session.exec(
+        select(StaffAttendance).where(StaffAttendance.id == attendance_id).with_for_update()
+    ).first()
+    if record is None:
+        raise AttendanceNotFound("Attendance record was not found")
+    shift = session.get(StaffShift, record.shift_id)
+    actor = session.get(AppUser, actor_id)
+    if shift is None or shift.status != "scheduled" or actor is None or actor.status != "active":
+        raise ShiftNotAvailable("Scheduled shift and active user are required")
+
+    if event_type == "check_in":
+        if record.check_out_at is not None and event_time > _as_utc(record.check_out_at):
+            raise InvalidAttendanceTime("Check-in cannot be after check-out")
+        record.check_in_at = event_time
+        record.check_in_source = "correction"
+        record.check_in_actor_id = actor_id
+        record.status = "late" if event_time > _as_utc(shift.starts_at) else "present"
+    else:
+        if record.check_out_at is None:
+            raise AttendanceMarkMissing("Attendance has no check-out to correct")
+        if event_time < _as_utc(record.check_in_at):
+            raise InvalidAttendanceTime("Check-out cannot precede check-in")
+        record.check_out_at = event_time
+        record.check_out_source = "correction"
+        record.check_out_actor_id = actor_id
+    record.updated_at = utc_now()
+
+    session.add(
+        AttendanceEvent(
+            request_id=request_id,
+            request_sha256=fingerprint,
+            attendance_id=record.id,
+            actor_id=actor_id,
+            event_type=stored_type,
+            source="manual",
+            occurred_at=event_time,
+            reason=notes,
+        )
+    )
+    try:
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        prior_event = session.exec(
+            select(AttendanceEvent).where(AttendanceEvent.request_id == request_id)
+        ).first()
+        if prior_event is None or prior_event.request_sha256 != fingerprint:
+            raise AttendanceEventConflict("Attendance correction conflicted with another request") from error
+        replay_record = session.get(StaffAttendance, prior_event.attendance_id)
+        if replay_record is None:
+            raise StaffingError("Attendance record for replayed event is missing") from error
+        return _normalize_datetimes(replay_record, ("check_in_at", "check_out_at", "created_at", "updated_at"))
+    session.refresh(record)
+    return _normalize_datetimes(record, ("check_in_at", "check_out_at", "created_at", "updated_at"))
+
+
 def _record_attendance_event(
     session: Session,
     *,
@@ -337,12 +447,14 @@ def _record_attendance_event(
 
 
 def _request_fingerprint(shift_id: UUID, actor_id: UUID, source: str, event_type: str) -> str:
-    payload = json.dumps(
-        {"shift_id": str(shift_id), "actor_id": str(actor_id), "source": source, "event_type": event_type},
-        sort_keys=True,
-        separators=(",", ":"),
+    return _fingerprint(
+        {"shift_id": str(shift_id), "actor_id": str(actor_id), "source": source, "event_type": event_type}
     )
-    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _fingerprint(payload: dict[str, str]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _require_aware(value: datetime) -> None:
