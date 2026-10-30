@@ -1586,7 +1586,27 @@ type BackendPhysioOffer = {
   updated_at: string;
 };
 
-type BackendPhysioTherapist = { id: string; name: string; job_title: string };
+type BackendPhysioTherapist = {
+  id: string;
+  name: string;
+  job_title: string;
+  specialty_id: string | null;
+  specialty_name: string | null;
+  room_id: string | null;
+  room_name: string | null;
+};
+
+type BackendPhysioRoom = {
+  id: string;
+  name: string;
+  is_active: boolean;
+};
+
+type BackendPhysioSpecialty = {
+  id: string;
+  name: string;
+  is_active: boolean;
+};
 
 type BackendPhysioPack = {
   id: string;
@@ -1603,7 +1623,58 @@ type BackendPhysioPack = {
   price_cents: number;
   purchased_at: string;
   valid_until: string;
-  status: "active" | "exhausted" | "expired";
+  status: "active" | "exhausted" | "expired" | "voided";
+  extended_days: number;
+  voided_at: string | null;
+  voided_sessions: number;
+  void_reason: string | null;
+};
+
+type BackendPhysioPackAdjustment = {
+  id: string;
+  pack_id: string;
+  kind: "extension" | "void";
+  days: number | null;
+  reason: string;
+  actor_id: string | null;
+  created_at: string;
+};
+
+type BackendPhysioReport = {
+  date_from: string;
+  date_to: string;
+  totals: {
+    appointments: number;
+    scheduled: number;
+    attended: number;
+    no_show: number;
+    cancelled: number;
+    attendance_rate_percent: number;
+    no_show_rate_percent: number;
+    cancellation_rate_percent: number;
+  };
+  occupancy: {
+    therapists: number;
+    available_minutes: number;
+    booked_minutes: number;
+    attended_minutes: number;
+    percent: number;
+  };
+  revenue: {
+    package_cents: number;
+    single_cents: number;
+    refunded_cents: number;
+    net_cents: number;
+    discount_cents: number;
+    packages_sold: number;
+    sessions_sold: number;
+    single_charges: number;
+  };
+  adjustments: { extended: number; extended_days: number; voided: number; voided_sessions: number };
+  by_therapist: { therapist_employee_id: string; therapist_name: string; appointments: number; attended: number; no_show: number; attended_minutes: number }[];
+  by_service: { service_id: string; service_name: string; appointments: number; attended: number; no_show: number; single_charges: number; single_revenue_cents: number }[];
+  by_hour: { hour: number; appointments: number; attended: number }[];
+  daily: { day: string; appointments: number; attended: number; no_show: number; cancelled: number; revenue_cents: number }[];
 };
 
 type BackendPhysioAppointment = {
@@ -1617,6 +1688,7 @@ type BackendPhysioAppointment = {
   pack_remaining_sessions: number | null;
   therapist_employee_id: string;
   therapist_name: string;
+  room_id: string | null;
   room: string | null;
   starts_at: string;
   ends_at: string;
@@ -1648,6 +1720,7 @@ const physioPackStatusLabels: Record<BackendPhysioPack["status"], string> = {
   active: "Activo",
   exhausted: "Agotado",
   expired: "Vencido",
+  voided: "Anulado",
 };
 
 function physioStatusBadge(status: PhysioAppointmentState): string {
@@ -1662,7 +1735,6 @@ function physioPackBadge(status: BackendPhysioPack["status"]): string {
   if (status === "expired") return "status-bad";
   return "status-neutral";
 }
-
 function todayInputValue(): string {
   const date = new Date();
   const pad = (input: number) => String(input).padStart(2, "0");
@@ -8140,8 +8212,10 @@ function RoutinePlanList({ items }: { items: BackendRoutineLine[] }) {
 
 function PhysioView({ permissions, onUnauthorized, onToast }: { permissions: string[]; onUnauthorized: () => void; onToast: (message: string) => void }) {
   const canManage = permissions.includes("physio.manage");
+  const canAdjust = permissions.includes("physio.adjust");
+  const canReadReport = permissions.includes("finance.read");
 
-  const [tab, setTab] = useState<"agenda" | "paquetes" | "catalogo">("agenda");
+  const [tab, setTab] = useState<"agenda" | "paquetes" | "catalogo" | "reporte">("agenda");
   const [day, setDay] = useState(todayInputValue());
   const [therapistFilter, setTherapistFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"" | PhysioAppointmentState>("");
@@ -8156,7 +8230,12 @@ function PhysioView({ permissions, onUnauthorized, onToast }: { permissions: str
   const [services, setServices] = useState<BackendPhysioService[]>([]);
   const [offers, setOffers] = useState<BackendPhysioOffer[]>([]);
   const [therapists, setTherapists] = useState<BackendPhysioTherapist[]>([]);
+  const [rooms, setRooms] = useState<BackendPhysioRoom[]>([]);
+  const [specialties, setSpecialties] = useState<BackendPhysioSpecialty[]>([]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
+  const [roomDraft, setRoomDraft] = useState("");
+  const [specialtyDraft, setSpecialtyDraft] = useState("");
+  const [catalogBusy, setCatalogBusy] = useState(false);
 
   const [appointmentModal, setAppointmentModal] = useState<{ appointment: BackendPhysioAppointment | null } | null>(null);
   const [packModalOpen, setPackModalOpen] = useState(false);
@@ -8171,18 +8250,28 @@ function PhysioView({ permissions, onUnauthorized, onToast }: { permissions: str
   const [packMember, setPackMember] = useState<BackendMember | null>(null);
   const [packs, setPacks] = useState<BackendPhysioPack[]>([]);
   const [packsLoading, setPacksLoading] = useState(false);
+  const [packDetail, setPackDetail] = useState<{ pack: BackendPhysioPack; adjustments: BackendPhysioPackAdjustment[] } | null>(null);
+  const [packAction, setPackAction] = useState<{ kind: "extend" | "void"; pack: BackendPhysioPack; days: string; reason: string; error: string } | null>(null);
+
+  const [reportFrom, setReportFrom] = useState(todayInputValue());
+  const [reportTo, setReportTo] = useState(todayInputValue());
+  const [report, setReport] = useState<BackendPhysioReport | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState("");
 
   useEffect(() => {
     let active = true;
     const load = async () => {
       setCatalogLoaded(false);
       try {
-        const [servicesResponse, offersResponse, therapistsResponse] = await Promise.all([
+        const [servicesResponse, offersResponse, therapistsResponse, roomsResponse, specialtiesResponse] = await Promise.all([
           fetch("/api/admin/physio/services", { cache: "no-store" }),
           fetch("/api/admin/physio/offers", { cache: "no-store" }),
           fetch("/api/admin/physio/therapists", { cache: "no-store" }),
+          fetch("/api/admin/physio/rooms", { cache: "no-store" }),
+          fetch("/api/admin/physio/specialties", { cache: "no-store" }),
         ]);
-        if ([servicesResponse, offersResponse, therapistsResponse].some((response) => response.status === 401)) {
+        if ([servicesResponse, offersResponse, therapistsResponse, roomsResponse, specialtiesResponse].some((response) => response.status === 401)) {
           onUnauthorized();
           return;
         }
@@ -8190,6 +8279,8 @@ function PhysioView({ permissions, onUnauthorized, onToast }: { permissions: str
         if (servicesResponse.ok) setServices(await servicesResponse.json() as BackendPhysioService[]);
         if (offersResponse.ok) setOffers(await offersResponse.json() as BackendPhysioOffer[]);
         if (therapistsResponse.ok) setTherapists(await therapistsResponse.json() as BackendPhysioTherapist[]);
+        if (roomsResponse.ok) setRooms(await roomsResponse.json() as BackendPhysioRoom[]);
+        if (specialtiesResponse.ok) setSpecialties(await specialtiesResponse.json() as BackendPhysioSpecialty[]);
       } catch {
         // The catalogue only feeds the forms and labels; the agenda still loads.
       } finally {
@@ -8270,6 +8361,150 @@ function PhysioView({ permissions, onUnauthorized, onToast }: { permissions: str
     return () => { active = false; };
   }, [packMember, refresh, onUnauthorized]);
 
+  useEffect(() => {
+    if (tab !== "reporte" || !canReadReport) return;
+    if (!reportFrom || !reportTo || reportFrom > reportTo) {
+      setReport(null);
+      setReportError("El rango de fechas no es válido.");
+      return;
+    }
+    let active = true;
+    const load = async () => {
+      setReportLoading(true);
+      setReportError("");
+      const params = new URLSearchParams({ date_from: reportFrom, date_to: reportTo });
+      try {
+        const response = await fetch(`/api/admin/physio/report?${params.toString()}`, { cache: "no-store" });
+        if (response.status === 401) { onUnauthorized(); return; }
+        if (!response.ok) throw new Error("failed");
+        const data = await response.json() as BackendPhysioReport;
+        if (active) setReport(data);
+      } catch {
+        if (active) setReportError("No se pudo cargar el reporte de fisioterapia.");
+      } finally {
+        if (active) setReportLoading(false);
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [tab, canReadReport, reportFrom, reportTo, refresh, onUnauthorized]);
+
+  const openPackDetail = async (pack: BackendPhysioPack) => {
+    try {
+      const response = await fetch(`/api/admin/physio/packs/${pack.id}`, { cache: "no-store" });
+      if (response.status === 401) { onUnauthorized(); return; }
+      if (!response.ok) return;
+      setPackDetail(await response.json() as { pack: BackendPhysioPack; adjustments: BackendPhysioPackAdjustment[] });
+    } catch {
+      // El historial es informativo; la tabla ya muestra el estado del paquete.
+    }
+  };
+
+  const openPackAction = (kind: "extend" | "void", pack: BackendPhysioPack) => {
+    setPackAction({ kind, pack, days: kind === "extend" ? "30" : "", reason: "", error: "" });
+    void openPackDetail(pack);
+  };
+
+  const submitPackAction = async () => {
+    if (!packAction) return;
+    const { kind, pack, days } = packAction;
+    const reason = packAction.reason.trim();
+    if (reason.length === 0) { setPackAction({ ...packAction, error: "Escribe el motivo del ajuste." }); return; }
+    let parsedDays = 0;
+    if (kind === "extend") {
+      parsedDays = Number(days);
+      if (!Number.isInteger(parsedDays) || parsedDays < 1 || parsedDays > 366) { setPackAction({ ...packAction, error: "Indica entre 1 y 366 días." }); return; }
+    }
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/admin/physio/packs/${pack.id}/${kind}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(kind === "extend" ? { days: parsedDays, reason } : { reason }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string; pack?: BackendPhysioPack; cancelled_appointments?: number };
+      if (!response.ok) { setPackAction({ ...packAction, error: payload.detail || "No se pudo ajustar el paquete." }); return; }
+      setPackAction(null);
+      setPackDetail(null);
+      reload();
+      if (kind === "extend") {
+        onToast(`Paquete extendido ${parsedDays} días (acumulado ${payload.pack?.extended_days ?? parsedDays}).`);
+      } else {
+        onToast(payload.cancelled_appointments
+          ? `Paquete anulado sin devolución; ${payload.cancelled_appointments} cita(s) futuras canceladas.`
+          : "Paquete anulado sin devolución.");
+      }
+    } catch {
+      setPackAction({ ...packAction, error: "No se pudo conectar con el backend." });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createCatalogItem = async (kind: "room" | "specialty") => {
+    const name = (kind === "room" ? roomDraft : specialtyDraft).trim();
+    if (!name) return;
+    setCatalogBusy(true);
+    try {
+      const response = await fetch(`/api/admin/physio/${kind === "room" ? "rooms" : "specialties"}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) { onToast(payload.detail || `No se pudo crear ${kind === "room" ? "el consultorio" : "la especialidad"}.`); return; }
+      if (kind === "room") setRoomDraft(""); else setSpecialtyDraft("");
+      reload();
+      onToast(kind === "room" ? "Consultorio creado." : "Especialidad creada.");
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setCatalogBusy(false);
+    }
+  };
+
+  const toggleCatalogItem = async (kind: "room" | "specialty", item: BackendPhysioRoom | BackendPhysioSpecialty) => {
+    setCatalogBusy(true);
+    try {
+      const response = await fetch(`/api/admin/physio/${kind === "room" ? "rooms" : "specialties"}/${item.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: !item.is_active }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) { onToast(payload.detail || "No se pudo actualizar el catálogo."); return; }
+      reload();
+      onToast(item.is_active ? "Registro desactivado." : "Registro activado.");
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setCatalogBusy(false);
+    }
+  };
+
+  const assignTherapistProfile = async (therapist: BackendPhysioTherapist, patch: { specialty_id?: string | null; room_id?: string | null }) => {
+    setCatalogBusy(true);
+    try {
+      const response = await fetch(`/api/admin/physio/therapists/${therapist.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) { onToast(payload.detail || "No se pudo actualizar el perfil del fisioterapeuta."); return; }
+      reload();
+      onToast(`Perfil de ${therapist.name} actualizado.`);
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setCatalogBusy(false);
+    }
+  };
+
   const mark = async (appointment: BackendPhysioAppointment, attended: boolean) => {
     setBusy(true);
     try {
@@ -8344,7 +8579,7 @@ function PhysioView({ permissions, onUnauthorized, onToast }: { permissions: str
   const noShowCount = appointments.filter((item) => item.status === "no_show").length;
   const coveredCount = appointments.filter((item) => item.pack_id !== null).length;
 
-  const tabButton = (value: "agenda" | "paquetes" | "catalogo", label: string) => (
+  const tabButton = (value: "agenda" | "paquetes" | "catalogo" | "reporte", label: string) => (
     <button type="button" className={tab === value ? "staff-tab-active" : ""} onClick={() => setTab(value)}>{label}</button>
   );
 
@@ -8393,6 +8628,7 @@ function PhysioView({ permissions, onUnauthorized, onToast }: { permissions: str
         {tabButton("agenda", "Agenda")}
         {tabButton("paquetes", "Paquetes")}
         {tabButton("catalogo", "Catálogo")}
+        {canReadReport && tabButton("reporte", "Reporte")}
         <span className="staff-tabs-note"><ShieldCheck size={14} />Las sesiones se descuentan del paquete al marcar la asistencia</span>
       </div>
 
@@ -8486,21 +8722,65 @@ function PhysioView({ permissions, onUnauthorized, onToast }: { permissions: str
                 <div className="person-cell"><span className={`person-avatar ${memberAvatarColor(packMember.id)}`}>{`${packMember.first_name[0] ?? ""}${packMember.last_name[0] ?? ""}`.toUpperCase()}</span><span><strong>{packMember.first_name} {packMember.last_name}</strong><small>{packMember.email ?? packMember.phone ?? "Socio"}</small></span></div>
                 <button type="button" className="text-button" onClick={() => { setPackMember(null); setPacks([]); }}>Cambiar socio</button>
               </div>
+              {packAction && (
+                <div className="modal-note physio-confirm">
+                  <AlertTriangle size={16} />
+                  <div className="physio-action-card">
+                    <strong>{packAction.kind === "extend" ? "Extender vigencia" : "Anular paquete"} · {packAction.pack.offer_name}</strong>
+                    <p>
+                      {packAction.kind === "extend"
+                        ? "Suma días de vigencia desde hoy o desde el vencimiento actual, lo que ocurra más tarde. Cada ajuste queda auditado con su motivo."
+                        : `Anula las ${packAction.pack.remaining_sessions} sesión(es) restantes sin reembolso y cancela las citas futuras cubiertas por el paquete.`}
+                    </p>
+                    <div className="form-row">
+                      {packAction.kind === "extend" && (
+                        <label className="form-field"><span>Días (1-366)</span><input type="number" min={1} max={366} value={packAction.days} onChange={(event) => setPackAction({ ...packAction, days: event.target.value, error: "" })} /></label>
+                      )}
+                      <label className="form-field"><span>Motivo (obligatorio)</span><input value={packAction.reason} maxLength={300} placeholder="Ej. Lesión, viaje, ajuste comercial…" onChange={(event) => setPackAction({ ...packAction, reason: event.target.value, error: "" })} /></label>
+                    </div>
+                    {packAction.error && <div className="login-error" role="alert">{packAction.error}</div>}
+                    <div className="physio-confirm-actions">
+                      <button type="button" className="button button-secondary button-small" onClick={() => { setPackAction(null); setPackDetail(null); }}>Volver</button>
+                      <button type="button" className="button button-primary button-small" disabled={busy} onClick={submitPackAction}>{packAction.kind === "extend" ? "Extender paquete" : "Anular paquete"}</button>
+                    </div>
+                    {packDetail && packDetail.adjustments.length > 0 && (
+                      <ul className="physio-adjustment-list">
+                        {packDetail.adjustments.map((adjustment) => (
+                          <li key={adjustment.id}>
+                            <span>{adjustment.kind === "extension" ? `Extensión de ${adjustment.days ?? 0} días` : "Anulación"}</span>
+                            <small>{formatPhysioDate(adjustment.created_at)} · {adjustment.reason}</small>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              )}
               {packsLoading ? <p className="panel-hint">Cargando paquetes…</p>
                 : packs.length === 0 ? <p className="panel-hint">Este socio no tiene paquetes de fisioterapia.</p>
                 : (
                   <div className="table-scroll">
                     <table className="data-table">
-                      <thead><tr><th>PAQUETE</th><th>SERVICIO</th><th>SESIONES</th><th>VIGENCIA</th><th>ESTADO</th><th>PRECIO</th></tr></thead>
+                      <thead><tr><th>PAQUETE</th><th>SERVICIO</th><th>SESIONES</th><th>VIGENCIA</th><th>ESTADO</th><th>PRECIO</th>{canAdjust && <th />}</tr></thead>
                       <tbody>
                         {packs.map((pack) => (
                           <tr key={pack.id}>
-                            <td><strong>{pack.offer_name}</strong><small className="pos-min">Comprado {formatPhysioDate(pack.purchased_at)}</small></td>
+                            <td><strong>{pack.offer_name}</strong><small className="pos-min">Comprado {formatPhysioDate(pack.purchased_at)}{pack.voided_at ? ` · Anulado ${formatPhysioDate(pack.voided_at)}` : ""}</small></td>
                             <td>{pack.service_name}</td>
-                            <td>{pack.sessions_used}/{pack.sessions_total}<small className="pos-min">{pack.remaining_sessions} restantes</small></td>
-                            <td>{formatPhysioDate(pack.valid_until)}</td>
-                            <td><span className={`status-badge ${physioPackBadge(pack.status)}`}><i />{physioPackStatusLabels[pack.status]}</span></td>
+                            <td>{pack.sessions_used}/{pack.sessions_total}<small className="pos-min">{pack.remaining_sessions} restantes{pack.voided_sessions > 0 ? ` · ${pack.voided_sessions} anuladas` : ""}</small></td>
+                            <td>{formatPhysioDate(pack.valid_until)}{pack.extended_days > 0 && <small className="pos-min">+{pack.extended_days} días extendidos</small>}</td>
+                            <td><span className={`status-badge ${physioPackBadge(pack.status)}`}><i />{physioPackStatusLabels[pack.status]}</span>{pack.void_reason && <small className="pos-min">{pack.void_reason}</small>}</td>
                             <td>{formatMoney(pack.price_cents)}</td>
+                            {canAdjust && (
+                              <td>
+                                {pack.status !== "voided" && (
+                                  <div className="pos-row-actions">
+                                    <button type="button" className="text-button" disabled={busy} onClick={() => openPackAction("extend", pack)}>Extender</button>
+                                    {pack.remaining_sessions > 0 && <button type="button" className="text-button" disabled={busy} onClick={() => openPackAction("void", pack)}>Anular</button>}
+                                  </div>
+                                )}
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>
@@ -8513,36 +8793,177 @@ function PhysioView({ permissions, onUnauthorized, onToast }: { permissions: str
       )}
 
       {tab === "catalogo" && (
-        <div className="dashboard-grid">
-          <section className="panel">
-            <div className="panel-header"><div><p className="section-kicker">CATÁLOGO</p><h2>Servicios</h2></div>{canManage && <button className="button button-primary button-small" onClick={() => setServiceModal({ service: null })}><Plus size={15} />Agregar</button>}</div>
-            {services.length === 0 ? <p className="panel-hint">{catalogLoaded ? "Aún no hay servicios de fisioterapia." : "Cargando…"}</p> : (
-              <ul className="class-catalog-list">
-                {services.map((service) => (
-                  <li key={service.id}>
-                    <span className="class-type-dot" />
-                    <span><strong>{service.name}{service.is_active ? "" : " · Inactivo"}</strong><small>{service.code} · {service.duration_minutes} min · {formatMoney(service.price_cents)}</small></span>
-                    {canManage && <button type="button" className="text-button" style={{ marginLeft: "auto" }} onClick={() => setServiceModal({ service })}>Editar</button>}
-                  </li>
-                ))}
-              </ul>
+        <>
+          <div className="dashboard-grid">
+            <section className="panel">
+              <div className="panel-header"><div><p className="section-kicker">CATÁLOGO</p><h2>Servicios</h2></div>{canManage && <button className="button button-primary button-small" onClick={() => setServiceModal({ service: null })}><Plus size={15} />Agregar</button>}</div>
+              {services.length === 0 ? <p className="panel-hint">{catalogLoaded ? "Aún no hay servicios de fisioterapia." : "Cargando…"}</p> : (
+                <ul className="class-catalog-list">
+                  {services.map((service) => (
+                    <li key={service.id}>
+                      <span className="class-type-dot" />
+                      <span><strong>{service.name}{service.is_active ? "" : " · Inactivo"}</strong><small>{service.code} · {service.duration_minutes} min · {formatMoney(service.price_cents)}</small></span>
+                      {canManage && <button type="button" className="text-button" style={{ marginLeft: "auto" }} onClick={() => setServiceModal({ service })}>Editar</button>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+            <section className="panel">
+              <div className="panel-header"><div><p className="section-kicker">CATÁLOGO</p><h2>Paquetes</h2></div>{canManage && <button className="button button-primary button-small" onClick={() => setOfferModal({ offer: null })}><Plus size={15} />Agregar</button>}</div>
+              {offers.length === 0 ? <p className="panel-hint">{catalogLoaded ? "Aún no hay paquetes configurados." : "Cargando…"}</p> : (
+                <ul className="class-catalog-list">
+                  {offers.map((offer) => (
+                    <li key={offer.id}>
+                      <span className="class-type-dot" />
+                      <span><strong>{offer.name}{offer.is_active ? "" : " · Inactivo"}</strong><small>{offer.service_name} · {offer.sessions} sesiones · {formatMoney(offer.price_cents)} · vigencia {offer.validity_days} días{offer.discount_percent > 0 ? ` · -${offer.discount_percent}%` : ""}</small></span>
+                      {canManage && <button type="button" className="text-button" style={{ marginLeft: "auto" }} onClick={() => setOfferModal({ offer })}>Editar</button>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
+          <div className="dashboard-grid">
+            <section className="panel">
+              <div className="panel-header"><div><p className="section-kicker">CATÁLOGO</p><h2>Consultorios</h2></div></div>
+              {canManage && (
+                <form className="physio-catalog-form" onSubmit={(event) => { event.preventDefault(); void createCatalogItem("room"); }}>
+                  <label className="form-field"><span>Nuevo consultorio</span><input value={roomDraft} maxLength={80} placeholder="Ej. Consultorio 3" onChange={(event) => setRoomDraft(event.target.value)} /></label>
+                  <button type="submit" className="button button-primary button-small" disabled={catalogBusy || roomDraft.trim().length === 0}><Plus size={15} />Agregar</button>
+                </form>
+              )}
+              {rooms.length === 0 ? <p className="panel-hint">{catalogLoaded ? "Aún no hay consultorios." : "Cargando…"}</p> : (
+                <ul className="class-catalog-list">
+                  {rooms.map((room) => (
+                    <li key={room.id}>
+                      <span className="class-type-dot" />
+                      <span><strong>{room.name}{room.is_active ? "" : " · Inactivo"}</strong><small>{room.is_active ? "Disponible al agendar" : "Oculto en el agendado"}</small></span>
+                      {canManage && <button type="button" className="text-button" style={{ marginLeft: "auto" }} disabled={catalogBusy} onClick={() => void toggleCatalogItem("room", room)}>{room.is_active ? "Desactivar" : "Activar"}</button>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+            <section className="panel">
+              <div className="panel-header"><div><p className="section-kicker">CATÁLOGO</p><h2>Especialidades</h2></div></div>
+              {canManage && (
+                <form className="physio-catalog-form" onSubmit={(event) => { event.preventDefault(); void createCatalogItem("specialty"); }}>
+                  <label className="form-field"><span>Nueva especialidad</span><input value={specialtyDraft} maxLength={80} placeholder="Ej. Terapia manual" onChange={(event) => setSpecialtyDraft(event.target.value)} /></label>
+                  <button type="submit" className="button button-primary button-small" disabled={catalogBusy || specialtyDraft.trim().length === 0}><Plus size={15} />Agregar</button>
+                </form>
+              )}
+              {specialties.length === 0 ? <p className="panel-hint">{catalogLoaded ? "Aún no hay especialidades." : "Cargando…"}</p> : (
+                <ul className="class-catalog-list">
+                  {specialties.map((specialty) => (
+                    <li key={specialty.id}>
+                      <span className="class-type-dot" />
+                      <span><strong>{specialty.name}{specialty.is_active ? "" : " · Inactivo"}</strong><small>{specialty.is_active ? "Disponible para asignar" : "Oculta en la asignación"}</small></span>
+                      {canManage && <button type="button" className="text-button" style={{ marginLeft: "auto" }} disabled={catalogBusy} onClick={() => void toggleCatalogItem("specialty", specialty)}>{specialty.is_active ? "Desactivar" : "Activar"}</button>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
+          <section className="panel full-panel">
+            <div className="panel-header access-list-heading">
+              <div><p className="section-kicker">EQUIPO</p><h2>Especialidad y consultorio del fisioterapeuta</h2></div>
+              <span className="table-hint">El consultorio predeterminado se usa al agendar si no eliges otro.</span>
+            </div>
+            {therapists.length === 0 ? <p className="panel-hint">{catalogLoaded ? "Aún no hay fisioterapeutas activos." : "Cargando…"}</p> : (
+              <div className="table-scroll">
+                <table className="data-table">
+                  <thead><tr><th>FISIOTERAPEUTA</th><th>ESPECIALIDAD</th><th>CONSULTORIO PREDETERMINADO</th></tr></thead>
+                  <tbody>
+                    {therapists.map((therapist) => (
+                      <tr key={therapist.id}>
+                        <td><strong>{therapist.name}</strong><small className="pos-min">{therapist.job_title}</small></td>
+                        <td>
+                          <select className="role-assign" value={therapist.specialty_id ?? ""} disabled={!canManage || catalogBusy} onChange={(event) => void assignTherapistProfile(therapist, { specialty_id: event.target.value || null })}>
+                            <option value="">Sin especialidad</option>
+                            {specialties.filter((specialty) => specialty.is_active || specialty.id === therapist.specialty_id).map((specialty) => <option key={specialty.id} value={specialty.id}>{specialty.name}</option>)}
+                          </select>
+                        </td>
+                        <td>
+                          <select className="role-assign" value={therapist.room_id ?? ""} disabled={!canManage || catalogBusy} onChange={(event) => void assignTherapistProfile(therapist, { room_id: event.target.value || null })}>
+                            <option value="">Sin consultorio</option>
+                            {rooms.filter((room) => room.is_active || room.id === therapist.room_id).map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
-          <section className="panel">
-            <div className="panel-header"><div><p className="section-kicker">CATÁLOGO</p><h2>Paquetes</h2></div>{canManage && <button className="button button-primary button-small" onClick={() => setOfferModal({ offer: null })}><Plus size={15} />Agregar</button>}</div>
-            {offers.length === 0 ? <p className="panel-hint">{catalogLoaded ? "Aún no hay paquetes configurados." : "Cargando…"}</p> : (
-              <ul className="class-catalog-list">
-                {offers.map((offer) => (
-                  <li key={offer.id}>
-                    <span className="class-type-dot" />
-                    <span><strong>{offer.name}{offer.is_active ? "" : " · Inactivo"}</strong><small>{offer.service_name} · {offer.sessions} sesiones · {formatMoney(offer.price_cents)} · vigencia {offer.validity_days} días{offer.discount_percent > 0 ? ` · -${offer.discount_percent}%` : ""}</small></span>
-                    {canManage && <button type="button" className="text-button" style={{ marginLeft: "auto" }} onClick={() => setOfferModal({ offer })}>Editar</button>}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </div>
+        </>
+      )}
+
+      {tab === "reporte" && canReadReport && (
+        <>
+          <div className="report-controls">
+            <div className="report-dates">
+              <label>Desde<input type="date" value={reportFrom} max={reportTo} onChange={(event) => setReportFrom(event.target.value)} /></label>
+              <label>Hasta<input type="date" value={reportTo} min={reportFrom} onChange={(event) => setReportTo(event.target.value)} /></label>
+            </div>
+            <button type="button" className="button button-secondary" onClick={() => setRefresh((value) => value + 1)} disabled={reportLoading}>Actualizar</button>
+            <a className="button button-primary" href={`/api/admin/physio/report/export?date_from=${reportFrom}&date_to=${reportTo}`} onClick={() => onToast("Preparando la descarga del reporte en CSV.")}>Exportar CSV</a>
+            <span className="table-hint">La ocupación estima 8 h de agenda por fisioterapeuta y día.</span>
+          </div>
+          {!report ? <ReportFallback loading={reportLoading} error={reportError} /> : (
+            <>
+              <section className="panel full-panel">
+                <div className="panel-header access-list-heading">
+                  <div><p className="section-kicker">CONSULTORIO</p><h2>Indicadores del periodo</h2></div>
+                  <span className="table-hint">{formatDateOnly(report.date_from)} a {formatDateOnly(report.date_to)}</span>
+                </div>
+                <div className="report-stat-grid">
+                  <ReportStat label="Citas" value={String(report.totals.appointments)} hint={`${report.totals.scheduled} agendadas · ${report.totals.cancelled} canceladas`} />
+                  <ReportStat label="Asistencia" value={`${report.totals.attendance_rate_percent}%`} hint={`${report.totals.attended} asistencias`} />
+                  <ReportStat label="Inasistencias" value={`${report.totals.no_show_rate_percent}%`} hint={`${report.totals.no_show} no asistidas · ${report.totals.cancellation_rate_percent}% cancelación`} />
+                  <ReportStat label="Ocupación" value={`${report.occupancy.percent}%`} hint={`${Math.round(report.occupancy.booked_minutes / 60)} h agendadas de ${Math.round(report.occupancy.available_minutes / 60)} h disponibles`} />
+                  <ReportStat label="Ingresos netos" value={formatMoney(report.revenue.net_cents)} hint={`Paquetes ${formatMoney(report.revenue.package_cents)} · Sueltas ${formatMoney(report.revenue.single_cents)} · Devoluciones ${formatMoney(report.revenue.refunded_cents)}`} />
+                  <ReportStat label="Paquetes vendidos" value={String(report.revenue.packages_sold)} hint={`${report.revenue.sessions_sold} sesiones · descuento ${formatMoney(report.revenue.discount_cents)}`} />
+                  <ReportStat label="Sesiones sueltas" value={String(report.revenue.single_charges)} hint={formatMoney(report.revenue.single_cents)} />
+                  <ReportStat label="Ajustes" value={`${report.adjustments.extended} / ${report.adjustments.voided}`} hint={`${report.adjustments.extended_days} días extendidos · ${report.adjustments.voided_sessions} sesiones anuladas`} />
+                </div>
+              </section>
+              <section className="panel full-panel">
+                <div className="panel-header access-list-heading"><div><p className="section-kicker">INGRESOS</p><h2>Por día</h2></div><span className="chart-legend"><i />Paquetes + sesiones sueltas</span></div>
+                <ReportBarChart points={report.daily.map((row) => ({ label: reportDayLabel(row.day, report.daily.length), value: row.revenue_cents, hint: `${formatDateOnly(row.day)} · ${formatMoney(row.revenue_cents)} · ${row.appointments} citas (${row.attended} asistieron)` }))} />
+                <div className="chart-foot"><span>{formatDateOnly(report.date_from)}</span><span>MXN NETO</span><span>{formatDateOnly(report.date_to)}</span></div>
+              </section>
+              <div className="report-columns">
+                <ReportList title="POR FISIOTERAPEUTA" rows={report.by_therapist.map((row) => ({ label: row.therapist_name, value: `${row.attended}/${row.appointments} · ${Math.round(row.attended_minutes / 60)} h` }))} />
+                <ReportList title="POR SERVICIO" rows={report.by_service.map((row) => ({ label: row.service_name, value: `${row.attended}/${row.appointments} · ${row.single_charges} sueltas` }))} />
+                <ReportList title="POR HORA" rows={report.by_hour.map((row) => ({ label: `${String(row.hour).padStart(2, "0")}:00`, value: `${row.attended}/${row.appointments}` }))} />
+              </div>
+              <section className="panel full-panel">
+                <div className="panel-header access-list-heading"><div><p className="section-kicker">DETALLE</p><h2>Citas e ingresos por día</h2></div></div>
+                <div className="table-scroll">
+                  <table className="data-table">
+                    <thead><tr><th>DÍA</th><th>CITAS</th><th>ATENDIDAS</th><th>INASISTENCIAS</th><th>CANCELADAS</th><th>INGRESOS</th></tr></thead>
+                    <tbody>
+                      {report.daily.length === 0 ? <tr><td colSpan={6} className="empty-row">Sin actividad en el periodo.</td></tr>
+                        : report.daily.map((row) => (
+                          <tr key={row.day}>
+                            <td>{formatDateOnly(row.day)}</td>
+                            <td>{row.appointments}</td>
+                            <td>{row.attended}</td>
+                            <td>{row.no_show}</td>
+                            <td>{row.cancelled}</td>
+                            <td>{formatMoney(row.revenue_cents)}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </>
+          )}
+        </>
       )}
 
       {canManage && appointmentModal && (
@@ -8550,6 +8971,7 @@ function PhysioView({ permissions, onUnauthorized, onToast }: { permissions: str
           appointment={appointmentModal.appointment}
           services={services}
           therapists={therapists}
+          rooms={rooms}
           onClose={() => setAppointmentModal(null)}
           onSaved={(message) => { setAppointmentModal(null); reload(); onToast(message); }}
           onUnauthorized={onUnauthorized}
@@ -8591,6 +9013,7 @@ function PhysioAppointmentModal({
   appointment,
   services,
   therapists,
+  rooms,
   onClose,
   onSaved,
   onUnauthorized,
@@ -8598,12 +9021,14 @@ function PhysioAppointmentModal({
   appointment: BackendPhysioAppointment | null;
   services: BackendPhysioService[];
   therapists: BackendPhysioTherapist[];
+  rooms: BackendPhysioRoom[];
   onClose: () => void;
   onSaved: (message: string) => void;
   onUnauthorized: () => void;
 }) {
   const moving = appointment !== null;
   const availableServices = services.filter((service) => service.is_active || service.id === appointment?.service_id);
+  const availableRooms = rooms.filter((room) => room.is_active || room.id === appointment?.room_id);
 
   const [memberQuery, setMemberQuery] = useState("");
   const [memberResults, setMemberResults] = useState<BackendMember[]>([]);
@@ -8612,7 +9037,7 @@ function PhysioAppointmentModal({
   const [serviceId, setServiceId] = useState(appointment?.service_id ?? availableServices[0]?.id ?? "");
   const [therapistId, setTherapistId] = useState(appointment?.therapist_employee_id ?? therapists[0]?.id ?? "");
   const [startsAt, setStartsAt] = useState(appointment ? toDateTimeLocalValue(parseBackendMoment(appointment.starts_at).toISOString()) : defaultSessionStart());
-  const [room, setRoom] = useState(appointment?.room ?? "");
+  const [roomId, setRoomId] = useState(appointment?.room_id ?? "");
   const [notes, setNotes] = useState(appointment?.notes ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -8650,29 +9075,35 @@ function PhysioAppointmentModal({
     setBusy(true);
     setError("");
     try {
-      const response = moving && appointment
-        ? await fetch(`/api/admin/physio/appointments/${appointment.id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              starts_at: fromDateTimeLocalValue(startsAt),
-              therapist_employee_id: therapistId,
-              room: room.trim() || null,
-              notes: notes.trim() || null,
-            }),
-          })
-        : await fetch("/api/admin/physio/appointments", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              member_id: member?.id,
-              service_id: serviceId,
-              therapist_employee_id: therapistId,
-              starts_at: fromDateTimeLocalValue(startsAt),
-              room: room.trim() || null,
-              notes: notes.trim() || null,
-            }),
-          });
+      let response: Response;
+      if (moving && appointment) {
+        const patch: Record<string, unknown> = {
+          starts_at: fromDateTimeLocalValue(startsAt),
+          therapist_employee_id: therapistId,
+          notes: notes.trim() || null,
+        };
+        // Solo toca el consultorio cuando cambió, para no borrar el texto
+        // congelado de citas antiguas que nunca tuvieron catálogo.
+        if (roomId !== (appointment.room_id ?? "")) patch.room_id = roomId || null;
+        response = await fetch(`/api/admin/physio/appointments/${appointment.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+      } else {
+        response = await fetch("/api/admin/physio/appointments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            member_id: member?.id,
+            service_id: serviceId,
+            therapist_employee_id: therapistId,
+            starts_at: fromDateTimeLocalValue(startsAt),
+            room_id: roomId || null,
+            notes: notes.trim() || null,
+          }),
+        });
+      }
       if (response.status === 401) { onUnauthorized(); return; }
       const payload = await response.json().catch(() => ({})) as { detail?: string };
       if (!response.ok) { setError(payload.detail || "No se pudo guardar la cita."); return; }
@@ -8724,10 +9155,10 @@ function PhysioAppointmentModal({
           </div>
           <div className="form-row">
             <label className="form-field"><span>Inicio</span><input type="datetime-local" value={startsAt} onChange={(event) => setStartsAt(event.target.value)} /></label>
-            <label className="form-field"><span>Consultorio (opcional)</span><input value={room} onChange={(event) => setRoom(event.target.value)} placeholder="Ej. Consultorio 1" maxLength={80} /></label>
+            <label className="form-field"><span>Consultorio (opcional)</span><select value={roomId} onChange={(event) => setRoomId(event.target.value)}><option value="">Usar el del fisioterapeuta</option>{availableRooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}</select></label>
           </div>
           <label className="form-field"><span>Notas (opcional)</span><input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Indicaciones, lesión, seguimiento…" maxLength={500} /></label>
-          <div className="modal-note"><ShieldCheck size={16} /><span>La agenda evita dos citas a la misma hora con el mismo fisioterapeuta. Para cobrar una sesión suelta debe haber un turno de caja abierto al marcar la asistencia.</span></div>
+          <div className="modal-note"><ShieldCheck size={16} /><span>La agenda evita dos citas a la misma hora con el mismo fisioterapeuta. Si no eliges consultorio se usa el predeterminado del fisioterapeuta. Para cobrar una sesión suelta debe haber un turno de caja abierto al marcar la asistencia.</span></div>
           {error && <div className="login-error" role="alert">{error}</div>}
           <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}><Check size={16} />{busy ? "Guardando…" : moving ? "Guardar cambios" : "Agendar cita"}</button></div>
         </form>

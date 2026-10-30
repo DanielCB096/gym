@@ -17,7 +17,12 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 from app.modules import access, classes, identity, inventory, memberships, physio  # noqa: E402,F401
 from app.modules.physio import service as physio_service  # noqa: E402
-from app.modules.physio.models import PhysioOffer, PhysioService  # noqa: E402
+from app.modules.physio.models import (  # noqa: E402
+    PhysioOffer,
+    PhysioRoom,
+    PhysioService,
+    PhysioSpecialty,
+)
 
 DATABASE_URL = "sqlite:///./gym_preview.db"
 
@@ -32,6 +37,9 @@ OFFERS = [
     ("DESCARGA", "Paquete de 2 descargas", 2, 64000, 31),
     ("RECUPERACION", "Paquete de 2 recuperaciones", 2, 128000, 31),
 ]
+
+ROOMS = ["Consultorio 1", "Consultorio 2"]
+SPECIALTIES = ["Terapia deportiva", "Rehabilitación postural"]
 
 
 def main() -> None:
@@ -80,6 +88,26 @@ def main() -> None:
 
         print(f"Services created: {created_services} (total {len(SERVICES)})")
         print(f"Offers created: {created_offers} (total {len(OFFERS)})")
+
+        rooms = {row.name.lower() for row in session.exec(select(PhysioRoom)).all()}
+        created_rooms = 0
+        for name in ROOMS:
+            if name.lower() in rooms:
+                continue
+            physio_service.create_physio_room(session, name=name)
+            created_rooms += 1
+        print(f"Rooms created: {created_rooms} (total {len(ROOMS)})")
+
+        specialties = {
+            row.name.lower() for row in session.exec(select(PhysioSpecialty)).all()
+        }
+        created_specialties = 0
+        for name in SPECIALTIES:
+            if name.lower() in specialties:
+                continue
+            physio_service.create_physio_specialty(session, name=name)
+            created_specialties += 1
+        print(f"Specialties created: {created_specialties} (total {len(SPECIALTIES)})")
         print("Done!")
 
 

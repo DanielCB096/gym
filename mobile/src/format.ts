@@ -119,6 +119,7 @@ const PHYSIO_PACK_STATUS_LABELS: Record<string, string> = {
   active: "Vigente",
   exhausted: "Sin sesiones",
   expired: "Vencido",
+  voided: "Anulado",
 };
 
 const NOTIFICATION_KIND_LABELS: Record<string, string> = {
@@ -134,6 +135,7 @@ const NOTIFICATION_KIND_LABELS: Record<string, string> = {
   physio_appointment_scheduled: "Fisioterapia",
   physio_appointment_cancelled: "Fisioterapia cancelada",
   physio_appointment_rescheduled: "Fisioterapia movida",
+  physio_reminder: "Recordatorio de fisioterapia",
   membership_expiring: "Membresía",
   equipment_out_of_service: "Equipo",
   invoice_stamped: "Factura",

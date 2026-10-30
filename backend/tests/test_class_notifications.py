@@ -16,6 +16,7 @@ from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
+from app.modules import physio  # noqa: F401  (registers the table ``sales`` points at)
 from app.modules.classes import (
     ClassReservation,
     InvalidSessionState,
@@ -116,7 +117,9 @@ def _reservation(session: Session, reservation_id: UUID) -> ClassReservation:
 
 
 def _kinds(session: Session, member_id: UUID) -> list[str]:
-    page = list_member_notifications(session, member_id)
+    # Pinned to NOW: the reminder window depends on the wall clock, and this
+    # file asserts exact inbox contents.
+    page = list_member_notifications(session, member_id, now=NOW)
     return [item.kind for item in page.items]
 
 

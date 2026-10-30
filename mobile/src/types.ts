@@ -105,7 +105,7 @@ export type MemberPhysioPack = {
   price_cents: number;
   purchased_at: string;
   valid_until: string;
-  status: "active" | "exhausted" | "expired";
+  status: "active" | "exhausted" | "expired" | "voided";
 };
 
 export type MemberPhysioAppointment = {

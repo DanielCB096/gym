@@ -153,6 +153,12 @@ export function PhysioScreen({ token, onBack, onSessionExpired }: Props) {
                       Ya usaste todas las sesiones de este paquete.
                     </Text>
                   ) : null}
+                  {pack.status === "voided" ? (
+                    <Text style={sharedStyles.hint}>
+                      Este paquete fue anulado por administración. Consulta con
+                      recepción si tienes dudas.
+                    </Text>
+                  ) : null}
                 </View>
               ))
             )}

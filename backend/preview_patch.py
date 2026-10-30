@@ -32,6 +32,13 @@ ADDED_COLUMNS = {
     },
     "members": {"credit_limit_cents": "BIGINT"},
     "plans": {"daily_entry_limit": "INTEGER"},
+    "physio_packs": {
+        "voided_at": "DATETIME",
+        "voided_by": "CHAR(32)",
+        "void_reason": "VARCHAR(300)",
+        "voided_sessions": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "physio_appointments": {"room_id": "CHAR(32)"},
     "member_account_statement_deliveries": {
         "retry_of_id": "CHAR(32)",
         "purpose": "VARCHAR(16) NOT NULL DEFAULT 'statement'",
@@ -89,6 +96,11 @@ PREVIEW_PERMISSIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "physio.manage",
         "Administrar fisioterapia, paquetes y citas",
         ("owner", "manager", "reception"),
+    ),
+    (
+        "physio.adjust",
+        "Extender o anular paquetes de fisioterapia",
+        ("owner", "manager"),
     ),
 )
 
@@ -194,14 +206,16 @@ CHECK_UPGRADES = {
             "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
             "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
             "'invoice_cancelled', 'class_reminder', 'class_reserved', "
-            "'class_cancelled', 'class_rescheduled'))",
+            "'class_cancelled', 'class_rescheduled', 'physio_appointment_scheduled', "
+            "'physio_appointment_cancelled', 'physio_appointment_rescheduled'))",
             "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
             "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
             "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
             "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
             "'invoice_cancelled', 'class_reminder', 'class_reserved', "
             "'class_cancelled', 'class_rescheduled', 'physio_appointment_scheduled', "
-            "'physio_appointment_cancelled', 'physio_appointment_rescheduled'))",
+            "'physio_appointment_cancelled', 'physio_appointment_rescheduled', "
+            "'physio_reminder'))",
         ),
     ),
     "staff_notifications": (
@@ -213,12 +227,20 @@ CHECK_UPGRADES = {
             "'kiosk_token_expiring'))",
         ),
     ),
+    "physio_packs": (),
 }
 
 # Constraints added to an existing table. The first value is a marker used to
 # detect whether the constraint is already present; the second is the SQL
 # fragment inserted before the closing parenthesis of CREATE TABLE.
 ADDED_CONSTRAINTS = {
+    "physio_packs": (
+        (
+            "ck_physio_packs_voided_range",
+            "CONSTRAINT ck_physio_packs_voided_range CHECK "
+            "(voided_sessions >= 0 AND voided_sessions <= sessions_total)",
+        ),
+    ),
     "invoices": (
         (
             "ck_invoices_global_period",
@@ -463,6 +485,11 @@ def main(reset_maintenance: bool) -> None:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS ix_sales_physio_appointment "
                 "ON sales (physio_appointment_id)"
+            )
+        if "physio_appointments" in tables:
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS ix_physio_appointments_room "
+                "ON physio_appointments (room_id)"
             )
         if "payments" in tables:
             connection.execute(

@@ -46,10 +46,15 @@ from app.modules.physio.models import (
     APPOINTMENT_STATUSES,
     ATTENDANCE_GRACE_HOURS,
     DEFAULT_VALIDITY_DAYS,
+    MAX_ADJUSTMENT_REASON_CHARS,
     PhysioAppointment,
     PhysioOffer,
     PhysioPack,
+    PhysioPackAdjustment,
+    PhysioRoom,
     PhysioService,
+    PhysioSpecialty,
+    PhysioTherapistProfile,
     utc_now,
 )
 from app.timezone import club_timezone, local_midnight
@@ -91,6 +96,30 @@ class PhysioOfferNotFound(PhysioError):
 
 
 class PhysioAppointmentNotFound(PhysioError):
+    pass
+
+
+class PhysioPackNotFound(PhysioError):
+    pass
+
+
+class PhysioRoomNotFound(PhysioError):
+    pass
+
+
+class PhysioSpecialtyNotFound(PhysioError):
+    pass
+
+
+class DuplicatePhysioRoom(PhysioError):
+    pass
+
+
+class DuplicatePhysioSpecialty(PhysioError):
+    pass
+
+
+class InvalidPhysioAdjustment(PhysioError):
     pass
 
 
@@ -150,6 +179,28 @@ class PhysioTherapistItem:
     id: UUID
     name: str
     job_title: str
+    specialty_id: UUID | None
+    specialty_name: str | None
+    room_id: UUID | None
+    room_name: str | None
+
+
+@dataclass(frozen=True)
+class PhysioRoomItem:
+    id: UUID
+    name: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class PhysioSpecialtyItem:
+    id: UUID
+    name: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -169,6 +220,27 @@ class PhysioPackItem:
     purchased_at: datetime
     valid_until: datetime
     status: str
+    extended_days: int
+    voided_at: datetime | None
+    voided_sessions: int
+    void_reason: str | None
+
+
+@dataclass(frozen=True)
+class PhysioPackAdjustmentItem:
+    id: UUID
+    pack_id: UUID
+    kind: str
+    days: int | None
+    reason: str
+    actor_id: UUID | None
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class PhysioPackDetailItem:
+    pack: PhysioPackItem
+    adjustments: list[PhysioPackAdjustmentItem]
 
 
 @dataclass(frozen=True)
@@ -183,6 +255,7 @@ class PhysioAppointmentItem:
     pack_remaining_sessions: int | None
     therapist_employee_id: UUID
     therapist_name: str
+    room_id: UUID | None
     room: str | None
     starts_at: datetime
     ends_at: datetime
@@ -229,6 +302,8 @@ def _employee_name(employee: Employee | None) -> str:
 
 
 def _pack_status(pack: PhysioPack, *, now: datetime) -> str:
+    if pack.voided_at is not None:
+        return "voided"
     remaining = pack.sessions_total - pack.sessions_used
     if remaining <= 0:
         return "exhausted"
@@ -497,6 +572,155 @@ def update_physio_offer(
 
 
 # --------------------------------------------------------------------------- #
+# Rooms and specialties
+# --------------------------------------------------------------------------- #
+
+
+def _room_item(room: PhysioRoom) -> PhysioRoomItem:
+    return PhysioRoomItem(
+        id=room.id,
+        name=room.name,
+        is_active=room.is_active,
+        created_at=room.created_at,
+        updated_at=room.updated_at,
+    )
+
+
+def list_physio_rooms(session: Session) -> list[PhysioRoomItem]:
+    statement = select(PhysioRoom).order_by(PhysioRoom.name)
+    return [_room_item(room) for room in session.exec(statement).all()]
+
+
+def create_physio_room(
+    session: Session, *, name: str, is_active: bool = True
+) -> PhysioRoomItem:
+    normalized = (name or "").strip()
+    if not normalized or len(normalized) > 80:
+        raise InvalidPhysioData("El nombre del consultorio es obligatorio (máximo 80 caracteres)")
+    room = PhysioRoom(name=normalized, is_active=is_active)
+    session.add(room)
+    try:
+        session.flush()
+    except IntegrityError as error:
+        session.rollback()
+        raise DuplicatePhysioRoom("Ya existe un consultorio con ese nombre") from error
+    session.commit()
+    session.refresh(room)
+    return _room_item(room)
+
+
+def update_physio_room(
+    session: Session,
+    room_id: UUID,
+    *,
+    name: str | None = None,
+    is_active: bool | None = None,
+) -> PhysioRoomItem:
+    room = session.get(PhysioRoom, room_id)
+    if room is None:
+        raise PhysioRoomNotFound("El consultorio no existe")
+    if name is not None:
+        normalized = name.strip()
+        if not normalized or len(normalized) > 80:
+            raise InvalidPhysioData(
+                "El nombre del consultorio es obligatorio (máximo 80 caracteres)"
+            )
+        room.name = normalized
+    if is_active is not None:
+        room.is_active = is_active
+    room.updated_at = utc_now()
+    try:
+        session.flush()
+    except IntegrityError as error:
+        session.rollback()
+        raise DuplicatePhysioRoom("Ya existe un consultorio con ese nombre") from error
+    session.commit()
+    session.refresh(room)
+    return _room_item(room)
+
+
+def _specialty_item(specialty: PhysioSpecialty) -> PhysioSpecialtyItem:
+    return PhysioSpecialtyItem(
+        id=specialty.id,
+        name=specialty.name,
+        is_active=specialty.is_active,
+        created_at=specialty.created_at,
+        updated_at=specialty.updated_at,
+    )
+
+
+def list_physio_specialties(session: Session) -> list[PhysioSpecialtyItem]:
+    statement = select(PhysioSpecialty).order_by(PhysioSpecialty.name)
+    return [_specialty_item(specialty) for specialty in session.exec(statement).all()]
+
+
+def create_physio_specialty(
+    session: Session, *, name: str, is_active: bool = True
+) -> PhysioSpecialtyItem:
+    normalized = (name or "").strip()
+    if not normalized or len(normalized) > 80:
+        raise InvalidPhysioData("El nombre de la especialidad es obligatorio (máximo 80 caracteres)")
+    specialty = PhysioSpecialty(name=normalized, is_active=is_active)
+    session.add(specialty)
+    try:
+        session.flush()
+    except IntegrityError as error:
+        session.rollback()
+        raise DuplicatePhysioSpecialty("Ya existe una especialidad con ese nombre") from error
+    session.commit()
+    session.refresh(specialty)
+    return _specialty_item(specialty)
+
+
+def update_physio_specialty(
+    session: Session,
+    specialty_id: UUID,
+    *,
+    name: str | None = None,
+    is_active: bool | None = None,
+) -> PhysioSpecialtyItem:
+    specialty = session.get(PhysioSpecialty, specialty_id)
+    if specialty is None:
+        raise PhysioSpecialtyNotFound("La especialidad no existe")
+    if name is not None:
+        normalized = name.strip()
+        if not normalized or len(normalized) > 80:
+            raise InvalidPhysioData(
+                "El nombre de la especialidad es obligatorio (máximo 80 caracteres)"
+            )
+        specialty.name = normalized
+    if is_active is not None:
+        specialty.is_active = is_active
+    specialty.updated_at = utc_now()
+    try:
+        session.flush()
+    except IntegrityError as error:
+        session.rollback()
+        raise DuplicatePhysioSpecialty("Ya existe una especialidad con ese nombre") from error
+    session.commit()
+    session.refresh(specialty)
+    return _specialty_item(specialty)
+
+
+def _require_room(session: Session, room_id: UUID) -> PhysioRoom:
+    room = session.get(PhysioRoom, room_id)
+    if room is None:
+        raise PhysioRoomNotFound("El consultorio no existe")
+    if not room.is_active:
+        raise InvalidPhysioState("El consultorio está desactivado")
+    return room
+
+
+def _require_specialty(session: Session, specialty_id: UUID) -> PhysioSpecialty:
+    specialty = session.get(PhysioSpecialty, specialty_id)
+    if specialty is None:
+        raise PhysioSpecialtyNotFound("La especialidad no existe")
+    if not specialty.is_active:
+        raise InvalidPhysioState("La especialidad está desactivada")
+    return specialty
+
+
+# --------------------------------------------------------------------------- #
 # Packs
 # --------------------------------------------------------------------------- #
 
@@ -523,9 +747,26 @@ def _pack_rows(session: Session, *, member_id: UUID | None = None, pack_id: UUID
     return session.exec(statement).all()
 
 
-def _pack_item(row, *, now: datetime) -> PhysioPackItem:
+def _extension_days(session: Session, pack_ids: list[UUID]) -> dict[UUID, int]:
+    if not pack_ids:
+        return {}
+    rows = session.exec(
+        select(PhysioPackAdjustment.pack_id, PhysioPackAdjustment.days).where(
+            PhysioPackAdjustment.pack_id.in_(pack_ids),
+            PhysioPackAdjustment.kind == "extension",
+        )
+    ).all()
+    totals: dict[UUID, int] = {}
+    for pack_id, days in rows:
+        totals[pack_id] = totals.get(pack_id, 0) + (days or 0)
+    return totals
+
+
+def _pack_item(row, *, now: datetime, extended_days: int = 0) -> PhysioPackItem:
     pack, first_name, last_name, offer_name, service_id, service_name = row
     remaining = max(pack.sessions_total - pack.sessions_used, 0)
+    if pack.voided_at is not None:
+        remaining = 0
     return PhysioPackItem(
         id=pack.id,
         member_id=pack.member_id,
@@ -542,6 +783,10 @@ def _pack_item(row, *, now: datetime) -> PhysioPackItem:
         purchased_at=pack.purchased_at,
         valid_until=pack.valid_until,
         status=_pack_status(pack, now=now),
+        extended_days=extended_days,
+        voided_at=pack.voided_at,
+        voided_sessions=pack.voided_sessions,
+        void_reason=pack.void_reason,
     )
 
 
@@ -552,7 +797,47 @@ def list_physio_packs(
     now: datetime | None = None,
 ) -> list[PhysioPackItem]:
     occurred = _as_utc(now or utc_now())
-    return [_pack_item(row, now=occurred) for row in _pack_rows(session, member_id=member_id)]
+    rows = _pack_rows(session, member_id=member_id)
+    extensions = _extension_days(session, [row[0].id for row in rows])
+    return [
+        _pack_item(row, now=occurred, extended_days=extensions.get(row[0].id, 0))
+        for row in rows
+    ]
+
+
+def _adjustment_item(adjustment: PhysioPackAdjustment) -> PhysioPackAdjustmentItem:
+    return PhysioPackAdjustmentItem(
+        id=adjustment.id,
+        pack_id=adjustment.pack_id,
+        kind=adjustment.kind,
+        days=adjustment.days,
+        reason=adjustment.reason,
+        actor_id=adjustment.actor_id,
+        created_at=adjustment.created_at,
+    )
+
+
+def get_physio_pack(
+    session: Session, pack_id: UUID, *, now: datetime | None = None
+) -> PhysioPackDetailItem:
+    rows = _pack_rows(session, pack_id=pack_id)
+    if not rows:
+        raise PhysioPackNotFound("El paquete no existe")
+    occurred = _as_utc(now or utc_now())
+    adjustments = session.exec(
+        select(PhysioPackAdjustment)
+        .where(PhysioPackAdjustment.pack_id == pack_id)
+        .order_by(PhysioPackAdjustment.created_at, PhysioPackAdjustment.id)
+    ).all()
+    extensions = sum(
+        adjustment.days or 0
+        for adjustment in adjustments
+        if adjustment.kind == "extension"
+    )
+    return PhysioPackDetailItem(
+        pack=_pack_item(rows[0], now=occurred, extended_days=extensions),
+        adjustments=[_adjustment_item(adjustment) for adjustment in adjustments],
+    )
 
 
 def sell_physio_pack(
@@ -620,25 +905,220 @@ def sell_physio_pack(
     return _pack_item(rows[0], now=occurred)
 
 
+@dataclass(frozen=True)
+class PhysioPackVoidItem:
+    pack: PhysioPackItem
+    adjustments: list[PhysioPackAdjustmentItem]
+    cancelled_appointments: int
+
+
+def _validate_adjustment_reason(reason: str | None) -> str:
+    normalized = (reason or "").strip()
+    if not normalized or len(normalized) > MAX_ADJUSTMENT_REASON_CHARS:
+        raise InvalidPhysioAdjustment(
+            "El motivo es obligatorio (máximo "
+            f"{MAX_ADJUSTMENT_REASON_CHARS} caracteres)"
+        )
+    return normalized
+
+
+def extend_physio_pack(
+    session: Session,
+    pack_id: UUID,
+    *,
+    days: int,
+    reason: str,
+    actor_id: UUID | None = None,
+    now: datetime | None = None,
+) -> PhysioPackDetailItem:
+    """Push the expiry of a pack without touching its credits or the sale.
+
+    An expired pack is extended from today, not from its old expiry, so the
+    extension always buys future days. The adjustment is audited.
+    """
+    pack = session.exec(
+        select(PhysioPack).where(PhysioPack.id == pack_id).with_for_update()
+    ).first()
+    if pack is None:
+        raise PhysioPackNotFound("El paquete no existe")
+    if pack.voided_at is not None:
+        raise InvalidPhysioState("Un paquete anulado no se puede extender")
+    if days < 1 or days > MAX_VALIDITY_DAYS:
+        raise InvalidPhysioAdjustment(
+            f"La extensión debe estar entre 1 y {MAX_VALIDITY_DAYS} días"
+        )
+    normalized_reason = _validate_adjustment_reason(reason)
+    occurred = _as_utc(now or utc_now())
+    base = max(_as_utc(pack.valid_until), occurred)
+    pack.valid_until = base + timedelta(days=days)
+    session.add(pack)
+    session.add(
+        PhysioPackAdjustment(
+            pack_id=pack.id,
+            kind="extension",
+            days=days,
+            reason=normalized_reason,
+            actor_id=actor_id,
+            created_at=occurred,
+        )
+    )
+    session.commit()
+    return get_physio_pack(session, pack.id, now=occurred)
+
+
+def void_physio_pack(
+    session: Session,
+    pack_id: UUID,
+    *,
+    reason: str,
+    actor_id: UUID | None = None,
+    now: datetime | None = None,
+) -> PhysioPackVoidItem:
+    """Cancel the remaining credits of a pack and its future appointments.
+
+    The money is not refunded: voiding is an administrative correction (a pack
+    sold by mistake or granted as courtesy). The remaining credits are recorded
+    in ``voided_sessions`` instead of being marked as used, and every future
+    appointment covered by the pack is cancelled with its notice.
+    """
+    pack = session.exec(
+        select(PhysioPack).where(PhysioPack.id == pack_id).with_for_update()
+    ).first()
+    if pack is None:
+        raise PhysioPackNotFound("El paquete no existe")
+    if pack.voided_at is not None:
+        raise InvalidPhysioState("El paquete ya está anulado")
+    remaining = pack.sessions_total - pack.sessions_used
+    if remaining <= 0:
+        raise InvalidPhysioState("El paquete no tiene sesiones por anular")
+    normalized_reason = _validate_adjustment_reason(reason)
+    occurred = _as_utc(now or utc_now())
+
+    pack.voided_at = occurred
+    pack.voided_by = actor_id
+    pack.void_reason = normalized_reason
+    pack.voided_sessions = remaining
+    session.add(pack)
+    session.add(
+        PhysioPackAdjustment(
+            pack_id=pack.id,
+            kind="void",
+            days=None,
+            reason=normalized_reason,
+            actor_id=actor_id,
+            created_at=occurred,
+        )
+    )
+
+    future = session.exec(
+        select(PhysioAppointment).where(
+            PhysioAppointment.pack_id == pack.id,
+            PhysioAppointment.status == "scheduled",
+            PhysioAppointment.starts_at > occurred,
+        )
+    ).all()
+    for appointment in future:
+        appointment.status = "cancelled"
+        appointment.cancelled_at = occurred
+        appointment.cancelled_by = actor_id
+        appointment.updated_at = occurred
+        session.add(appointment)
+        service = session.get(PhysioService, appointment.service_id)
+        if service is not None:
+            notify_physio_appointment_cancelled(
+                session,
+                member_id=appointment.member_id,
+                appointment_id=appointment.id,
+                service_name=service.name,
+                starts_at=appointment.starts_at,
+                now=occurred,
+            )
+    session.commit()
+    detail = get_physio_pack(session, pack.id, now=occurred)
+    return PhysioPackVoidItem(
+        pack=detail.pack,
+        adjustments=detail.adjustments,
+        cancelled_appointments=len(future),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Agenda
 # --------------------------------------------------------------------------- #
 
 
-def list_physio_therapists(session: Session) -> list[PhysioTherapistItem]:
+def _therapist_rows(session: Session, *, employee_id: UUID | None = None):
     statement = (
-        select(Employee)
-        .where(Employee.status == "active")
-        .order_by(Employee.first_name, Employee.last_name)
-    )
-    return [
-        PhysioTherapistItem(
-            id=employee.id,
-            name=_employee_name(employee),
-            job_title=employee.job_title,
+        select(Employee, PhysioSpecialty.name, PhysioRoom.name, PhysioTherapistProfile)
+        .outerjoin(
+            PhysioTherapistProfile,
+            PhysioTherapistProfile.employee_id == Employee.id,
         )
-        for employee in session.exec(statement).all()
-    ]
+        .outerjoin(
+            PhysioSpecialty, PhysioSpecialty.id == PhysioTherapistProfile.specialty_id
+        )
+        .outerjoin(PhysioRoom, PhysioRoom.id == PhysioTherapistProfile.room_id)
+    )
+    if employee_id is not None:
+        statement = statement.where(Employee.id == employee_id)
+    else:
+        statement = statement.where(Employee.status == "active")
+    statement = statement.order_by(Employee.first_name, Employee.last_name)
+    return session.exec(statement).all()
+
+
+def _therapist_item(row) -> PhysioTherapistItem:
+    employee, specialty_name, room_name, profile = row
+    return PhysioTherapistItem(
+        id=employee.id,
+        name=_employee_name(employee),
+        job_title=employee.job_title,
+        specialty_id=profile.specialty_id if profile is not None else None,
+        specialty_name=specialty_name,
+        room_id=profile.room_id if profile is not None else None,
+        room_name=room_name,
+    )
+
+
+def list_physio_therapists(session: Session) -> list[PhysioTherapistItem]:
+    return [_therapist_item(row) for row in _therapist_rows(session)]
+
+
+def update_physio_therapist_profile(
+    session: Session,
+    employee_id: UUID,
+    *,
+    specialty_id: UUID | None | object = UNSET,
+    room_id: UUID | None | object = UNSET,
+) -> PhysioTherapistItem:
+    """Attach a specialty and a default room to an employee of the room."""
+    employee = session.get(Employee, employee_id)
+    if employee is None:
+        raise PhysioTherapistUnavailable("El fisioterapeuta no existe")
+
+    if specialty_id is not UNSET and specialty_id is not None:
+        _require_specialty(session, specialty_id)
+    if room_id is not UNSET and room_id is not None:
+        _require_room(session, room_id)
+
+    profile = session.exec(
+        select(PhysioTherapistProfile).where(
+            PhysioTherapistProfile.employee_id == employee_id
+        )
+    ).first()
+    if profile is None:
+        profile = PhysioTherapistProfile(employee_id=employee_id)
+        session.add(profile)
+    if specialty_id is not UNSET:
+        profile.specialty_id = specialty_id
+    if room_id is not UNSET:
+        profile.room_id = room_id
+    profile.updated_at = utc_now()
+    session.commit()
+    rows = _therapist_rows(session, employee_id=employee_id)
+    if not rows:
+        raise PhysioTherapistUnavailable("El fisioterapeuta no existe")
+    return _therapist_item(rows[0])
 
 
 def _appointment_rows(
@@ -729,6 +1209,7 @@ def _appointment_item(row, charge: Sale | None) -> PhysioAppointmentItem:
         ),
         therapist_employee_id=appointment.therapist_employee_id,
         therapist_name=f"{therapist_first} {therapist_last}".strip(),
+        room_id=appointment.room_id,
         room=appointment.room,
         starts_at=appointment.starts_at,
         ends_at=appointment.ends_at,
@@ -797,6 +1278,7 @@ def _resolve_pack_for(
             PhysioOffer.service_id == service_id,
             PhysioPack.sessions_used < PhysioPack.sessions_total,
             PhysioPack.valid_until >= at,
+            PhysioPack.voided_at.is_(None),
         )
         .order_by(PhysioPack.valid_until.asc(), PhysioPack.purchased_at.asc())
     )
@@ -843,6 +1325,7 @@ def create_physio_appointment(
     service_id: UUID,
     therapist_employee_id: UUID,
     starts_at: datetime,
+    room_id: UUID | None = None,
     room: str | None = None,
     notes: str | None = None,
     actor_id: UUID | None = None,
@@ -865,6 +1348,23 @@ def create_physio_appointment(
     start = _as_utc(starts_at)
     end = start + timedelta(minutes=service.duration_minutes)
     normalized_room = (room or "").strip()[:80] or None
+    resolved_room_id = room_id
+    if room_id is not None:
+        selected_room = _require_room(session, room_id)
+        normalized_room = selected_room.name
+    elif normalized_room is None:
+        # Fall back to the therapist's default room when the agenda did not
+        # choose one, so a small clinic does not have to repeat it each time.
+        profile = session.exec(
+            select(PhysioTherapistProfile).where(
+                PhysioTherapistProfile.employee_id == therapist_employee_id
+            )
+        ).first()
+        if profile is not None and profile.room_id is not None:
+            default_room = session.get(PhysioRoom, profile.room_id)
+            if default_room is not None and default_room.is_active:
+                resolved_room_id = default_room.id
+                normalized_room = default_room.name
     normalized_notes = (notes or "").strip() or None
 
     _assert_slot_free(
@@ -885,6 +1385,7 @@ def create_physio_appointment(
         service_id=service.id,
         pack_id=pack.id if pack is not None else None,
         therapist_employee_id=therapist_employee_id,
+        room_id=resolved_room_id,
         room=normalized_room,
         starts_at=start,
         ends_at=end,
@@ -919,6 +1420,7 @@ def move_physio_appointment(
     *,
     starts_at: datetime | None = None,
     therapist_employee_id: UUID | None = None,
+    room_id: UUID | None | object = UNSET,
     room: str | None | object = UNSET,
     notes: str | None | object = UNSET,
     now: datetime | None = None,
@@ -972,7 +1474,17 @@ def move_physio_appointment(
     appointment.ends_at = new_end
     appointment.therapist_employee_id = new_therapist
     appointment.pack_id = pack.id if pack is not None else None
-    if room is not UNSET:
+    if room_id is not UNSET:
+        if room_id is None:
+            appointment.room_id = None
+            if room is UNSET:
+                appointment.room = None
+        else:
+            selected_room = _require_room(session, room_id)
+            appointment.room_id = selected_room.id
+            appointment.room = selected_room.name
+    elif room is not UNSET:
+        appointment.room_id = None
         appointment.room = (room or "").strip()[:80] or None
     if notes is not UNSET:
         appointment.notes = (notes or "").strip() or None
@@ -1063,6 +1575,7 @@ def _consume_or_charge(
         ).first()
         if (
             pack is not None
+            and pack.voided_at is None
             and pack.sessions_used < pack.sessions_total
             and _as_utc(pack.valid_until) >= _as_utc(appointment.starts_at)
         ):
@@ -1133,7 +1646,7 @@ def _reverse_attendance(
             .where(PhysioPack.id == appointment.pack_id)
             .with_for_update()
         ).first()
-        if pack is not None and pack.sessions_used > 0:
+        if pack is not None and pack.voided_at is None and pack.sessions_used > 0:
             pack.sessions_used -= 1
             session.add(pack)
 

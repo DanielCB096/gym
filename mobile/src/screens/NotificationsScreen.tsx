@@ -32,6 +32,7 @@ const PHYSIO_KINDS = new Set([
   "physio_appointment_scheduled",
   "physio_appointment_cancelled",
   "physio_appointment_rescheduled",
+  "physio_reminder",
 ]);
 
 type Props = {

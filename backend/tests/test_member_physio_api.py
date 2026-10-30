@@ -19,6 +19,7 @@ from test_physio_api import (
     _attend,
     _book,
     _catalog,
+    _create_service,
     _open_shift,
     _sell_pack,
 )
@@ -197,5 +198,117 @@ def test_member_physio_overview_and_notices(monkeypatch) -> None:
                 "attended",
             ]
             assert after["history"][1]["covered_by_pack"] is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_physio_reminder_is_materialised_once(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-member-physio-secret")
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        ana = _seat_member(session, email="ana@example.com")
+        therapist_id = _add_therapist(session)
+        ana_id = ana.id
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            ana_headers = _member_headers(client, "ana@example.com")
+            service = _create_service(client, reception).json()
+
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            soon = now + timedelta(hours=20)
+            booked = _book(
+                client,
+                reception,
+                member_id=ana_id,
+                service_id=service["id"],
+                therapist_id=therapist_id,
+                starts_at=soon,
+            )
+            assert booked.status_code == 201, booked.text
+            appointment_id = booked.json()["id"]
+
+            # Opening the inbox in the last day writes the reminder once.
+            kinds = _inbox_kinds(client, ana_headers)
+            assert kinds.count("physio_reminder") == 1
+            reminder = next(
+                item
+                for item in client.get(
+                    "/member/notifications", headers=ana_headers
+                ).json()["items"]
+                if item["kind"] == "physio_reminder"
+            )
+            assert reminder["ref_id"] == appointment_id
+            assert "Descarga muscular" in reminder["body"]
+            assert "Llega 10 minutos antes" in reminder["body"]
+
+            assert _inbox_kinds(client, ana_headers).count("physio_reminder") == 1
+
+            # An appointment beyond the window does not get one yet.
+            far = _book(
+                client,
+                reception,
+                member_id=ana_id,
+                service_id=service["id"],
+                therapist_id=therapist_id,
+                starts_at=now + timedelta(hours=40),
+            )
+            assert far.status_code == 201, far.text
+            assert _inbox_kinds(client, ana_headers).count("physio_reminder") == 1
+
+            # Cancelling stops new reminders but keeps the one already sent.
+            assert client.post(
+                f"/admin/physio/appointments/{appointment_id}/cancel",
+                headers=reception,
+            ).status_code == 200
+            assert _inbox_kinds(client, ana_headers).count("physio_reminder") == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_member_sees_a_voided_pack_without_credits(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-member-physio-secret")
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        ana = _seat_member(session, email="ana@example.com")
+        ana_id = ana.id
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            ana_headers = _member_headers(client, "ana@example.com")
+            _, offer = _catalog(client, reception)
+            _open_shift(client, reception)
+            pack = _sell_pack(
+                client, reception, member_id=ana_id, offer_id=offer["id"]
+            )
+            assert pack.status_code == 201, pack.text
+
+            active = client.get("/member/physio", headers=ana_headers).json()
+            assert active["packs"][0]["status"] == "active"
+            assert active["packs"][0]["remaining_sessions"] == 2
+
+            voided = client.post(
+                f"/admin/physio/packs/{pack.json()['id']}/void",
+                headers=manager,
+                json={"reason": "Cortesía mal registrada"},
+            )
+            assert voided.status_code == 200, voided.text
+
+            after = client.get("/member/physio", headers=ana_headers).json()
+            assert after["packs"][0]["status"] == "voided"
+            assert after["packs"][0]["remaining_sessions"] == 0
     finally:
         app.dependency_overrides.clear()

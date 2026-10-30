@@ -117,6 +117,8 @@ def _pack_items(
     items: list[MemberPhysioPackItem] = []
     for pack, offer_name, service_name in rows:
         remaining = max(pack.sessions_total - pack.sessions_used, 0)
+        if pack.voided_at is not None:
+            remaining = 0
         items.append(
             MemberPhysioPackItem(
                 id=pack.id,
@@ -197,6 +199,8 @@ def _appointment_item(row) -> MemberPhysioAppointmentItem:
 
 
 def _pack_status(pack: PhysioPack, *, remaining: int, now: datetime) -> str:
+    if pack.voided_at is not None:
+        return "voided"
     if remaining <= 0:
         return "exhausted"
     if _as_utc(pack.valid_until) < now:

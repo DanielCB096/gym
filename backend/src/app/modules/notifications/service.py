@@ -54,6 +54,9 @@ MEMBERSHIP_EXPIRY_WINDOWS = (7, 3, 1)
 # Ascending order: each read picks the tightest window the class is already
 # inside, so opening the inbox twice within the same window writes one row.
 CLASS_REMINDER_WINDOWS_HOURS = (2, 24)
+# The physiotherapy room asks for a single day-before reminder: reception
+# already calls the member when scheduling, so a second threshold adds noise.
+PHYSIO_REMINDER_WINDOWS_HOURS = (24,)
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
 
@@ -1048,6 +1051,58 @@ def _materialise_deferred(
     occurred = _as_utc(now or utc_now())
     _ensure_membership_expiring(session, member_id, now=occurred)
     _ensure_class_reminders(session, member_id, now=occurred)
+    _ensure_physio_reminders(session, member_id, now=occurred)
+
+
+def _ensure_physio_reminders(
+    session: Session, member_id: UUID, *, now: datetime | None = None
+) -> None:
+    """Write the day-before reminder of a physiotherapy appointment.
+
+    Like the class reminder, it is materialised on read because there is no
+    scheduler; the window is part of the dedupe key, so opening the inbox twice
+    inside the last day writes one row, and an appointment that was cancelled
+    stops matching the query while the reminder stays as history.
+    """
+    # Imported here for the same reason as the class reminder: the physio
+    # service imports this module to write its own notices.
+    from app.modules.identity.models import Employee
+    from app.modules.physio.models import PhysioAppointment, PhysioService
+
+    occurred = _as_utc(now or utc_now())
+    horizon = occurred + timedelta(hours=max(PHYSIO_REMINDER_WINDOWS_HOURS))
+    rows = session.exec(
+        select(PhysioAppointment, PhysioService, Employee)
+        .join(PhysioService, PhysioService.id == PhysioAppointment.service_id)
+        .join(Employee, Employee.id == PhysioAppointment.therapist_employee_id)
+        .where(
+            PhysioAppointment.member_id == member_id,
+            PhysioAppointment.status == "scheduled",
+            PhysioAppointment.starts_at > occurred,
+            PhysioAppointment.starts_at <= horizon,
+        )
+        .order_by(PhysioAppointment.starts_at)
+    ).all()
+    for appointment, service, therapist in rows:
+        starts_at = _as_utc(appointment.starts_at)
+        local = to_club_timezone(starts_at)
+        therapist_name = f"{therapist.first_name} {therapist.last_name}".strip()
+        room = f" en {appointment.room}" if appointment.room else ""
+        create_notification(
+            session,
+            member_id=member_id,
+            kind="physio_reminder",
+            title="Tu cita de fisioterapia es pronto",
+            body=(
+                f"Tu cita de {service.name} con {therapist_name} es el "
+                f"{local:%d/%m/%Y} a las {local:%H:%M}{room}. Llega 10 minutos antes."
+            ),
+            ref_id=appointment.id,
+            dedupe_key=f"physio_reminder:{appointment.id}:24",
+            now=occurred,
+        )
+    if rows:
+        session.commit()
 
 
 def _ensure_class_reminders(
