@@ -28,6 +28,7 @@ ADDED_COLUMNS = {
         "origin": "VARCHAR(16) NOT NULL DEFAULT 'online'",
         "client_reference": "VARCHAR(64)",
         "class_reservation_id": "CHAR(32)",
+        "physio_appointment_id": "CHAR(32)",
     },
     "members": {"credit_limit_cents": "BIGINT"},
     "plans": {"daily_entry_limit": "INTEGER"},
@@ -78,6 +79,16 @@ PREVIEW_PERMISSIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "finance.manage",
         "Conciliar pagos y administrar cuentas bancarias",
         ("owner", "accountant"),
+    ),
+    (
+        "physio.read",
+        "Consultar fisioterapia, agenda y saldos",
+        ("owner", "manager", "reception", "trainer"),
+    ),
+    (
+        "physio.manage",
+        "Administrar fisioterapia, paquetes y citas",
+        ("owner", "manager", "reception"),
     ),
 )
 
@@ -157,6 +168,18 @@ CHECK_UPGRADES = {
             "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
             "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
             "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
+            "'invoice_cancelled', 'class_reminder'))",
+            "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
+            "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
+            "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
+            "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
+            "'invoice_cancelled', 'class_reminder', 'class_reserved'))",
+        ),
+        (
+            "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
+            "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
+            "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
+            "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
             "'invoice_cancelled', 'class_reminder', 'class_reserved'))",
             "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
             "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
@@ -164,6 +187,21 @@ CHECK_UPGRADES = {
             "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
             "'invoice_cancelled', 'class_reminder', 'class_reserved', "
             "'class_cancelled', 'class_rescheduled'))",
+        ),
+        (
+            "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
+            "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
+            "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
+            "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
+            "'invoice_cancelled', 'class_reminder', 'class_reserved', "
+            "'class_cancelled', 'class_rescheduled'))",
+            "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
+            "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
+            "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
+            "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
+            "'invoice_cancelled', 'class_reminder', 'class_reserved', "
+            "'class_cancelled', 'class_rescheduled', 'physio_appointment_scheduled', "
+            "'physio_appointment_cancelled', 'physio_appointment_rescheduled'))",
         ),
     ),
     "staff_notifications": (
@@ -421,6 +459,10 @@ def main(reset_maintenance: bool) -> None:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS ix_sales_class_reservation "
                 "ON sales (class_reservation_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS ix_sales_physio_appointment "
+                "ON sales (physio_appointment_id)"
             )
         if "payments" in tables:
             connection.execute(

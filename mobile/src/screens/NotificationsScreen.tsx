@@ -28,6 +28,12 @@ const CLASS_KINDS = new Set([
   "class_waitlist_promoted",
 ]);
 
+const PHYSIO_KINDS = new Set([
+  "physio_appointment_scheduled",
+  "physio_appointment_cancelled",
+  "physio_appointment_rescheduled",
+]);
+
 type Props = {
   token: string;
   onBack: () => void;
@@ -35,6 +41,7 @@ type Props = {
   onUnreadChange: (count: number) => void;
   onOpenInvoices: () => void;
   onOpenClasses: () => void;
+  onOpenPhysio: () => void;
 };
 
 export function NotificationsScreen({
@@ -44,6 +51,7 @@ export function NotificationsScreen({
   onUnreadChange,
   onOpenInvoices,
   onOpenClasses,
+  onOpenPhysio,
 }: Props) {
   const [inbox, setInbox] = useState<MemberNotificationPage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -115,6 +123,8 @@ export function NotificationsScreen({
       onOpenInvoices();
     } else if (CLASS_KINDS.has(item.kind)) {
       onOpenClasses();
+    } else if (PHYSIO_KINDS.has(item.kind)) {
+      onOpenPhysio();
     }
   }
 
@@ -244,9 +254,11 @@ export function NotificationsScreen({
                     ? `Abrir facturas: ${item.title}`
                     : CLASS_KINDS.has(item.kind)
                       ? `Abrir clases: ${item.title}`
-                      : item.read_at
-                        ? `Aviso leído: ${item.title}`
-                        : `Marcar como leído: ${item.title}`
+                      : PHYSIO_KINDS.has(item.kind)
+                        ? `Abrir fisioterapia: ${item.title}`
+                        : item.read_at
+                          ? `Aviso leído: ${item.title}`
+                          : `Marcar como leído: ${item.title}`
                 }
                 onPress={() => void handleOpen(item)}
                 style={({ pressed }) => [
@@ -276,9 +288,9 @@ export function NotificationsScreen({
       ) : null}
 
       <Text style={sharedStyles.hint}>
-        Toca un aviso para marcarlo como leído. Los de factura abren Facturas y los de
-        clase abren Clases. Los avisos no se borran: quedan en tu historial. Desliza
-        hacia abajo para actualizar.
+        Toca un aviso para marcarlo como leído. Los de factura abren Facturas, los de
+        clase abren Clases y los de fisioterapia abren Fisioterapia. Los avisos no se
+        borran: quedan en tu historial. Desliza hacia abajo para actualizar.
       </Text>
     </ScrollView>
   );

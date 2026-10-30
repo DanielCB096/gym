@@ -524,6 +524,10 @@ th.sortable-header .sort-indicator { font-size: 8px; color: #23509a; }
 .class-type-dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 999px; background: #23509a; }
 .class-roster-search { margin-bottom: 6px; }
 .roster-scroll { max-height: 320px; }
+.physio-confirm { align-items: center; margin: 0 0 12px; border: 1px solid #e4d9b4; color: #7a6220; background: #fbf6e7; }
+.physio-confirm svg { color: #a07c19; }
+.physio-confirm > span { flex: 1; }
+.physio-confirm-actions { display: flex; flex: 0 0 auto; gap: 6px; }
 
 .form-field textarea { min-height: 58px; padding: 9px 10px; border: 1px solid #dfe6e0; border-radius: 5px; color: var(--ink); background: #fff; font: inherit; font-size: 11px; resize: vertical; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }

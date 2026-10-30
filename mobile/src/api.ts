@@ -22,6 +22,7 @@ import type {
   MemberMeasurementInput,
   MemberNotification,
   MemberNotificationPage,
+  MemberPhysioOverview,
   MemberProgress,
   MemberProgressPhoto,
   MemberProgressPhotoInput,
@@ -174,6 +175,10 @@ export function cancelMemberReservation(
     `/member/classes/reservations/${reservationId}/cancel`,
     { method: "POST", token },
   );
+}
+
+export function getMemberPhysio(token: string): Promise<MemberPhysioOverview> {
+  return request<MemberPhysioOverview>("/member/physio", { token });
 }
 
 export function getMemberRoutines(token: string): Promise<MemberRoutineList> {

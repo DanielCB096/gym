@@ -53,7 +53,7 @@ import {
 } from "lucide-react";
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
-type PageName = "Resumen" | "Accesos" | "Socios" | "Personal" | "Clases" | "Rutinas" | "Inventario" | "Mantenimiento" | "Facturación" | "Conciliación" | "Reportes" | "Kiosco";
+type PageName = "Resumen" | "Accesos" | "Socios" | "Personal" | "Clases" | "Fisioterapia" | "Rutinas" | "Inventario" | "Mantenimiento" | "Facturación" | "Conciliación" | "Reportes" | "Kiosco";
 type AccessState = "Autorizado" | "Denegado" | "Manual";
 
 type AccessEvent = {
@@ -1555,6 +1555,141 @@ type ClassRoster = {
   reservations: BackendReservation[];
 };
 
+type PhysioAppointmentState = "scheduled" | "attended" | "no_show" | "cancelled";
+
+type BackendPhysioService = {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  duration_minutes: number;
+  price_cents: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type BackendPhysioOffer = {
+  id: string;
+  service_id: string;
+  service_name: string;
+  name: string;
+  sessions: number;
+  price_cents: number;
+  list_price_cents: number;
+  savings_cents: number;
+  discount_percent: number;
+  validity_days: number;
+  payment_mode: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type BackendPhysioTherapist = { id: string; name: string; job_title: string };
+
+type BackendPhysioPack = {
+  id: string;
+  member_id: string;
+  member_name: string;
+  offer_id: string;
+  offer_name: string;
+  service_id: string;
+  service_name: string;
+  sale_id: string;
+  sessions_total: number;
+  sessions_used: number;
+  remaining_sessions: number;
+  price_cents: number;
+  purchased_at: string;
+  valid_until: string;
+  status: "active" | "exhausted" | "expired";
+};
+
+type BackendPhysioAppointment = {
+  id: string;
+  member_id: string;
+  member_name: string;
+  service_id: string;
+  service_name: string;
+  service_price_cents: number;
+  pack_id: string | null;
+  pack_remaining_sessions: number | null;
+  therapist_employee_id: string;
+  therapist_name: string;
+  room: string | null;
+  starts_at: string;
+  ends_at: string;
+  status: PhysioAppointmentState;
+  notes: string | null;
+  booked_by: string | null;
+  marked_at: string | null;
+  marked_by: string | null;
+  cancelled_at: string | null;
+  cancelled_by: string | null;
+  created_at: string;
+  updated_at: string;
+  charge_sale_id: string | null;
+  charge_cents: number | null;
+  charge_payment_method: string | null;
+  charge_status: "completed" | "refunded" | null;
+};
+
+type PhysioPaymentMethod = "cash" | "card" | "transfer" | "account";
+
+const physioStatusLabels: Record<PhysioAppointmentState, string> = {
+  scheduled: "Agendada",
+  attended: "Asistió",
+  no_show: "No asistió",
+  cancelled: "Cancelada",
+};
+
+const physioPackStatusLabels: Record<BackendPhysioPack["status"], string> = {
+  active: "Activo",
+  exhausted: "Agotado",
+  expired: "Vencido",
+};
+
+function physioStatusBadge(status: PhysioAppointmentState): string {
+  if (status === "attended") return "status-good";
+  if (status === "scheduled") return "status-warn";
+  if (status === "no_show") return "status-bad";
+  return "status-neutral";
+}
+
+function physioPackBadge(status: BackendPhysioPack["status"]): string {
+  if (status === "active") return "status-good";
+  if (status === "expired") return "status-bad";
+  return "status-neutral";
+}
+
+function todayInputValue(): string {
+  const date = new Date();
+  const pad = (input: number) => String(input).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function parseBackendMoment(value: string): Date {
+  // SQLite drops the offset, so a naive ISO value is UTC, not local time.
+  return new Date(/[zZ]|[+-]\d{2}:\d{2}$/.test(value) ? value : `${value}Z`);
+}
+
+function formatPhysioDay(value: string): string {
+  return new Intl.DateTimeFormat("es-MX", { weekday: "short", day: "2-digit", month: "short" }).format(parseBackendMoment(value));
+}
+
+function formatPhysioClock(value: string): string {
+  return new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit" }).format(parseBackendMoment(value));
+}
+
+function formatPhysioDate(value: string): string {
+  return new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short", year: "numeric" }).format(parseBackendMoment(value));
+}
+
+function formatInputDay(value: string): string {
+  return new Intl.DateTimeFormat("es-MX", { weekday: "long", day: "2-digit", month: "long" }).format(new Date(`${value}T12:00:00`));
+}
+
 const CLASSES_PAGE_SIZE = 20;
 
 const classStatusLabels: Record<ClassSessionState, string> = {
@@ -2603,6 +2738,7 @@ const requiredPermission: Record<PageName, string> = {
   Socios: "members.read",
   Personal: "staff.read",
   Clases: "classes.read",
+  Fisioterapia: "physio.read",
   Rutinas: "routines.read",
   Inventario: "inventory.read",
   Mantenimiento: "maintenance.read",
@@ -2627,6 +2763,7 @@ const primaryNavigation: { label: PageName; icon: LucideIcon }[] = [
   { label: "Socios", icon: Users },
   { label: "Personal", icon: Fingerprint },
   { label: "Clases", icon: CalendarDays },
+  { label: "Fisioterapia", icon: Activity },
   { label: "Rutinas", icon: Dumbbell },
 ];
 
@@ -2653,6 +2790,8 @@ const permissionRows = [
   { group: "Asistencia", label: "Registrar y corregir", code: "attendance.manage" },
   { group: "Clases", label: "Consultar clases", code: "classes.read" },
   { group: "Clases", label: "Administrar clases y reservas", code: "classes.manage" },
+  { group: "Fisioterapia", label: "Consultar agenda y paquetes", code: "physio.read" },
+  { group: "Fisioterapia", label: "Administrar citas, paquetes y catálogo", code: "physio.manage" },
   { group: "Rutinas", label: "Consultar rutinas y progreso", code: "routines.read" },
   { group: "Rutinas", label: "Administrar rutinas y progreso", code: "routines.manage" },
   { group: "Inventario", label: "Consultar inventario", code: "inventory.read" },
@@ -3160,6 +3299,7 @@ export default function HomePage() {
     Socios: "Socios",
     Personal: "Equipo y turnos",
     Clases: "Clases",
+    Fisioterapia: "Fisioterapia",
     Rutinas: "Rutinas y progreso",
     Inventario: "Inventario",
     Mantenimiento: "Mantenimiento de equipo",
@@ -3332,6 +3472,7 @@ export default function HomePage() {
           {activePage === "Personal" && <StaffView onToast={showToast} canManageRoles={hasPermission("roles.manage")} canManageSessions={hasPermission("sessions.manage")} canManageStaff={hasPermission("staff.manage")} canViewAttendance={hasPermission("attendance.read")} canManageAttendance={hasPermission("attendance.manage")} employees={backendStaff} roles={backendRoles} users={backendUsers} sessions={backendSessions} shifts={backendShifts} loading={staffLoading} error={staffError} onIdentityChanged={() => setStaffRefresh((value) => value + 1)} />}
           {activePage === "Inventario" && <InventoryView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Clases" && <ClassesView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
+          {activePage === "Fisioterapia" && <PhysioView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Rutinas" && <RoutinesView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} onNotificationsChanged={() => { void refreshUnreadNotices(); if (notificationsOpen) void loadNotices(); }} />}
           {activePage === "Mantenimiento" && <MaintenanceView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Facturación" && <BillingView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
@@ -7994,6 +8135,861 @@ function RoutinePlanList({ items }: { items: BackendRoutineLine[] }) {
         </li>
       ))}
     </ol>
+  );
+}
+
+function PhysioView({ permissions, onUnauthorized, onToast }: { permissions: string[]; onUnauthorized: () => void; onToast: (message: string) => void }) {
+  const canManage = permissions.includes("physio.manage");
+
+  const [tab, setTab] = useState<"agenda" | "paquetes" | "catalogo">("agenda");
+  const [day, setDay] = useState(todayInputValue());
+  const [therapistFilter, setTherapistFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"" | PhysioAppointmentState>("");
+  const [paymentMethod, setPaymentMethod] = useState<PhysioPaymentMethod>("cash");
+  const [refresh, setRefresh] = useState(0);
+  const reload = () => setRefresh((value) => value + 1);
+
+  const [appointments, setAppointments] = useState<BackendPhysioAppointment[]>([]);
+  const [appointmentsLoading, setAppointmentsLoading] = useState(false);
+  const [appointmentsError, setAppointmentsError] = useState("");
+
+  const [services, setServices] = useState<BackendPhysioService[]>([]);
+  const [offers, setOffers] = useState<BackendPhysioOffer[]>([]);
+  const [therapists, setTherapists] = useState<BackendPhysioTherapist[]>([]);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
+
+  const [appointmentModal, setAppointmentModal] = useState<{ appointment: BackendPhysioAppointment | null } | null>(null);
+  const [packModalOpen, setPackModalOpen] = useState(false);
+  const [serviceModal, setServiceModal] = useState<{ service: BackendPhysioService | null } | null>(null);
+  const [offerModal, setOfferModal] = useState<{ offer: BackendPhysioOffer | null } | null>(null);
+  const [confirming, setConfirming] = useState<{ kind: "cancel" | "close-day"; appointment?: BackendPhysioAppointment } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const [packQuery, setPackQuery] = useState("");
+  const [packResults, setPackResults] = useState<BackendMember[]>([]);
+  const [packSearching, setPackSearching] = useState(false);
+  const [packMember, setPackMember] = useState<BackendMember | null>(null);
+  const [packs, setPacks] = useState<BackendPhysioPack[]>([]);
+  const [packsLoading, setPacksLoading] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      setCatalogLoaded(false);
+      try {
+        const [servicesResponse, offersResponse, therapistsResponse] = await Promise.all([
+          fetch("/api/admin/physio/services", { cache: "no-store" }),
+          fetch("/api/admin/physio/offers", { cache: "no-store" }),
+          fetch("/api/admin/physio/therapists", { cache: "no-store" }),
+        ]);
+        if ([servicesResponse, offersResponse, therapistsResponse].some((response) => response.status === 401)) {
+          onUnauthorized();
+          return;
+        }
+        if (!active) return;
+        if (servicesResponse.ok) setServices(await servicesResponse.json() as BackendPhysioService[]);
+        if (offersResponse.ok) setOffers(await offersResponse.json() as BackendPhysioOffer[]);
+        if (therapistsResponse.ok) setTherapists(await therapistsResponse.json() as BackendPhysioTherapist[]);
+      } catch {
+        // The catalogue only feeds the forms and labels; the agenda still loads.
+      } finally {
+        if (active) setCatalogLoaded(true);
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [refresh, onUnauthorized]);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      setAppointmentsLoading(true);
+      setAppointmentsError("");
+      const params = new URLSearchParams();
+      if (day) params.set("date", day);
+      if (therapistFilter) params.set("therapist_id", therapistFilter);
+      if (statusFilter) params.set("status", statusFilter);
+      try {
+        const response = await fetch(`/api/admin/physio/appointments?${params.toString()}`, { cache: "no-store" });
+        if (response.status === 401) { onUnauthorized(); return; }
+        if (!response.ok) throw new Error("failed");
+        const data = await response.json() as BackendPhysioAppointment[];
+        if (active) setAppointments(data);
+      } catch {
+        if (active) setAppointmentsError("No se pudo cargar la agenda de fisioterapia.");
+      } finally {
+        if (active) setAppointmentsLoading(false);
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [day, therapistFilter, statusFilter, refresh, onUnauthorized]);
+
+  useEffect(() => {
+    const term = packQuery.trim();
+    if (term.length < 2) { setPackResults([]); return; }
+    let active = true;
+    const handle = window.setTimeout(async () => {
+      setPackSearching(true);
+      try {
+        const response = await fetch(`/api/admin/members?search=${encodeURIComponent(term)}&page_size=6`, { cache: "no-store" });
+        if (response.status === 401) { onUnauthorized(); return; }
+        if (response.ok) {
+          const directory = await response.json() as MemberDirectory;
+          if (active) setPackResults(directory.items);
+        } else if (active) {
+          setPackResults([]);
+        }
+      } catch {
+        if (active) setPackResults([]);
+      } finally {
+        if (active) setPackSearching(false);
+      }
+    }, 250);
+    return () => { active = false; window.clearTimeout(handle); };
+  }, [packQuery, onUnauthorized]);
+
+  useEffect(() => {
+    if (!packMember) { setPacks([]); return; }
+    let active = true;
+    const load = async () => {
+      setPacksLoading(true);
+      try {
+        const response = await fetch(`/api/admin/physio/packs?member_id=${encodeURIComponent(packMember.id)}`, { cache: "no-store" });
+        if (response.status === 401) { onUnauthorized(); return; }
+        if (!response.ok) throw new Error("failed");
+        const data = await response.json() as BackendPhysioPack[];
+        if (active) setPacks(data);
+      } catch {
+        if (active) setPacks([]);
+      } finally {
+        if (active) setPacksLoading(false);
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [packMember, refresh, onUnauthorized]);
+
+  const mark = async (appointment: BackendPhysioAppointment, attended: boolean) => {
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/admin/physio/appointments/${appointment.id}/attendance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // El backend ignora la forma de pago cuando el paquete cubre la sesión.
+        body: JSON.stringify({ attended, payment_method: attended ? paymentMethod : null }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as Partial<BackendPhysioAppointment> & { detail?: string };
+      if (!response.ok) { onToast(payload.detail || "No se pudo registrar la asistencia."); return; }
+      reload();
+      if (attended) {
+        if (payload.charge_status === "completed" && payload.charge_cents != null) {
+          onToast(`Asistencia registrada · cobro de ${formatMoney(payload.charge_cents)} (${paymentMethodLabels[payload.charge_payment_method ?? ""] ?? payload.charge_payment_method}).`);
+        } else if (payload.pack_id) {
+          onToast(`Asistencia registrada · sesión descontada del paquete${payload.pack_remaining_sessions != null ? ` (quedan ${payload.pack_remaining_sessions})` : ""}.`);
+        } else {
+          onToast("Asistencia registrada.");
+        }
+      } else {
+        onToast(appointment.status === "attended" ? "Cita corregida a inasistencia; la sesión o el cobro se revirtió." : "Inasistencia registrada.");
+      }
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelAppointment = async (appointment: BackendPhysioAppointment) => {
+    setConfirming(null);
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/admin/physio/appointments/${appointment.id}/cancel`, { method: "POST" });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) { onToast(payload.detail || "No se pudo cancelar la cita."); return; }
+      reload();
+      onToast("Cita cancelada. El paquete y el cobro no se modifican.");
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const closeDay = async () => {
+    setConfirming(null);
+    setBusy(true);
+    try {
+      const response = await fetch("/api/admin/physio/appointments/close-day", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: day }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string; closed?: number };
+      if (!response.ok) { onToast(payload.detail || "No se pudo cerrar el día."); return; }
+      reload();
+      onToast(payload.closed ? `${payload.closed} cita(s) pendientes marcadas como inasistencia.` : "No quedaban citas pendientes por cerrar.");
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const scheduledCount = appointments.filter((item) => item.status === "scheduled").length;
+  const attendedCount = appointments.filter((item) => item.status === "attended").length;
+  const noShowCount = appointments.filter((item) => item.status === "no_show").length;
+  const coveredCount = appointments.filter((item) => item.pack_id !== null).length;
+
+  const tabButton = (value: "agenda" | "paquetes" | "catalogo", label: string) => (
+    <button type="button" className={tab === value ? "staff-tab-active" : ""} onClick={() => setTab(value)}>{label}</button>
+  );
+
+  return (
+    <>
+      <section className="access-summary-band pos-cash-band">
+        <div className="access-summary-main">
+          <span className="summary-icon"><Activity size={18} /></span>
+          <div>
+            <span>AGENDA DE FISIOTERAPIA</span>
+            <strong>{appointmentsLoading ? "Consultando…" : `${appointments.length} citas ${day ? `del ${formatInputDay(day)}` : "en total"}`}</strong>
+          </div>
+        </div>
+        <div className="summary-divider" />
+        <div className="summary-stat"><span>AGENDADAS</span><strong>{scheduledCount}</strong></div>
+        <div className="summary-stat"><span>ASISTIERON</span><strong>{attendedCount}</strong></div>
+        <div className="summary-stat"><span>INASISTENCIAS</span><strong>{noShowCount}</strong></div>
+        <div className="summary-stat"><span>CON PAQUETE</span><strong>{coveredCount}</strong></div>
+        {canManage && <button className="button button-secondary" onClick={() => setConfirming({ kind: "close-day" })}><Check size={16} />Cerrar día</button>}
+        {canManage && <button className="button button-primary" onClick={() => setAppointmentModal({ appointment: null })}><Plus size={16} />Agendar cita</button>}
+      </section>
+
+      {confirming && (
+        <div className="modal-note physio-confirm">
+          <AlertTriangle size={16} />
+          <span>
+            {confirming.kind === "close-day"
+              ? `¿Cerrar el ${formatInputDay(day)}? Las citas pendientes que ya terminaron se marcan como inasistencia; no se cobra ni se descuenta ninguna sesión.`
+              : `¿Cancelar la cita de ${confirming.appointment?.member_name}? El paquete y el cobro no se modifican.`}
+          </span>
+          <div className="physio-confirm-actions">
+            <button type="button" className="button button-secondary button-small" onClick={() => setConfirming(null)}>Volver</button>
+            <button
+              type="button"
+              className="button button-primary button-small"
+              disabled={busy}
+              onClick={() => (confirming.kind === "cancel" && confirming.appointment ? cancelAppointment(confirming.appointment) : closeDay())}
+            >
+              Confirmar
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="staff-tabs pos-tabs">
+        {tabButton("agenda", "Agenda")}
+        {tabButton("paquetes", "Paquetes")}
+        {tabButton("catalogo", "Catálogo")}
+        <span className="staff-tabs-note"><ShieldCheck size={14} />Las sesiones se descuentan del paquete al marcar la asistencia</span>
+      </div>
+
+      {tab === "agenda" && (
+        <section className="panel full-panel">
+          <div className="panel-header access-list-heading">
+            <div><p className="section-kicker">CITAS</p><h2>Agenda del día</h2></div>
+            {canManage && <button className="button button-primary" onClick={() => setAppointmentModal({ appointment: null })}><Plus size={17} />Agendar cita</button>}
+          </div>
+          <div className="table-toolbar">
+            <label className="table-select"><span>Día</span><input type="date" value={day} onChange={(event) => setDay(event.target.value)} /></label>
+            <label className="table-select"><span>Terapeuta</span><select value={therapistFilter} onChange={(event) => setTherapistFilter(event.target.value)}><option value="">Todos</option>{therapists.map((therapist) => <option key={therapist.id} value={therapist.id}>{therapist.name}</option>)}</select></label>
+            <label className="table-select"><span>Estado</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "" | PhysioAppointmentState)}><option value="">Todos</option><option value="scheduled">Agendadas</option><option value="attended">Asistieron</option><option value="no_show">No asistieron</option><option value="cancelled">Canceladas</option></select></label>
+            {canManage && <label className="table-select"><span>Cobro de sesión suelta</span><select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as PhysioPaymentMethod)}><option value="cash">Efectivo</option><option value="card">Tarjeta</option><option value="transfer">Transferencia</option><option value="account">Cuenta del socio</option></select></label>}
+          </div>
+          <div className="table-scroll">
+            <table className="data-table">
+              <thead><tr><th>PACIENTE</th><th>SERVICIO</th><th>TERAPEUTA</th><th>HORARIO</th><th>CUBERTURA</th><th>COBRO</th><th>ESTADO</th><th /></tr></thead>
+              <tbody>
+                {appointmentsLoading ? <tr><td colSpan={8} className="empty-row">Cargando agenda…</td></tr>
+                  : appointmentsError ? <tr><td colSpan={8} className="empty-row">{appointmentsError}</td></tr>
+                  : appointments.length === 0 ? <tr><td colSpan={8} className="empty-row">No hay citas para este filtro.</td></tr>
+                  : appointments.map((appointment) => {
+                    const future = parseBackendMoment(appointment.starts_at).getTime() > Date.now();
+                    const canMove = canManage && appointment.status === "scheduled" && future;
+                    return (
+                      <tr key={appointment.id}>
+                        <td><div className="person-cell"><span className={`person-avatar ${memberAvatarColor(appointment.member_id)}`}>{appointment.member_name.slice(0, 2).toUpperCase()}</span><span><strong>{appointment.member_name}</strong><small>{appointment.notes ?? "Sin notas"}</small></span></div></td>
+                        <td>{appointment.service_name}<small className="pos-min">{formatMoney(appointment.service_price_cents)} por sesión</small></td>
+                        <td>{appointment.therapist_name}</td>
+                        <td className="time-cell">{formatPhysioDay(appointment.starts_at)}<small className="pos-min">{formatPhysioClock(appointment.starts_at)}–{formatPhysioClock(appointment.ends_at)}{appointment.room ? ` · ${appointment.room}` : ""}</small></td>
+                        <td>{appointment.pack_id ? <span className="status-badge status-good"><i />Paquete{appointment.pack_remaining_sessions != null ? ` · ${appointment.pack_remaining_sessions} restantes` : ""}</span> : <span className="status-badge status-neutral"><i />Sesión suelta</span>}</td>
+                        <td>
+                          {appointment.charge_status === "completed" && appointment.charge_cents != null ? (
+                            <>Cobrado {formatMoney(appointment.charge_cents)}<small className="pos-min">{paymentMethodLabels[appointment.charge_payment_method ?? ""] ?? appointment.charge_payment_method}</small></>
+                          ) : appointment.charge_status === "refunded" && appointment.charge_cents != null ? (
+                            <>Reembolsado {formatMoney(appointment.charge_cents)}</>
+                          ) : appointment.status === "scheduled" ? (
+                            <span className="pos-min">{appointment.pack_id ? "Se descuenta del paquete" : `Por cobrar ${formatMoney(appointment.service_price_cents)}`}</span>
+                          ) : (
+                            <span className="pos-min">—</span>
+                          )}
+                        </td>
+                        <td><span className={`status-badge ${physioStatusBadge(appointment.status)}`}><i />{physioStatusLabels[appointment.status]}</span></td>
+                        <td>
+                          {canManage && appointment.status !== "cancelled" && (
+                            <div className="pos-row-actions">
+                              {appointment.status !== "attended" && <button type="button" className="text-button" disabled={busy || future} title={future ? "La cita aún no empieza" : undefined} onClick={() => mark(appointment, true)}>Asistió</button>}
+                              {appointment.status !== "no_show" && <button type="button" className="text-button" disabled={busy || future} title={future ? "La cita aún no empieza" : undefined} onClick={() => mark(appointment, false)}>No asistió</button>}
+                              {canMove && <button type="button" className="text-button" disabled={busy} onClick={() => setAppointmentModal({ appointment })}>Mover</button>}
+                              {canMove && <button type="button" className="text-button" disabled={busy} onClick={() => setConfirming({ kind: "cancel", appointment })}>Cancelar</button>}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+          <div className="table-bottom">
+            <span>{appointments.length} citas · ventana de asistencia desde el inicio hasta 24 h después del fin</span>
+          </div>
+        </section>
+      )}
+
+      {tab === "paquetes" && (
+        <section className="panel full-panel">
+          <div className="panel-header access-list-heading">
+            <div><p className="section-kicker">PAQUETES</p><h2>Paquetes prepagados</h2></div>
+            {canManage && <button className="button button-primary" onClick={() => setPackModalOpen(true)}><Plus size={17} />Vender paquete</button>}
+          </div>
+          <div className="class-roster-search">
+            <label className="form-field"><span>Buscar socio</span><input value={packQuery} onChange={(event) => setPackQuery(event.target.value)} placeholder="Nombre o correo" autoComplete="off" /></label>
+            {packSearching && <p className="manual-hint">Buscando socios…</p>}
+            {packResults.length > 0 && (
+              <ul className="manual-results">
+                {packResults.map((member) => (
+                  <li key={member.id}>
+                    <button type="button" onClick={() => { setPackMember(member); setPackQuery(""); setPackResults([]); }}>
+                      <span className="person-cell"><span className={`person-avatar ${memberAvatarColor(member.id)}`}>{`${member.first_name[0] ?? ""}${member.last_name[0] ?? ""}`.toUpperCase()}</span><span><strong>{member.first_name} {member.last_name}</strong><small>{member.email ?? member.phone ?? "Socio"}</small></span></span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {packMember ? (
+            <>
+              <div className="panel-header access-list-heading">
+                <div className="person-cell"><span className={`person-avatar ${memberAvatarColor(packMember.id)}`}>{`${packMember.first_name[0] ?? ""}${packMember.last_name[0] ?? ""}`.toUpperCase()}</span><span><strong>{packMember.first_name} {packMember.last_name}</strong><small>{packMember.email ?? packMember.phone ?? "Socio"}</small></span></div>
+                <button type="button" className="text-button" onClick={() => { setPackMember(null); setPacks([]); }}>Cambiar socio</button>
+              </div>
+              {packsLoading ? <p className="panel-hint">Cargando paquetes…</p>
+                : packs.length === 0 ? <p className="panel-hint">Este socio no tiene paquetes de fisioterapia.</p>
+                : (
+                  <div className="table-scroll">
+                    <table className="data-table">
+                      <thead><tr><th>PAQUETE</th><th>SERVICIO</th><th>SESIONES</th><th>VIGENCIA</th><th>ESTADO</th><th>PRECIO</th></tr></thead>
+                      <tbody>
+                        {packs.map((pack) => (
+                          <tr key={pack.id}>
+                            <td><strong>{pack.offer_name}</strong><small className="pos-min">Comprado {formatPhysioDate(pack.purchased_at)}</small></td>
+                            <td>{pack.service_name}</td>
+                            <td>{pack.sessions_used}/{pack.sessions_total}<small className="pos-min">{pack.remaining_sessions} restantes</small></td>
+                            <td>{formatPhysioDate(pack.valid_until)}</td>
+                            <td><span className={`status-badge ${physioPackBadge(pack.status)}`}><i />{physioPackStatusLabels[pack.status]}</span></td>
+                            <td>{formatMoney(pack.price_cents)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+            </>
+          ) : <p className="panel-hint">Busca un socio para consultar sus paquetes y sesiones restantes.</p>}
+        </section>
+      )}
+
+      {tab === "catalogo" && (
+        <div className="dashboard-grid">
+          <section className="panel">
+            <div className="panel-header"><div><p className="section-kicker">CATÁLOGO</p><h2>Servicios</h2></div>{canManage && <button className="button button-primary button-small" onClick={() => setServiceModal({ service: null })}><Plus size={15} />Agregar</button>}</div>
+            {services.length === 0 ? <p className="panel-hint">{catalogLoaded ? "Aún no hay servicios de fisioterapia." : "Cargando…"}</p> : (
+              <ul className="class-catalog-list">
+                {services.map((service) => (
+                  <li key={service.id}>
+                    <span className="class-type-dot" />
+                    <span><strong>{service.name}{service.is_active ? "" : " · Inactivo"}</strong><small>{service.code} · {service.duration_minutes} min · {formatMoney(service.price_cents)}</small></span>
+                    {canManage && <button type="button" className="text-button" style={{ marginLeft: "auto" }} onClick={() => setServiceModal({ service })}>Editar</button>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+          <section className="panel">
+            <div className="panel-header"><div><p className="section-kicker">CATÁLOGO</p><h2>Paquetes</h2></div>{canManage && <button className="button button-primary button-small" onClick={() => setOfferModal({ offer: null })}><Plus size={15} />Agregar</button>}</div>
+            {offers.length === 0 ? <p className="panel-hint">{catalogLoaded ? "Aún no hay paquetes configurados." : "Cargando…"}</p> : (
+              <ul className="class-catalog-list">
+                {offers.map((offer) => (
+                  <li key={offer.id}>
+                    <span className="class-type-dot" />
+                    <span><strong>{offer.name}{offer.is_active ? "" : " · Inactivo"}</strong><small>{offer.service_name} · {offer.sessions} sesiones · {formatMoney(offer.price_cents)} · vigencia {offer.validity_days} días{offer.discount_percent > 0 ? ` · -${offer.discount_percent}%` : ""}</small></span>
+                    {canManage && <button type="button" className="text-button" style={{ marginLeft: "auto" }} onClick={() => setOfferModal({ offer })}>Editar</button>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+      )}
+
+      {canManage && appointmentModal && (
+        <PhysioAppointmentModal
+          appointment={appointmentModal.appointment}
+          services={services}
+          therapists={therapists}
+          onClose={() => setAppointmentModal(null)}
+          onSaved={(message) => { setAppointmentModal(null); reload(); onToast(message); }}
+          onUnauthorized={onUnauthorized}
+        />
+      )}
+      {canManage && packModalOpen && (
+        <PhysioPackModal
+          initialMember={packMember}
+          offers={offers}
+          onClose={() => setPackModalOpen(false)}
+          onSaved={(message) => { setPackModalOpen(false); reload(); onToast(message); }}
+          onUnauthorized={onUnauthorized}
+        />
+      )}
+      {canManage && serviceModal && (
+        <PhysioServiceModal
+          service={serviceModal.service}
+          onClose={() => setServiceModal(null)}
+          onSaved={(message) => { setServiceModal(null); reload(); onToast(message); }}
+          onUnauthorized={onUnauthorized}
+        />
+      )}
+      {canManage && offerModal && (
+        <PhysioOfferModal
+          offer={offerModal.offer}
+          services={services}
+          onClose={() => setOfferModal(null)}
+          onSaved={(message) => { setOfferModal(null); reload(); onToast(message); }}
+          onUnauthorized={onUnauthorized}
+        />
+      )}
+
+      <footer className="page-footer"><span>Centro Fit · Fisioterapia</span><span>DATOS DEL BACKEND · PAQUETES PREPAGADOS Y COBRO EN RECEPCIÓN</span></footer>
+    </>
+  );
+}
+
+function PhysioAppointmentModal({
+  appointment,
+  services,
+  therapists,
+  onClose,
+  onSaved,
+  onUnauthorized,
+}: {
+  appointment: BackendPhysioAppointment | null;
+  services: BackendPhysioService[];
+  therapists: BackendPhysioTherapist[];
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onUnauthorized: () => void;
+}) {
+  const moving = appointment !== null;
+  const availableServices = services.filter((service) => service.is_active || service.id === appointment?.service_id);
+
+  const [memberQuery, setMemberQuery] = useState("");
+  const [memberResults, setMemberResults] = useState<BackendMember[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [member, setMember] = useState<BackendMember | null>(null);
+  const [serviceId, setServiceId] = useState(appointment?.service_id ?? availableServices[0]?.id ?? "");
+  const [therapistId, setTherapistId] = useState(appointment?.therapist_employee_id ?? therapists[0]?.id ?? "");
+  const [startsAt, setStartsAt] = useState(appointment ? toDateTimeLocalValue(parseBackendMoment(appointment.starts_at).toISOString()) : defaultSessionStart());
+  const [room, setRoom] = useState(appointment?.room ?? "");
+  const [notes, setNotes] = useState(appointment?.notes ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const term = memberQuery.trim();
+    if (term.length < 2) { setMemberResults([]); return; }
+    let active = true;
+    const handle = window.setTimeout(async () => {
+      setSearching(true);
+      try {
+        const response = await fetch(`/api/admin/members?search=${encodeURIComponent(term)}&page_size=6`, { cache: "no-store" });
+        if (response.status === 401) { onUnauthorized(); return; }
+        if (response.ok) {
+          const directory = await response.json() as MemberDirectory;
+          if (active) setMemberResults(directory.items);
+        } else if (active) {
+          setMemberResults([]);
+        }
+      } catch {
+        if (active) setMemberResults([]);
+      } finally {
+        if (active) setSearching(false);
+      }
+    }, 250);
+    return () => { active = false; window.clearTimeout(handle); };
+  }, [memberQuery, onUnauthorized]);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!moving && !member) { setError("Selecciona al socio que asistirá a la cita."); return; }
+    if (!serviceId) { setError("Selecciona un servicio."); return; }
+    if (!therapistId) { setError("Selecciona un fisioterapeuta."); return; }
+    if (!startsAt) { setError("Indica la fecha y hora de la cita."); return; }
+    setBusy(true);
+    setError("");
+    try {
+      const response = moving && appointment
+        ? await fetch(`/api/admin/physio/appointments/${appointment.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              starts_at: fromDateTimeLocalValue(startsAt),
+              therapist_employee_id: therapistId,
+              room: room.trim() || null,
+              notes: notes.trim() || null,
+            }),
+          })
+        : await fetch("/api/admin/physio/appointments", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              member_id: member?.id,
+              service_id: serviceId,
+              therapist_employee_id: therapistId,
+              starts_at: fromDateTimeLocalValue(startsAt),
+              room: room.trim() || null,
+              notes: notes.trim() || null,
+            }),
+          });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) { setError(payload.detail || "No se pudo guardar la cita."); return; }
+      onSaved(moving ? "Cita reprogramada." : `Cita agendada para ${member?.first_name ?? "el socio"}.`);
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="physio-appointment-title">
+        <div className="modal-header"><span className="modal-icon"><Activity size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">{moving ? "MOVER CITA" : "AGENDAR CITA"}</p>
+        <h2 id="physio-appointment-title">{moving ? appointment?.member_name : "Nueva cita de fisioterapia"}</h2>
+        <p className="modal-subtitle">{moving ? `${appointment?.service_name} · ${formatPhysioDate(appointment?.starts_at ?? "")}` : "Si el socio tiene un paquete vigente para el servicio, la sesión se descuenta al marcar la asistencia; si no, se cobra como sesión suelta."}</p>
+        <form onSubmit={submit}>
+          {!moving && (
+            <div className="class-roster-search">
+              {member ? (
+                <div className="panel-header access-list-heading">
+                  <div className="person-cell"><span className={`person-avatar ${memberAvatarColor(member.id)}`}>{`${member.first_name[0] ?? ""}${member.last_name[0] ?? ""}`.toUpperCase()}</span><span><strong>{member.first_name} {member.last_name}</strong><small>{member.email ?? member.phone ?? "Socio"}</small></span></div>
+                  <button type="button" className="text-button" onClick={() => setMember(null)}>Cambiar</button>
+                </div>
+              ) : (
+                <>
+                  <label className="form-field"><span>Socio</span><input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="Buscar por nombre o correo" autoComplete="off" autoFocus /></label>
+                  {searching && <p className="manual-hint">Buscando socios…</p>}
+                  {memberResults.length > 0 && (
+                    <ul className="manual-results">
+                      {memberResults.map((item) => (
+                        <li key={item.id}>
+                          <button type="button" onClick={() => { setMember(item); setMemberQuery(""); setMemberResults([]); }}>
+                            <span className="person-cell"><span className={`person-avatar ${memberAvatarColor(item.id)}`}>{`${item.first_name[0] ?? ""}${item.last_name[0] ?? ""}`.toUpperCase()}</span><span><strong>{item.first_name} {item.last_name}</strong><small>{item.email ?? item.phone ?? "Socio"}</small></span></span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+          <div className="form-row">
+            <label className="form-field"><span>Servicio</span><select value={serviceId} onChange={(event) => setServiceId(event.target.value)} disabled={moving}><option value="">Selecciona…</option>{availableServices.map((service) => <option key={service.id} value={service.id}>{service.name} · {service.duration_minutes} min</option>)}</select></label>
+            <label className="form-field"><span>Fisioterapeuta</span><select value={therapistId} onChange={(event) => setTherapistId(event.target.value)}><option value="">Selecciona…</option>{therapists.map((therapist) => <option key={therapist.id} value={therapist.id}>{therapist.name} · {therapist.job_title}</option>)}</select></label>
+          </div>
+          <div className="form-row">
+            <label className="form-field"><span>Inicio</span><input type="datetime-local" value={startsAt} onChange={(event) => setStartsAt(event.target.value)} /></label>
+            <label className="form-field"><span>Consultorio (opcional)</span><input value={room} onChange={(event) => setRoom(event.target.value)} placeholder="Ej. Consultorio 1" maxLength={80} /></label>
+          </div>
+          <label className="form-field"><span>Notas (opcional)</span><input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Indicaciones, lesión, seguimiento…" maxLength={500} /></label>
+          <div className="modal-note"><ShieldCheck size={16} /><span>La agenda evita dos citas a la misma hora con el mismo fisioterapeuta. Para cobrar una sesión suelta debe haber un turno de caja abierto al marcar la asistencia.</span></div>
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}><Check size={16} />{busy ? "Guardando…" : moving ? "Guardar cambios" : "Agendar cita"}</button></div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function PhysioPackModal({
+  initialMember,
+  offers,
+  onClose,
+  onSaved,
+  onUnauthorized,
+}: {
+  initialMember: BackendMember | null;
+  offers: BackendPhysioOffer[];
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onUnauthorized: () => void;
+}) {
+  const activeOffers = offers.filter((offer) => offer.is_active);
+  const [memberQuery, setMemberQuery] = useState("");
+  const [memberResults, setMemberResults] = useState<BackendMember[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [member, setMember] = useState<BackendMember | null>(initialMember);
+  const [offerId, setOfferId] = useState(activeOffers[0]?.id ?? "");
+  const [paymentMethod, setPaymentMethod] = useState<PhysioPaymentMethod>("cash");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const term = memberQuery.trim();
+    if (term.length < 2) { setMemberResults([]); return; }
+    let active = true;
+    const handle = window.setTimeout(async () => {
+      setSearching(true);
+      try {
+        const response = await fetch(`/api/admin/members?search=${encodeURIComponent(term)}&page_size=6`, { cache: "no-store" });
+        if (response.status === 401) { onUnauthorized(); return; }
+        if (response.ok) {
+          const directory = await response.json() as MemberDirectory;
+          if (active) setMemberResults(directory.items);
+        } else if (active) {
+          setMemberResults([]);
+        }
+      } catch {
+        if (active) setMemberResults([]);
+      } finally {
+        if (active) setSearching(false);
+      }
+    }, 250);
+    return () => { active = false; window.clearTimeout(handle); };
+  }, [memberQuery, onUnauthorized]);
+
+  const selectedOffer = activeOffers.find((offer) => offer.id === offerId) ?? null;
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!member) { setError("Selecciona al socio que comprará el paquete."); return; }
+    if (!offerId) { setError("Selecciona un paquete."); return; }
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/physio/packs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ member_id: member.id, offer_id: offerId, payment_method: paymentMethod }),
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) { setError(payload.detail || "No se pudo vender el paquete."); return; }
+      onSaved(selectedOffer ? `Paquete vendido: ${selectedOffer.name} (${selectedOffer.sessions} sesiones).` : "Paquete vendido.");
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="physio-pack-title">
+        <div className="modal-header"><span className="modal-icon"><Package size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">VENDER PAQUETE</p>
+        <h2 id="physio-pack-title">Paquete de fisioterapia</h2>
+        <p className="modal-subtitle">La venta entra al libro de ventas y a la caja como un servicio. Las sesiones se descuentan al marcar cada asistencia y vencen al terminar la vigencia.</p>
+        <form onSubmit={submit}>
+          <div className="class-roster-search">
+            {member ? (
+              <div className="panel-header access-list-heading">
+                <div className="person-cell"><span className={`person-avatar ${memberAvatarColor(member.id)}`}>{`${member.first_name[0] ?? ""}${member.last_name[0] ?? ""}`.toUpperCase()}</span><span><strong>{member.first_name} {member.last_name}</strong><small>{member.email ?? member.phone ?? "Socio"}</small></span></div>
+                <button type="button" className="text-button" onClick={() => setMember(null)}>Cambiar</button>
+              </div>
+            ) : (
+              <>
+                <label className="form-field"><span>Socio</span><input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="Buscar por nombre o correo" autoComplete="off" autoFocus /></label>
+                {searching && <p className="manual-hint">Buscando socios…</p>}
+                {memberResults.length > 0 && (
+                  <ul className="manual-results">
+                    {memberResults.map((item) => (
+                      <li key={item.id}>
+                        <button type="button" onClick={() => { setMember(item); setMemberQuery(""); setMemberResults([]); }}>
+                          <span className="person-cell"><span className={`person-avatar ${memberAvatarColor(item.id)}`}>{`${item.first_name[0] ?? ""}${item.last_name[0] ?? ""}`.toUpperCase()}</span><span><strong>{item.first_name} {item.last_name}</strong><small>{item.email ?? item.phone ?? "Socio"}</small></span></span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+          </div>
+          <label className="form-field"><span>Paquete</span><select value={offerId} onChange={(event) => setOfferId(event.target.value)}><option value="">Selecciona…</option>{activeOffers.map((offer) => <option key={offer.id} value={offer.id}>{offer.name} · {offer.sessions} sesiones · {formatMoney(offer.price_cents)}</option>)}</select></label>
+          <label className="form-field"><span>Forma de pago</span><select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as PhysioPaymentMethod)}><option value="cash">Efectivo</option><option value="card">Tarjeta</option><option value="transfer">Transferencia</option><option value="account">Cuenta del socio</option></select></label>
+          {selectedOffer && (
+            <div className="modal-note">
+              <ShieldCheck size={16} />
+              <span>{selectedOffer.service_name} · {selectedOffer.sessions} sesiones · vigencia {selectedOffer.validity_days} días · {formatMoney(selectedOffer.price_cents)}{selectedOffer.savings_cents > 0 ? ` (ahorro ${formatMoney(selectedOffer.savings_cents)})` : ""}. El pago en efectivo requiere un turno de caja abierto.</span>
+            </div>
+          )}
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}><Check size={16} />{busy ? "Vendiendo…" : "Vender paquete"}</button></div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function PhysioServiceModal({ service, onClose, onSaved, onUnauthorized }: { service: BackendPhysioService | null; onClose: () => void; onSaved: (message: string) => void; onUnauthorized: () => void }) {
+  const editing = service !== null;
+  const [code, setCode] = useState(service?.code ?? "");
+  const [name, setName] = useState(service?.name ?? "");
+  const [description, setDescription] = useState(service?.description ?? "");
+  const [duration, setDuration] = useState(String(service?.duration_minutes ?? 45));
+  const [price, setPrice] = useState(service ? (service.price_cents / 100).toFixed(2) : "");
+  const [active, setActive] = useState(service?.is_active ?? true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!code.trim()) { setError("El código es obligatorio."); return; }
+    if (!name.trim()) { setError("El nombre es obligatorio."); return; }
+    const durationValue = Number.parseInt(duration, 10);
+    if (!Number.isFinite(durationValue) || durationValue <= 0) { setError("Indica una duración válida en minutos."); return; }
+    const priceCents = parseMoneyToCents(price);
+    if (priceCents === null) { setError("El precio no es válido."); return; }
+    const body = {
+      code: code.trim(),
+      name: name.trim(),
+      description: description.trim() || null,
+      duration_minutes: durationValue,
+      price_cents: priceCents,
+      is_active: active,
+    };
+    setBusy(true);
+    setError("");
+    try {
+      const response = editing && service
+        ? await fetch(`/api/admin/physio/services/${service.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        : await fetch("/api/admin/physio/services", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) { setError(payload.detail || "No se pudo guardar el servicio."); return; }
+      onSaved(editing ? "Servicio actualizado." : `Servicio creado: ${name.trim()}.`);
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="physio-service-title">
+        <div className="modal-header"><span className="modal-icon"><Activity size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">CATÁLOGO DE FISIOTERAPIA</p>
+        <h2 id="physio-service-title">{editing ? service?.name : "Nuevo servicio"}</h2>
+        <p className="modal-subtitle">La duración define el fin de cada cita en la agenda; el precio es el de una sesión suelta.</p>
+        <form onSubmit={submit}>
+          <div className="form-row">
+            <label className="form-field"><span>Código</span><input value={code} onChange={(event) => setCode(event.target.value)} placeholder="Ej. DESC" maxLength={40} autoFocus /></label>
+            <label className="form-field"><span>Duración (minutos)</span><input value={duration} onChange={(event) => setDuration(event.target.value)} inputMode="numeric" /></label>
+          </div>
+          <label className="form-field"><span>Nombre</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Ej. Descarga muscular" maxLength={160} /></label>
+          <label className="form-field"><span>Descripción (opcional)</span><input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Técnica, indicaciones…" maxLength={400} /></label>
+          <label className="form-field"><span>Precio por sesión</span><input value={price} onChange={(event) => setPrice(event.target.value)} placeholder="0.00" inputMode="decimal" /></label>
+          <label className="form-field form-check"><span><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} />Servicio activo para agendar y vender</span></label>
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}><Check size={16} />{busy ? "Guardando…" : editing ? "Guardar cambios" : "Crear servicio"}</button></div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function PhysioOfferModal({ offer, services, onClose, onSaved, onUnauthorized }: { offer: BackendPhysioOffer | null; services: BackendPhysioService[]; onClose: () => void; onSaved: (message: string) => void; onUnauthorized: () => void }) {
+  const editing = offer !== null;
+  const activeServices = services.filter((service) => service.is_active || service.id === offer?.service_id);
+  const [serviceId, setServiceId] = useState(offer?.service_id ?? activeServices[0]?.id ?? "");
+  const [name, setName] = useState(offer?.name ?? "");
+  const [sessions, setSessions] = useState(String(offer?.sessions ?? 4));
+  const [price, setPrice] = useState(offer ? (offer.price_cents / 100).toFixed(2) : "");
+  const [validity, setValidity] = useState(String(offer?.validity_days ?? 31));
+  const [active, setActive] = useState(offer?.is_active ?? true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const selectedService = activeServices.find((service) => service.id === serviceId) ?? null;
+  const sessionsValue = Number.parseInt(sessions, 10);
+  const listPriceCents = selectedService && Number.isFinite(sessionsValue) && sessionsValue > 0 ? selectedService.price_cents * sessionsValue : null;
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editing && !serviceId) { setError("Selecciona el servicio del paquete."); return; }
+    if (!name.trim()) { setError("El nombre del paquete es obligatorio."); return; }
+    if (!Number.isFinite(sessionsValue) || sessionsValue < 1) { setError("Indica cuántas sesiones incluye el paquete."); return; }
+    const priceCents = parseMoneyToCents(price);
+    if (priceCents === null) { setError("El precio del paquete no es válido."); return; }
+    const validityValue = Number.parseInt(validity, 10);
+    if (!Number.isFinite(validityValue) || validityValue < 1) { setError("Indica una vigencia válida en días."); return; }
+    if (listPriceCents !== null && priceCents > listPriceCents) { setError(`El precio no puede superar la suma de las sesiones sueltas (${formatMoney(listPriceCents)}).`); return; }
+    const body = { name: name.trim(), sessions: sessionsValue, price_cents: priceCents, validity_days: validityValue, is_active: active };
+    setBusy(true);
+    setError("");
+    try {
+      const response = editing && offer
+        ? await fetch(`/api/admin/physio/offers/${offer.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        : await fetch("/api/admin/physio/offers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, service_id: serviceId }) });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) { setError(payload.detail || "No se pudo guardar el paquete."); return; }
+      onSaved(editing ? "Paquete actualizado." : `Paquete creado: ${name.trim()}.`);
+    } catch {
+      setError("No se pudo conectar con el backend.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="physio-offer-title">
+        <div className="modal-header"><span className="modal-icon"><Package size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">CATÁLOGO DE FISIOTERAPIA</p>
+        <h2 id="physio-offer-title">{editing ? offer?.name : "Nuevo paquete"}</h2>
+        <p className="modal-subtitle">El paquete se vende una sola vez y queda prepagado. El precio de lista usa el precio actual del servicio por el número de sesiones.</p>
+        <form onSubmit={submit}>
+          <label className="form-field"><span>Servicio</span><select value={serviceId} onChange={(event) => setServiceId(event.target.value)} disabled={editing}><option value="">Selecciona…</option>{activeServices.map((service) => <option key={service.id} value={service.id}>{service.name}</option>)}</select></label>
+          <label className="form-field"><span>Nombre del paquete</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Ej. Paquete de 4 descargas" maxLength={160} autoFocus /></label>
+          <div className="form-row">
+            <label className="form-field"><span>Sesiones incluidas</span><input value={sessions} onChange={(event) => setSessions(event.target.value)} inputMode="numeric" /></label>
+            <label className="form-field"><span>Vigencia (días)</span><input value={validity} onChange={(event) => setValidity(event.target.value)} inputMode="numeric" /></label>
+          </div>
+          <label className="form-field"><span>Precio del paquete</span><input value={price} onChange={(event) => setPrice(event.target.value)} placeholder="0.00" inputMode="decimal" /></label>
+          {listPriceCents !== null && <div className="modal-note"><ShieldCheck size={16} /><span>Precio de lista: {formatMoney(listPriceCents)} por {sessionsValue} sesión(es) sueltas. Un precio menor se muestra como ahorro en la venta.</span></div>}
+          <label className="form-field form-check"><span><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} />Paquete activo para vender</span></label>
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}><Check size={16} />{busy ? "Guardando…" : editing ? "Guardar cambios" : "Crear paquete"}</button></div>
+        </form>
+      </section>
+    </div>
   );
 }
 

@@ -83,6 +83,10 @@ la lista al validar un código.
 - 6 códigos por socio cada 10 minutos.
 - 10 intentos por kiosco cada minuto.
 - Códigos guardados como HMAC; el token del kiosco como SHA-256.
+- Los códigos ya inutilizables y los intentos antiguos se purgan en el backend con
+  `backend/purge_access_data.py` (7 días para códigos y 30 para intentos por
+  defecto, configurable); la tablet no interviene y la bitácora de accesos no se
+  purga.
 - El token caduca a los 90 días (`KIOSK_TOKEN_LIFETIME`) y la rotación es manual y
   presencial; no hay aviso previo automático ni aprovisionamiento remoto, y la
   caducidad no revoca el dispositivo (sigue apareciendo como «Caducado» y se puede

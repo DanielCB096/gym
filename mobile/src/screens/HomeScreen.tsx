@@ -27,6 +27,7 @@ type Props = {
   onLogout: () => void;
   onOpenAccessCode: () => void;
   onOpenClasses: () => void;
+  onOpenPhysio: () => void;
   onOpenRoutines: () => void;
   onOpenPayments: () => void;
   onOpenInvoices: () => void;
@@ -43,6 +44,7 @@ export function HomeScreen({
   onLogout,
   onOpenAccessCode,
   onOpenClasses,
+  onOpenPhysio,
   onOpenRoutines,
   onOpenPayments,
   onOpenInvoices,
@@ -180,6 +182,25 @@ export function HomeScreen({
               <Text style={styles.navTitle}>Clases y reservas</Text>
               <Text style={sharedStyles.body}>
                 Consulta la cartelera y aparta tu lugar.
+              </Text>
+            </View>
+            <Text style={styles.navChevron}>→</Text>
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Ver fisioterapia"
+            onPress={onOpenPhysio}
+            style={({ pressed }) => [
+              sharedStyles.card,
+              styles.navCard,
+              pressed && styles.navCardPressed,
+            ]}
+          >
+            <View style={styles.navText}>
+              <Text style={styles.navTitle}>Fisioterapia</Text>
+              <Text style={sharedStyles.body}>
+                Consulta tus sesiones, tu próxima cita y tu historial.
               </Text>
             </View>
             <Text style={styles.navChevron}>→</Text>

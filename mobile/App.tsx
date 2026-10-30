@@ -13,6 +13,7 @@ import { InvoicesScreen } from "./src/screens/InvoicesScreen";
 import { LoginScreen } from "./src/screens/LoginScreen";
 import { NotificationsScreen } from "./src/screens/NotificationsScreen";
 import { PaymentsScreen } from "./src/screens/PaymentsScreen";
+import { PhysioScreen } from "./src/screens/PhysioScreen";
 import { ProgressPhotosScreen } from "./src/screens/ProgressPhotosScreen";
 import { RoutineDetailScreen } from "./src/screens/RoutineDetailScreen";
 import { RoutinesScreen } from "./src/screens/RoutinesScreen";
@@ -27,6 +28,7 @@ type Stage =
   | "home"
   | "accessCode"
   | "classes"
+  | "physio"
   | "routines"
   | "routineDetail"
   | "progressPhotos"
@@ -183,6 +185,10 @@ export default function App() {
     setStage("classes");
   }
 
+  function handleOpenPhysio() {
+    setStage("physio");
+  }
+
   function handleOpenAccessCode() {
     setStage("accessCode");
   }
@@ -263,6 +269,7 @@ export default function App() {
             onLogout={handleLogout}
             onOpenAccessCode={handleOpenAccessCode}
             onOpenClasses={handleOpenClasses}
+            onOpenPhysio={handleOpenPhysio}
             onOpenRoutines={handleOpenRoutines}
             onOpenPayments={handleOpenPayments}
             onOpenInvoices={handleOpenInvoices}
@@ -279,6 +286,13 @@ export default function App() {
         ) : null}
         {stage === "classes" && token ? (
           <ClassesScreen
+            token={token}
+            onBack={() => setStage("home")}
+            onSessionExpired={() => void handleSessionExpired()}
+          />
+        ) : null}
+        {stage === "physio" && token ? (
+          <PhysioScreen
             token={token}
             onBack={() => setStage("home")}
             onSessionExpired={() => void handleSessionExpired()}
@@ -338,6 +352,7 @@ export default function App() {
             onUnreadChange={setUnreadNotifications}
             onOpenInvoices={() => setStage("invoices")}
             onOpenClasses={() => setStage("classes")}
+            onOpenPhysio={() => setStage("physio")}
           />
         ) : null}
       </SafeAreaView>

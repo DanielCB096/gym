@@ -215,6 +215,7 @@ class Sale(SQLModel, table=True):
         Index("ix_sales_member_sold", "member_id", "sold_at"),
         Index("ix_sales_origin", "origin"),
         Index("ix_sales_class_reservation", "class_reservation_id"),
+        Index("ix_sales_physio_appointment", "physio_appointment_id"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -259,6 +260,15 @@ class Sale(SQLModel, table=True):
         sa_column=Column(
             Uuid(as_uuid=True),
             ForeignKey("class_reservations.id", ondelete="RESTRICT"),
+        ),
+    )
+    # Same idea for the physiotherapy room: the single session charged at
+    # attendance points back to its appointment.
+    physio_appointment_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("physio_appointments.id", ondelete="RESTRICT"),
         ),
     )
     note: str | None = Field(default=None, max_length=200)

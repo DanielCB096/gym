@@ -95,6 +95,36 @@ export type MemberClassPage = {
   pages: number;
 };
 
+export type MemberPhysioPack = {
+  id: string;
+  offer_name: string;
+  service_name: string;
+  sessions_total: number;
+  sessions_used: number;
+  remaining_sessions: number;
+  price_cents: number;
+  purchased_at: string;
+  valid_until: string;
+  status: "active" | "exhausted" | "expired";
+};
+
+export type MemberPhysioAppointment = {
+  id: string;
+  service_name: string;
+  therapist_name: string;
+  room: string | null;
+  starts_at: string;
+  ends_at: string;
+  status: "scheduled" | "attended" | "no_show" | "cancelled";
+  covered_by_pack: boolean;
+};
+
+export type MemberPhysioOverview = {
+  packs: MemberPhysioPack[];
+  next_appointment: MemberPhysioAppointment | null;
+  history: MemberPhysioAppointment[];
+};
+
 export type MemberRoutineAssignment = {
   id: string;
   routine_id: string;

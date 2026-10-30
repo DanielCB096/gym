@@ -90,6 +90,7 @@ TICKET_MANTENIMIENTO ||--o{ HISTORIAL_MANTENIMIENTO : documenta
 - `Rutina` mantiene su relación con socio y entrenador.
 - `Empleado`, `Usuario`, `Rol`, `Permiso`, `AsistenciaEmpleado`, `Nomina` y entidades relacionadas soportan personal, autorización y nómina.
 - `Equipo`, `TicketMantenimiento` e `HistorialMantenimiento` registran disponibilidad, atención y costos técnicos.
+- `ServicioFisioterapia`, `OfertaFisioterapia`, `PaqueteFisioterapia` y `CitaFisioterapia` modelan el consultorio: catálogo con precio suelto, paquete prepagado con créditos y vigencia, y cita con fisioterapeuta, horario y estado; el cobro de una sesión suelta se liga a su cita por `sales.physio_appointment_id`.
 
 ## Relaciones importantes
 
@@ -211,6 +212,25 @@ Los **avisos** viven en dos tablas espejo del módulo transversal `app.modules.n
 | un empleado puede no tener cuenta del panel | si `staff_user_for_employee` no encuentra una cuenta **activa**, el aviso se omite en silencio y la operación de dominio se completa igual |
 
 Los **recordatorios** no necesitan programador: `_ensure_membership_expiring` lo calcula al leer la bandeja sobre la membresía `active` que termina primero y lo escribe con `dedupe_key = membership_expiring:<membership_id>:<7|3|1>`, de modo que hay **un aviso por ventana** y no uno por día; `_ensure_class_reminders` hace lo mismo con cada reserva `reserved` de una clase `scheduled` que empieza en 24 o 2 horas, con `dedupe_key = class_reminder:<reservation_id>:<24|2>` (ADR-035). Los demás avisos los escriben los servicios de `routines` y `classes` dentro de la misma transacción del cambio que anuncian: la confirmación `class_reserved` se inserta en `reserve_seat` junto con la reserva y solo cuando queda `reserved` (ADR-036); la cancelación de una clase escribe un `class_cancelled` por cada reserva viva —sentada o en espera, resuelta por `_live_reservations`— y un cambio de inicio o fin escribe `class_rescheduled` con las dos ventanas (ADR-037). El único aviso que se cierra solo es el pendiente de revisión: `review_workout` sella `resolved_at` en su misma transacción y desde ahí el aviso deja de contar para el panel pero sigue en la lista (ADR-038).
+
+## Esquema físico: fisioterapia
+
+El incremento 1 del módulo 10 (ADR-039) agrega cuatro tablas con la migración `20261029_0055_physiotherapy.py` y la columna `sales.physio_appointment_id` (FK `RESTRICT` con índice), que liga el cobro de una sesión suelta a su cita. El paquete **no guarda estado**: el saldo es `sessions_total - sessions_used` y el estado (`active`/`exhausted`/`expired`) se deriva contra `valid_until`.
+
+| Tabla | Responsabilidad | Restricciones principales |
+|---|---|---|
+| `physio_services` | servicio del catálogo con duración y precio suelto | `code` normalizado a mayúsculas con índice único `lower(code)`; `price_cents >= 0`; `duration_minutes > 0` |
+| `physio_offers` | paquete vendible: sesiones, precio final, precio de lista, vigencia y modo de pago | FK `RESTRICT` al servicio; nombre único `lower(name)`; `payment_mode = 'single'`; `price_cents <= list_price_cents`; `sessions > 0` |
+| `physio_packs` | saldo prepagado de un socio: créditos totales, usados, vigencia y venta que lo originó | FK `RESTRICT` a socio y oferta; `sale_id` único; `0 <= sessions_used <= sessions_total`; índice `(member_id, valid_until)` |
+| `physio_appointments` | cita con socio, servicio, paquete ligado (opcional), fisioterapeuta, sala, horario y estado | FKs `RESTRICT`; `status` en `scheduled`/`attended`/`no_show`/`cancelled` (`ck_physio_appointments_status`); `ends_at > starts_at`; índice único parcial `uq_physio_appointments_therapist_start` sobre `(therapist_employee_id, starts_at)` donde el estado no es `cancelled`; índices por `starts_at`, `(member_id, starts_at)` y `pack_id` |
+
+| Relación | Regla |
+|---|---|
+| una cita puede estar cubierta por un paquete o cobrarse suelta | `pack_id` es anulable y se reasigna si al asistir el ligado ya no tenía crédito; el cobro suelto se reconoce por `sales.physio_appointment_id` y el SKU `FISIO` |
+| una venta de paquete origina créditos | `physio_packs.sale_id` es único y no hay columna inversa en `sales`: el paquete no se reembolsa en la fase 1 |
+| un crédito se consume una sola vez | `sessions_used` se incrementa bajo `SELECT ... FOR UPDATE` de la cita y del paquete, con la garantía de PostgreSQL (no-op en SQLite) y prueba opt-in |
+| dos citas del mismo fisioterapeuta no comparten inicio | lo impide el índice único parcial; el traslape parcial se valida en el servicio, no en la base |
+| los precios de la oferta son una foto | `list_price_cents` y `price_cents` se congelan al crear la oferta y no se recalculan si cambia el precio suelto |
 
 ## Esquema físico: turnos y asistencia del personal
 

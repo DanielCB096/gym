@@ -102,6 +102,41 @@ from app.modules.classes import (
     reserve_seat,
     update_class_session,
 )
+from app.modules.physio import (
+    UNSET as PHYSIO_UNSET,
+    DuplicatePhysioCode,
+    DuplicatePhysioOffer,
+    InvalidPhysioData,
+    InvalidPhysioState,
+    PhysioAppointmentItem,
+    PhysioAppointmentNotFound,
+    PhysioChargeFailed,
+    PhysioError,
+    PhysioMemberUnavailable,
+    PhysioOfferItem,
+    PhysioOfferNotFound,
+    PhysioPackItem,
+    PhysioServiceItem,
+    PhysioServiceNotFound,
+    PhysioSlotConflict,
+    PhysioTherapistItem,
+    PhysioTherapistUnavailable,
+    cancel_physio_appointment,
+    close_physio_day,
+    create_physio_appointment,
+    create_physio_offer,
+    create_physio_service,
+    list_physio_appointments,
+    list_physio_offers,
+    list_physio_packs,
+    list_physio_services,
+    list_physio_therapists,
+    mark_physio_attendance,
+    move_physio_appointment,
+    sell_physio_pack,
+    update_physio_offer,
+    update_physio_service,
+)
 from app.modules.routines import (
     AssignmentDetail,
     AssignmentItem,
@@ -440,6 +475,10 @@ from app.modules.portal.payments import (
     MemberPaymentItem,
     get_member_account,
     list_member_payments,
+)
+from app.modules.portal.physio import (
+    MemberPhysioAppointmentItem,
+    member_physio_overview,
 )
 from app.modules.portal.service import (
     AuthenticatedMember,
@@ -785,6 +824,36 @@ class MemberClassDirectoryResponse(BaseModel):
     page: int
     page_size: int
     pages: int
+
+
+class MemberPhysioPackResponse(BaseModel):
+    id: UUID
+    offer_name: str
+    service_name: str
+    sessions_total: int
+    sessions_used: int
+    remaining_sessions: int
+    price_cents: int
+    purchased_at: datetime
+    valid_until: datetime
+    status: str
+
+
+class MemberPhysioAppointmentResponse(BaseModel):
+    id: UUID
+    service_name: str
+    therapist_name: str
+    room: str | None
+    starts_at: datetime
+    ends_at: datetime
+    status: str
+    covered_by_pack: bool
+
+
+class MemberPhysioResponse(BaseModel):
+    packs: list[MemberPhysioPackResponse]
+    next_appointment: MemberPhysioAppointmentResponse | None
+    history: list[MemberPhysioAppointmentResponse]
 
 
 class CreateEmployeeRequest(BaseModel):
@@ -1466,6 +1535,159 @@ class MarkAttendanceRequest(BaseModel):
     attended: bool
     # Required the first time a premium seat is charged; ignored otherwise.
     payment_method: Literal["cash", "card", "transfer", "account"] | None = None
+
+
+class CreatePhysioServiceRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=400)
+    duration_minutes: int = Field(ge=1, le=480)
+    price_cents: int = Field(ge=0)
+    is_active: bool = True
+
+
+class UpdatePhysioServiceRequest(BaseModel):
+    code: str | None = Field(default=None, min_length=1, max_length=40)
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=400)
+    duration_minutes: int | None = Field(default=None, ge=1, le=480)
+    price_cents: int | None = Field(default=None, ge=0)
+    is_active: bool | None = None
+
+
+class PhysioServiceResponse(BaseModel):
+    id: UUID
+    code: str
+    name: str
+    description: str | None
+    duration_minutes: int
+    price_cents: int
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreatePhysioOfferRequest(BaseModel):
+    service_id: UUID
+    name: str = Field(min_length=1, max_length=160)
+    sessions: int = Field(ge=1, le=52)
+    price_cents: int = Field(ge=0)
+    validity_days: int = Field(default=31, ge=1, le=366)
+
+
+class UpdatePhysioOfferRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    sessions: int | None = Field(default=None, ge=1, le=52)
+    price_cents: int | None = Field(default=None, ge=0)
+    validity_days: int | None = Field(default=None, ge=1, le=366)
+    is_active: bool | None = None
+
+
+class PhysioOfferResponse(BaseModel):
+    id: UUID
+    service_id: UUID
+    service_name: str
+    name: str
+    sessions: int
+    price_cents: int
+    list_price_cents: int
+    savings_cents: int
+    discount_percent: int
+    validity_days: int
+    payment_mode: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class PhysioTherapistResponse(BaseModel):
+    id: UUID
+    name: str
+    job_title: str
+
+
+class PhysioPackResponse(BaseModel):
+    id: UUID
+    member_id: UUID
+    member_name: str
+    offer_id: UUID
+    offer_name: str
+    service_id: UUID
+    service_name: str
+    sale_id: UUID
+    sessions_total: int
+    sessions_used: int
+    remaining_sessions: int
+    price_cents: int
+    purchased_at: datetime
+    valid_until: datetime
+    status: str
+
+
+class SellPhysioPackRequest(BaseModel):
+    member_id: UUID
+    offer_id: UUID
+    payment_method: Literal["cash", "card", "transfer", "account"]
+
+
+class CreatePhysioAppointmentRequest(BaseModel):
+    member_id: UUID
+    service_id: UUID
+    therapist_employee_id: UUID
+    starts_at: datetime
+    room: str | None = Field(default=None, max_length=80)
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class UpdatePhysioAppointmentRequest(BaseModel):
+    starts_at: datetime | None = None
+    therapist_employee_id: UUID | None = None
+    room: str | None = Field(default=None, max_length=80)
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class PhysioAttendanceRequest(BaseModel):
+    attended: bool
+    # Required when the visit is not covered by a pack.
+    payment_method: Literal["cash", "card", "transfer", "account"] | None = None
+
+
+class ClosePhysioDayRequest(BaseModel):
+    date: date
+
+
+class PhysioAppointmentResponse(BaseModel):
+    id: UUID
+    member_id: UUID
+    member_name: str
+    service_id: UUID
+    service_name: str
+    service_price_cents: int
+    pack_id: UUID | None
+    pack_remaining_sessions: int | None
+    therapist_employee_id: UUID
+    therapist_name: str
+    room: str | None
+    starts_at: datetime
+    ends_at: datetime
+    status: str
+    notes: str | None
+    booked_by: UUID | None
+    marked_at: datetime | None
+    marked_by: UUID | None
+    cancelled_at: datetime | None
+    cancelled_by: UUID | None
+    created_at: datetime
+    updated_at: datetime
+    charge_sale_id: UUID | None
+    charge_cents: int | None
+    charge_payment_method: str | None
+    charge_status: str | None
+
+
+class ClosePhysioDayResponse(BaseModel):
+    closed: int
+    appointments: list[PhysioAppointmentResponse]
 
 
 class ExerciseResponse(BaseModel):
@@ -3170,6 +3392,46 @@ def cancel_member_reservation_endpoint(
     except ClassesError as error:
         raise _classes_http_error(error) from error
     return _member_reservation_response(reservation)
+
+
+@app.get(
+    "/member/physio",
+    response_model=MemberPhysioResponse,
+    tags=["member self-service"],
+)
+def member_physio(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberPhysioResponse:
+    try:
+        overview = member_physio_overview(session, member.member_id)
+    except MemberPortalError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return MemberPhysioResponse(
+        packs=[
+            MemberPhysioPackResponse(
+                id=pack.id,
+                offer_name=pack.offer_name,
+                service_name=pack.service_name,
+                sessions_total=pack.sessions_total,
+                sessions_used=pack.sessions_used,
+                remaining_sessions=pack.remaining_sessions,
+                price_cents=pack.price_cents,
+                purchased_at=pack.purchased_at,
+                valid_until=pack.valid_until,
+                status=pack.status,
+            )
+            for pack in overview.packs
+        ],
+        next_appointment=(
+            _member_physio_appointment_response(overview.next_appointment)
+            if overview.next_appointment is not None
+            else None
+        ),
+        history=[
+            _member_physio_appointment_response(item) for item in overview.history
+        ],
+    )
 
 
 @app.get(
@@ -6282,6 +6544,450 @@ def mark_attendance_endpoint(
     return _reservation_response(item)
 
 
+# --------------------------------------------------------------------------- #
+# Physiotherapy
+# --------------------------------------------------------------------------- #
+
+_PHYSIO_ERROR_STATUS: tuple[tuple[type[PhysioError], int], ...] = (
+    (InvalidPhysioData, status.HTTP_422_UNPROCESSABLE_ENTITY),
+    (PhysioMemberUnavailable, status.HTTP_422_UNPROCESSABLE_ENTITY),
+    (PhysioTherapistUnavailable, status.HTTP_422_UNPROCESSABLE_ENTITY),
+    (PhysioServiceNotFound, status.HTTP_404_NOT_FOUND),
+    (PhysioOfferNotFound, status.HTTP_404_NOT_FOUND),
+    (PhysioAppointmentNotFound, status.HTTP_404_NOT_FOUND),
+    (DuplicatePhysioCode, status.HTTP_409_CONFLICT),
+    (DuplicatePhysioOffer, status.HTTP_409_CONFLICT),
+    (PhysioSlotConflict, status.HTTP_409_CONFLICT),
+    (InvalidPhysioState, status.HTTP_409_CONFLICT),
+    (PhysioChargeFailed, status.HTTP_409_CONFLICT),
+)
+
+
+def _physio_http_error(error: PhysioError) -> HTTPException:
+    for error_type, code in _PHYSIO_ERROR_STATUS:
+        if isinstance(error, error_type):
+            return HTTPException(status_code=code, detail=str(error))
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+
+
+def _physio_service_response(item: PhysioServiceItem) -> PhysioServiceResponse:
+    return PhysioServiceResponse(
+        id=item.id,
+        code=item.code,
+        name=item.name,
+        description=item.description,
+        duration_minutes=item.duration_minutes,
+        price_cents=item.price_cents,
+        is_active=item.is_active,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def _physio_offer_response(item: PhysioOfferItem) -> PhysioOfferResponse:
+    return PhysioOfferResponse(
+        id=item.id,
+        service_id=item.service_id,
+        service_name=item.service_name,
+        name=item.name,
+        sessions=item.sessions,
+        price_cents=item.price_cents,
+        list_price_cents=item.list_price_cents,
+        savings_cents=item.savings_cents,
+        discount_percent=item.discount_percent,
+        validity_days=item.validity_days,
+        payment_mode=item.payment_mode,
+        is_active=item.is_active,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def _physio_therapist_response(item: PhysioTherapistItem) -> PhysioTherapistResponse:
+    return PhysioTherapistResponse(id=item.id, name=item.name, job_title=item.job_title)
+
+
+def _physio_pack_response(item: PhysioPackItem) -> PhysioPackResponse:
+    return PhysioPackResponse(
+        id=item.id,
+        member_id=item.member_id,
+        member_name=item.member_name,
+        offer_id=item.offer_id,
+        offer_name=item.offer_name,
+        service_id=item.service_id,
+        service_name=item.service_name,
+        sale_id=item.sale_id,
+        sessions_total=item.sessions_total,
+        sessions_used=item.sessions_used,
+        remaining_sessions=item.remaining_sessions,
+        price_cents=item.price_cents,
+        purchased_at=item.purchased_at,
+        valid_until=item.valid_until,
+        status=item.status,
+    )
+
+
+def _physio_appointment_response(item: PhysioAppointmentItem) -> PhysioAppointmentResponse:
+    return PhysioAppointmentResponse(
+        id=item.id,
+        member_id=item.member_id,
+        member_name=item.member_name,
+        service_id=item.service_id,
+        service_name=item.service_name,
+        service_price_cents=item.service_price_cents,
+        pack_id=item.pack_id,
+        pack_remaining_sessions=item.pack_remaining_sessions,
+        therapist_employee_id=item.therapist_employee_id,
+        therapist_name=item.therapist_name,
+        room=item.room,
+        starts_at=item.starts_at,
+        ends_at=item.ends_at,
+        status=item.status,
+        notes=item.notes,
+        booked_by=item.booked_by,
+        marked_at=item.marked_at,
+        marked_by=item.marked_by,
+        cancelled_at=item.cancelled_at,
+        cancelled_by=item.cancelled_by,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+        charge_sale_id=item.charge_sale_id,
+        charge_cents=item.charge_cents,
+        charge_payment_method=item.charge_payment_method,
+        charge_status=item.charge_status,
+    )
+
+
+@app.get(
+    "/admin/physio/services",
+    response_model=list[PhysioServiceResponse],
+    tags=["physio"],
+)
+def list_physio_services_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.read"))],
+) -> list[PhysioServiceResponse]:
+    return [_physio_service_response(item) for item in list_physio_services(session)]
+
+
+@app.post(
+    "/admin/physio/services",
+    response_model=PhysioServiceResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["physio"],
+)
+def create_physio_service_endpoint(
+    request: CreatePhysioServiceRequest,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+) -> PhysioServiceResponse:
+    try:
+        item = create_physio_service(
+            session,
+            code=request.code,
+            name=request.name,
+            description=request.description,
+            duration_minutes=request.duration_minutes,
+            price_cents=request.price_cents,
+            is_active=request.is_active,
+        )
+    except PhysioError as error:
+        raise _physio_http_error(error) from error
+    return _physio_service_response(item)
+
+
+@app.patch(
+    "/admin/physio/services/{service_id}",
+    response_model=PhysioServiceResponse,
+    tags=["physio"],
+)
+def update_physio_service_endpoint(
+    service_id: UUID,
+    request: UpdatePhysioServiceRequest,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+) -> PhysioServiceResponse:
+    provided = request.model_fields_set
+    try:
+        item = update_physio_service(
+            session,
+            service_id,
+            code=request.code,
+            name=request.name,
+            description=request.description if "description" in provided else PHYSIO_UNSET,
+            duration_minutes=request.duration_minutes,
+            price_cents=request.price_cents,
+            is_active=request.is_active,
+        )
+    except PhysioError as error:
+        raise _physio_http_error(error) from error
+    return _physio_service_response(item)
+
+
+@app.get(
+    "/admin/physio/offers",
+    response_model=list[PhysioOfferResponse],
+    tags=["physio"],
+)
+def list_physio_offers_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.read"))],
+) -> list[PhysioOfferResponse]:
+    return [_physio_offer_response(item) for item in list_physio_offers(session)]
+
+
+@app.post(
+    "/admin/physio/offers",
+    response_model=PhysioOfferResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["physio"],
+)
+def create_physio_offer_endpoint(
+    request: CreatePhysioOfferRequest,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+) -> PhysioOfferResponse:
+    try:
+        item = create_physio_offer(
+            session,
+            service_id=request.service_id,
+            name=request.name,
+            sessions=request.sessions,
+            price_cents=request.price_cents,
+            validity_days=request.validity_days,
+        )
+    except PhysioError as error:
+        raise _physio_http_error(error) from error
+    return _physio_offer_response(item)
+
+
+@app.patch(
+    "/admin/physio/offers/{offer_id}",
+    response_model=PhysioOfferResponse,
+    tags=["physio"],
+)
+def update_physio_offer_endpoint(
+    offer_id: UUID,
+    request: UpdatePhysioOfferRequest,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+) -> PhysioOfferResponse:
+    try:
+        item = update_physio_offer(
+            session,
+            offer_id,
+            name=request.name,
+            sessions=request.sessions,
+            price_cents=request.price_cents,
+            validity_days=request.validity_days,
+            is_active=request.is_active,
+        )
+    except PhysioError as error:
+        raise _physio_http_error(error) from error
+    return _physio_offer_response(item)
+
+
+@app.get(
+    "/admin/physio/therapists",
+    response_model=list[PhysioTherapistResponse],
+    tags=["physio"],
+)
+def list_physio_therapists_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.read"))],
+) -> list[PhysioTherapistResponse]:
+    return [_physio_therapist_response(item) for item in list_physio_therapists(session)]
+
+
+@app.get(
+    "/admin/physio/appointments",
+    response_model=list[PhysioAppointmentResponse],
+    tags=["physio"],
+)
+def list_physio_appointments_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.read"))],
+    day: Annotated[date | None, Query(alias="date")] = None,
+    therapist_id: Annotated[UUID | None, Query()] = None,
+    status_filter: Annotated[
+        Literal["scheduled", "attended", "no_show", "cancelled"] | None,
+        Query(alias="status"),
+    ] = None,
+) -> list[PhysioAppointmentResponse]:
+    try:
+        items = list_physio_appointments(
+            session,
+            day=day,
+            therapist_id=therapist_id,
+            status=status_filter,
+            timezone_name=os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE),
+        )
+    except PhysioError as error:
+        raise _physio_http_error(error) from error
+    return [_physio_appointment_response(item) for item in items]
+
+
+@app.post(
+    "/admin/physio/appointments/close-day",
+    response_model=ClosePhysioDayResponse,
+    tags=["physio"],
+)
+def close_physio_day_endpoint(
+    request: ClosePhysioDayRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+) -> ClosePhysioDayResponse:
+    try:
+        items = close_physio_day(
+            session,
+            day=request.date,
+            actor_id=principal.user_id,
+            timezone_name=os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE),
+        )
+    except PhysioError as error:
+        raise _physio_http_error(error) from error
+    return ClosePhysioDayResponse(
+        closed=len(items),
+        appointments=[_physio_appointment_response(item) for item in items],
+    )
+
+
+@app.post(
+    "/admin/physio/appointments",
+    response_model=PhysioAppointmentResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["physio"],
+)
+def create_physio_appointment_endpoint(
+    request: CreatePhysioAppointmentRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+) -> PhysioAppointmentResponse:
+    try:
+        item = create_physio_appointment(
+            session,
+            member_id=request.member_id,
+            service_id=request.service_id,
+            therapist_employee_id=request.therapist_employee_id,
+            starts_at=request.starts_at,
+            room=request.room,
+            notes=request.notes,
+            actor_id=principal.user_id,
+        )
+    except PhysioError as error:
+        raise _physio_http_error(error) from error
+    return _physio_appointment_response(item)
+
+
+@app.patch(
+    "/admin/physio/appointments/{appointment_id}",
+    response_model=PhysioAppointmentResponse,
+    tags=["physio"],
+)
+def update_physio_appointment_endpoint(
+    appointment_id: UUID,
+    request: UpdatePhysioAppointmentRequest,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+) -> PhysioAppointmentResponse:
+    provided = request.model_fields_set
+    try:
+        item = move_physio_appointment(
+            session,
+            appointment_id,
+            starts_at=request.starts_at,
+            therapist_employee_id=request.therapist_employee_id,
+            room=request.room if "room" in provided else PHYSIO_UNSET,
+            notes=request.notes if "notes" in provided else PHYSIO_UNSET,
+        )
+    except PhysioError as error:
+        raise _physio_http_error(error) from error
+    return _physio_appointment_response(item)
+
+
+@app.post(
+    "/admin/physio/appointments/{appointment_id}/attendance",
+    response_model=PhysioAppointmentResponse,
+    tags=["physio"],
+)
+def mark_physio_attendance_endpoint(
+    appointment_id: UUID,
+    request: PhysioAttendanceRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+) -> PhysioAppointmentResponse:
+    try:
+        item = mark_physio_attendance(
+            session,
+            appointment_id,
+            attended=request.attended,
+            payment_method=request.payment_method,
+            actor_id=principal.user_id,
+        )
+    except PhysioError as error:
+        raise _physio_http_error(error) from error
+    return _physio_appointment_response(item)
+
+
+@app.post(
+    "/admin/physio/appointments/{appointment_id}/cancel",
+    response_model=PhysioAppointmentResponse,
+    tags=["physio"],
+)
+def cancel_physio_appointment_endpoint(
+    appointment_id: UUID,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+) -> PhysioAppointmentResponse:
+    try:
+        item = cancel_physio_appointment(
+            session, appointment_id, actor_id=principal.user_id
+        )
+    except PhysioError as error:
+        raise _physio_http_error(error) from error
+    return _physio_appointment_response(item)
+
+
+@app.get(
+    "/admin/physio/packs",
+    response_model=list[PhysioPackResponse],
+    tags=["physio"],
+)
+def list_physio_packs_endpoint(
+    member_id: Annotated[UUID, Query()],
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.read"))],
+) -> list[PhysioPackResponse]:
+    return [
+        _physio_pack_response(item)
+        for item in list_physio_packs(session, member_id=member_id)
+    ]
+
+
+@app.post(
+    "/admin/physio/packs",
+    response_model=PhysioPackResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["physio"],
+)
+def sell_physio_pack_endpoint(
+    request: SellPhysioPackRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+) -> PhysioPackResponse:
+    try:
+        item = sell_physio_pack(
+            session,
+            member_id=request.member_id,
+            offer_id=request.offer_id,
+            payment_method=request.payment_method,
+            actor_id=principal.user_id,
+        )
+    except PhysioError as error:
+        raise _physio_http_error(error) from error
+    return _physio_pack_response(item)
+
+
 _ROUTINES_ERROR_STATUS: tuple[tuple[type[RoutinesError], int], ...] = (
     (InvalidRoutineData, status.HTTP_422_UNPROCESSABLE_ENTITY),
     (EmptyRoutine, status.HTTP_422_UNPROCESSABLE_ENTITY),
@@ -8164,6 +8870,21 @@ def _member_class_response(item: MemberClassItem) -> MemberClassResponse:
             if item.reservation is not None
             else None
         ),
+    )
+
+
+def _member_physio_appointment_response(
+    item: MemberPhysioAppointmentItem,
+) -> MemberPhysioAppointmentResponse:
+    return MemberPhysioAppointmentResponse(
+        id=item.id,
+        service_name=item.service_name,
+        therapist_name=item.therapist_name,
+        room=item.room,
+        starts_at=item.starts_at,
+        ends_at=item.ends_at,
+        status=item.status,
+        covered_by_pack=item.covered_by_pack,
     )
 
 

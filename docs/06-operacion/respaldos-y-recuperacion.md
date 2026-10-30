@@ -9,6 +9,7 @@ Mantener continuidad del negocio con copias periódicas y una estrategia de recu
 - respaldo diario completo de PostgreSQL
 - almacenamiento en repositorio seguro y cifrado
 - retención escalonada por tipo de dato
+- purga diaria de códigos rotativos e intentos del kiosco con `backend/purge_access_data.py` (no toca la bitácora de accesos; ver `despliegue.md`)
 - prueba de restauración al menos mensual
 
 ## Flujos críticos

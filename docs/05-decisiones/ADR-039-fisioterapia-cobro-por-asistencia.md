@@ -1,7 +1,7 @@
 # ADR-039: Fisioterapia con cobro por asistencia y agenda de recepción
 
 - Fecha: 2026-10-29
-- Estado: aceptada (diseño; sin implementar)
+- Estado: aceptada (incrementos 1 y 2 implementados; incremento 3 pendiente)
 
 ## Contexto
 
@@ -23,7 +23,7 @@ Además, la agenda no la lleva el socio: la lleva recepción. La app del socio e
 - **El paquete es un saldo prepagado, no una suscripción.** Dos sesiones pagadas en una sola exhibición con 20 % de descuento sobre las dos sueltas. Se guarda el precio final y el de lista para mostrar el ahorro; el descuento vive en el catálogo y no se recalcula si cambia el precio suelto. No hay cargo recurrente, parcialidades ni renovación automática: si el club ofreciera parcialidades, el descuento no aplicaría.
 - **El crédito se descuenta al asistir, nunca al agendar.** Una cita que no se presenta deja el paquete intacto. Para que no se pierda por descuido, los créditos se consumen en orden de vencimiento y la vigencia es de 31 días desde la compra; los no usados vencen, porque el paquete es una mensualidad y no una cartera perpetua.
 - **La agenda la opera recepción.** `POST /admin/physio/appointments` y sus acciones de mover, cancelar y marcar viven en el panel con `physio.manage`; la app del socio solo consulta. El fisioterapeuta recibe `physio.read` para ver su día y `physio.manage` solo si el club decide que también marque la asistencia.
-- **El socio se entera por su bandeja.** Al agendar, mover o cancelar se escribe un aviso en `member_notifications` dentro de la misma transacción, con tres tipos nuevos que se agregan en el incremento 2. Sin push ni correo: el socio lo ve al abrir la app, como el resto de los avisos.
+- **El socio se entera por su bandeja.** Al agendar, mover o cancelar se escribe un aviso en `member_notifications` dentro de la misma transacción, con tres tipos nuevos (`physio_appointment_scheduled`, `physio_appointment_cancelled`, `physio_appointment_rescheduled`) y su migración del `CHECK` de tipos. Sin push ni correo: el socio lo ve al abrir la app, como el resto de los avisos, y puede saltar a su pantalla de fisioterapia desde el aviso.
 - **La marca es atómica y corregible.** La cita y el paquete se leen con `SELECT ... FOR UPDATE`; dos marcas simultáneas no cobran ni descuentan dos veces. La corrección `attended ↔ no_show` se permite dentro de las 24 horas siguientes al fin de la cita, revirtiendo el cargo y el crédito. La garantía de concurrencia es de PostgreSQL, así que se comprueba con una prueba opt-in contra `TEST_POSTGRES_URL`, igual que la del reembolso de servicios.
 
 ## Consecuencias y límites
@@ -42,6 +42,9 @@ Además, la agenda no la lleva el socio: la lleva recepción. La app del socio e
 ## Referencias
 
 - `docs/02-modulos/fisioterapia.md` (alcance, flujos, entidades e incrementos)
+- `backend/src/app/modules/physio/service.py` (catálogo, paquetes, agenda, asistencia y cierre del día)
+- `backend/alembic/versions/20261029_0055_physiotherapy.py`, `20261029_0056_physio_permissions.py`, `20261029_0057_physio_notifications.py`
+- `backend/src/app/modules/portal/physio.py` (modelo de lectura del socio)
 - `backend/src/app/modules/inventory/service.py` (`register_service_sale`, `refund_service_sale`)
 - `backend/src/app/modules/classes/service.py` (`mark_attendance`, `_charge_premium_attendance` como precedente)
 - `backend/src/app/modules/notifications/models.py`, `backend/src/app/modules/identity/service.py`

@@ -476,6 +476,100 @@ def notify_class_rescheduled(
     )
 
 
+def notify_physio_appointment_scheduled(
+    session: Session,
+    *,
+    member_id: UUID,
+    appointment_id: UUID,
+    service_name: str,
+    therapist_name: str,
+    starts_at: datetime,
+    now: datetime | None = None,
+) -> MemberNotification:
+    """Tell the member when the physiotherapy room expects them.
+
+    Reception books on their behalf, so this notice is the member's only record
+    of the slot. The key is per appointment and member: a retried request cannot
+    duplicate it, and moving the appointment announces itself with its own kind.
+    """
+    local = to_club_timezone(starts_at)
+    return create_notification(
+        session,
+        member_id=member_id,
+        kind="physio_appointment_scheduled",
+        title="Tu cita de fisioterapia está agendada",
+        body=(
+            f"Tienes {_clip(service_name, 60)} con {_clip(therapist_name, 60)} "
+            f"el {local:%d/%m/%Y} a las {local:%H:%M}. Llega 10 minutos antes."
+        ),
+        ref_id=appointment_id,
+        dedupe_key=f"physio_scheduled:{appointment_id}:{member_id}",
+        now=now,
+    )
+
+
+def notify_physio_appointment_cancelled(
+    session: Session,
+    *,
+    member_id: UUID,
+    appointment_id: UUID,
+    service_name: str,
+    starts_at: datetime,
+    now: datetime | None = None,
+) -> MemberNotification:
+    local = to_club_timezone(starts_at)
+    return create_notification(
+        session,
+        member_id=member_id,
+        kind="physio_appointment_cancelled",
+        title="Se canceló tu cita de fisioterapia",
+        body=(
+            f"La cita de {_clip(service_name, 60)} del {local:%d/%m/%Y} a las "
+            f"{local:%H:%M} fue cancelada. Si quieres otro horario, pídelo en recepción."
+        ),
+        ref_id=appointment_id,
+        dedupe_key=f"physio_cancelled:{appointment_id}:{member_id}",
+        now=now,
+    )
+
+
+def notify_physio_appointment_rescheduled(
+    session: Session,
+    *,
+    member_id: UUID,
+    appointment_id: UUID,
+    service_name: str,
+    old_starts_at: datetime,
+    starts_at: datetime,
+    now: datetime | None = None,
+) -> MemberNotification:
+    """Announce the move with both slots so it reads as a change.
+
+    The key carries the instant of the move, not the new slot, so moving the
+    appointment back and forth is announced every time.
+    """
+    occurred = now or utc_now()
+    old_local = to_club_timezone(old_starts_at)
+    new_local = to_club_timezone(starts_at)
+    return create_notification(
+        session,
+        member_id=member_id,
+        kind="physio_appointment_rescheduled",
+        title="Cambió el horario de tu cita",
+        body=(
+            f"Tu cita de {_clip(service_name, 60)} cambió: era el "
+            f"{old_local:%d/%m/%Y} a las {old_local:%H:%M} y ahora es el "
+            f"{new_local:%d/%m/%Y} a las {new_local:%H:%M}. Tu lugar sigue apartado."
+        ),
+        ref_id=appointment_id,
+        dedupe_key=(
+            f"physio_rescheduled:{appointment_id}:{member_id}:"
+            f"{occurred:%Y%m%dT%H%M%S%f}"
+        ),
+        now=occurred,
+    )
+
+
 def notify_equipment_out_of_service(
     session: Session,
     *,

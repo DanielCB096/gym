@@ -108,6 +108,19 @@ const PAYMENT_FORM_LABELS: Record<string, string> = {
   "99": "Por definir",
 };
 
+const PHYSIO_STATUS_LABELS: Record<string, string> = {
+  scheduled: "Agendada",
+  attended: "Asistida",
+  no_show: "No asistió",
+  cancelled: "Cancelada",
+};
+
+const PHYSIO_PACK_STATUS_LABELS: Record<string, string> = {
+  active: "Vigente",
+  exhausted: "Sin sesiones",
+  expired: "Vencido",
+};
+
 const NOTIFICATION_KIND_LABELS: Record<string, string> = {
   workout_reviewed: "Entrenamiento",
   goal_achieved: "Meta cumplida",
@@ -118,6 +131,9 @@ const NOTIFICATION_KIND_LABELS: Record<string, string> = {
   class_reserved: "Clase",
   class_cancelled: "Clase cancelada",
   class_rescheduled: "Clase movida",
+  physio_appointment_scheduled: "Fisioterapia",
+  physio_appointment_cancelled: "Fisioterapia cancelada",
+  physio_appointment_rescheduled: "Fisioterapia movida",
   membership_expiring: "Membresía",
   equipment_out_of_service: "Equipo",
   invoice_stamped: "Factura",
@@ -249,6 +265,14 @@ export function paymentMethodLabel(method: string | null): string {
 
 export function notificationKindLabel(kind: string): string {
   return NOTIFICATION_KIND_LABELS[kind] ?? "Aviso";
+}
+
+export function physioStatusLabel(status: string): string {
+  return PHYSIO_STATUS_LABELS[status] ?? status;
+}
+
+export function physioPackStatusLabel(status: string): string {
+  return PHYSIO_PACK_STATUS_LABELS[status] ?? status;
 }
 
 export function invoiceStatusLabel(status: string): string {

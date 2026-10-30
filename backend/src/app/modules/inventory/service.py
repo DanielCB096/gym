@@ -1073,6 +1073,8 @@ def register_service_sale(
     cashier_id: UUID | None = None,
     note: str | None = None,
     class_reservation_id: UUID | None = None,
+    physio_appointment_id: UUID | None = None,
+    sku: str = SERVICE_SKU,
     now: datetime | None = None,
 ) -> Sale:
     """Charge a service (a premium class) as a regular sale.
@@ -1107,7 +1109,7 @@ def register_service_sale(
 
     cash_session = _find_open_cash_session(session)
     if cash_session is None:
-        raise NoOpenCashSession("Abre el turno de caja antes de cobrar la clase")
+        raise NoOpenCashSession("Abre el turno de caja antes de cobrar el servicio")
 
     if payment_method == "account" and member.credit_limit_cents is not None:
         balance = member_account_balance(session, member.id)
@@ -1133,6 +1135,7 @@ def register_service_sale(
         status="completed",
         origin="online",
         class_reservation_id=class_reservation_id,
+        physio_appointment_id=physio_appointment_id,
         note=normalized_note,
         sold_at=occurred_at,
     )
@@ -1142,7 +1145,7 @@ def register_service_sale(
             sale_id=sale.id,
             product_id=None,
             product_name=normalized,
-            sku=SERVICE_SKU,
+            sku=sku,
             location=DEFAULT_LOCATION,
             quantity=1,
             unit_price_cents=amount_cents,
@@ -1161,6 +1164,15 @@ def service_sale_for_reservation(session: Session, reservation_id: UUID) -> Sale
     return session.exec(
         select(Sale)
         .where(Sale.class_reservation_id == reservation_id)
+        .order_by(Sale.sold_at.desc(), Sale.created_at.desc())
+    ).first()
+
+
+def service_sale_for_physio_appointment(session: Session, appointment_id: UUID) -> Sale | None:
+    """Return the latest charge linked to a physiotherapy appointment."""
+    return session.exec(
+        select(Sale)
+        .where(Sale.physio_appointment_id == appointment_id)
         .order_by(Sale.sold_at.desc(), Sale.created_at.desc())
     ).first()
 
@@ -1595,8 +1607,8 @@ def refund_service_sale(
     ).first()
     if sale is None:
         raise SaleNotFound("Venta no encontrada")
-    if sale.class_reservation_id is None:
-        raise InvalidReturn("La venta no corresponde a una reserva de clase")
+    if sale.class_reservation_id is None and sale.physio_appointment_id is None:
+        raise InvalidReturn("La venta no corresponde a una reserva de clase ni a una cita")
     if sale.status == "refunded":
         return None
 

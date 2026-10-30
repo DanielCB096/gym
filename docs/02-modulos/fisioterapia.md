@@ -32,7 +32,7 @@ La regla que ordena todo el módulo es **cobrar solo lo que se prestó**: una se
 | Gerente | definir catálogo, precios y descuento | `physio.read`, `physio.manage` |
 | Dueño / administrador | controlar el negocio y el crecimiento del servicio | todos los anteriores |
 
-Dos permisos nuevos, que se suman a la matriz de 31: `physio.read` (consultar catálogo, agenda y saldos) y `physio.manage` (administrar el catálogo, vender paquetes, agendar, mover, cancelar y marcar asistencia). Por defecto `physio.read` va a dueño, gerente, recepción y entrenador; `physio.manage` a dueño, gerente y recepción. El cobro no estrena permiso: se apoya en `physio.manage` y exige un turno de caja abierto, igual que el cobro de una clase premium.
+Dos permisos nuevos, que llevan la matriz a 35: `physio.read` (consultar catálogo, agenda y saldos) y `physio.manage` (administrar el catálogo, vender paquetes, agendar, mover, cancelar y marcar asistencia). Por defecto `physio.read` va a dueño, gerente, recepción y entrenador; `physio.manage` a dueño, gerente y recepción. El cobro no estrena permiso: se apoya en `physio.manage` y exige un turno de caja abierto, igual que el cobro de una clase premium.
 
 ## 3. Flujos paso a paso
 
@@ -74,22 +74,24 @@ Dos permisos nuevos, que se suman a la matriz de 31: `physio.read` (consultar ca
 ### 1. Panel: «Fisioterapia»
 - Objetivo: operar el consultorio desde recepción
 - Pestañas: **Agenda**, **Paquetes**, **Catálogo**
-- Agenda: vista por día y por fisioterapeuta, con el estado de cada cita; acciones «Asistió», «No asistió», «Mover» y «Cancelar»; botón «Agendar cita» y «Cerrar el día»
-- Paquetes: búsqueda por socio, sesiones usadas y restantes, vigencia y venta de un paquete nuevo
-- Catálogo: servicios con duración y precio suelto, paquetes con su precio y ahorro frente al suelto, activar o desactivar
+- Banda superior: día y conteo de citas (agendadas, asistieron, inasistencias, con paquete), botón «Agendar cita» y «Cerrar día»
+- Agenda: filtros por día, fisioterapeuta y estado, más un selector **«Cobro de sesión suelta»** con la forma de pago que se usará al marcar; tabla con paciente, servicio, terapeuta, horario y consultorio, cobertura (paquete con sesiones restantes o sesión suelta), cobro (por cobrar, cobrado, reembolsado) y estado; acciones «Asistió», «No asistió» —deshabilitadas antes del inicio—, «Mover» y «Cancelar», estas dos solo para citas `scheduled` futuras, con confirmación en línea
+- Paquetes: búsqueda de socio, tabla con sesiones usadas y restantes, vigencia, estado y precio, y «Vender paquete» con oferta y forma de pago
+- Catálogo: dos tablas, servicios con duración y precio suelto y ofertas con sesiones, precio, ahorro y vigencia; alta y edición en modal, y activar o desactivar
 
-### 2. Panel: modal de asistencia
+### 2. Panel: marca de asistencia y cobro
 - Objetivo: cobrar la sesión suelta o consumir el crédito sin ambigüedad
-- Componentes: nombre del socio, servicio, hora, saldo del paquete tras el movimiento y, cuando toca cobrar, la forma de pago
-- Estados: cubierta por paquete, por cobrar, paquete agotado (busca otro paquete del socio y, si no hay, pide la forma de pago para cobrar la sesión suelta)
+- La marca se hace desde la fila de la agenda; la forma de pago del cobro suelto se elige en la barra de filtros y el aviso del resultado dice cuánto se cobró y con qué método, o cuántas sesiones quedan en el paquete
+- Segunda confirmación para mover o cancelar una cita y para cerrar el día: aviso en línea con «Volver» y «Confirmar», sin diálogo nativo del navegador
+- Estados: cubierta por paquete, por cobrar, paquete agotado (el backend busca otro paquete vigente del socio y, si no hay, cobra la sesión suelta con la forma de pago elegida)
 
-### 3. App del socio: «Fisioterapia»
+### 3. App del socio: «Fisioterapia» (incremento 2)
 - Objetivo: consultar, no operar
 - Componentes: tarjeta de la próxima cita, saldo de cada paquete («1 de 2 sesiones», «vence el 2 de diciembre») e historial de citas con su estado
 - Pie fijo: «Para mover o cancelar tu cita, acude a recepción»
 - Estados: sin paquete, sin citas, cita cancelada, inasistencia
 
-### 4. Bandeja de avisos
+### 4. Bandeja de avisos (incremento 2)
 - Los tres avisos de la cita se etiquetan «Fisioterapia» y abren la pantalla de fisioterapia al tocarlos
 
 ## 5. Reglas de negocio y casos límite
@@ -122,13 +124,14 @@ Dos permisos nuevos, que se suman a la matriz de 31: `physio.read` (consultar ca
 | `physio_appointments` | `member_id`, `service_id`, `pack_id`, `therapist_employee_id`, `room`, `starts_at`, `ends_at`, `status`, `notes`, `booked_by`, `marked_at`, `marked_by`, `cancelled_at`, `cancelled_by` | `status` en `scheduled`/`attended`/`no_show`/`cancelled`; `pack_id` es el paquete que cubre la sesión y se reasigna si al asistir el ligado ya no tenía crédito |
 | `sales.physio_appointment_id` | FK anulable con índice | liga el cobro suelto a su cita |
 
-`physio_packs.sale_id` liga el paquete con su venta; no hay columna inversa en `sales` porque un paquete no se reembolsa en la fase 1. La migración `20261029_0055_physiotherapy.py` crea las cuatro tablas y la columna, y `20261029_0056_physio_permissions.py` agrega los dos permisos y sus concesiones. La vista previa crea las tablas con `create_all`, suma la columna con `preview_patch.py`, siembra los permisos en `PREVIEW_PERMISSIONS` y los servicios de ejemplo en `seed_physio.py`.
+`physio_packs.sale_id` liga el paquete con su venta; no hay columna inversa en `sales` porque un paquete no se reembolsa en la fase 1. La migración `20261029_0055_physiotherapy.py` crea las cuatro tablas y la columna, `20261029_0056_physio_permissions.py` agrega los dos permisos y sus concesiones, y `20261029_0057_physio_notifications.py` amplía el `CHECK` de tipos de aviso con los tres de la cita. La vista previa crea las tablas con `create_all`, suma la columna con `preview_patch.py`, siembra los permisos en `PREVIEW_PERMISSIONS` y los servicios de ejemplo en `seed_physio.py`; el parche de vista previa también actualiza el `CHECK` de tipos de aviso.
 
 ## 7. API
 
 ### Panel (permiso `physio.read` para consultar, `physio.manage` para escribir)
 - `GET /admin/physio/services` · `POST` · `PATCH /admin/physio/services/{id}`
 - `GET /admin/physio/offers` · `POST` · `PATCH /admin/physio/offers/{id}`
+- `GET /admin/physio/therapists` (colaboradores activos para agendar)
 - `GET /admin/physio/appointments?date=&therapist_id=&status=`
 - `POST /admin/physio/appointments` (agendar; valida traslape, vigencia y socio)
 - `PATCH /admin/physio/appointments/{id}` (mover fecha, hora o fisioterapeuta)
@@ -141,7 +144,7 @@ Dos permisos nuevos, que se suman a la matriz de 31: `physio.read` (consultar ca
 - `GET /member/physio`: paquetes con saldo y vigencia, próxima cita e historial reciente; solo lectura
 
 ### BFF del panel
-Una ruta por endpoint bajo `web/src/app/api/admin/physio/**`, con `proxyAuthenticatedGet`/`proxyAuthenticatedJson`, igual que el resto del panel.
+Once rutas bajo `web/src/app/api/admin/physio/**` —una por recurso y acción, reutilizada por sus verbos— con `proxyAuthenticatedGet`/`proxyAuthenticatedJson`, igual que el resto del panel.
 
 ## 8. Integraciones
 
@@ -190,7 +193,9 @@ Una ruta por endpoint bajo `web/src/app/api/admin/physio/**`, con `proxyAuthenti
 
 ## 13. Estado
 
-En diseño. Documento inicial del 2026-10-29 con las tres políticas decididas: cobro solo por asistencia, agenda de recepción con consulta en la app y paquete mensual de dos sesiones al 80 % en una sola exhibición (ADR-039).
+**Incrementos 1 y 2 implementados el 2026-10-29.** Backend, migraciones, permisos, panel, app del socio y pruebas están en la rama principal. El incremento 1 trajo las cuatro tablas y la columna `sales.physio_appointment_id` (migración `20261029_0055_physiotherapy.py`), los permisos `physio.read` y `physio.manage` con sus concesiones (`20261029_0056_physio_permissions.py`), el módulo `app/modules/physio`, los quince endpoints del panel, las rutas BFF, la página «Fisioterapia» con sus tres pestañas, el seed de vista previa (`seed_physio.py`) y nueve pruebas (ocho de API y una opt-in de concurrencia contra PostgreSQL); el flujo completo se verificó en navegador: venta de paquete, cita ligada al paquete, asistencia que descuenta un crédito, corrección que lo devuelve, sesión suelta cobrada en efectivo con su venta `FISIO` en el turno y cierre del día. El incremento 2 agregó `GET /member/physio` con su modelo de lectura (`app/modules/portal/physio.py`), los tres avisos de la cita con su migración del `CHECK` de tipos (`20261029_0057_physio_notifications.py`), la pantalla de solo lectura en la app con su tarjeta en el inicio y el enlace desde la bandeja de avisos.
+
+El incremento 3 sigue pendiente: el reporte del consultorio, el recordatorio de 24 horas y la política de devolución o extensión del paquete.
 
 ### Incrementos previstos
 
@@ -200,4 +205,6 @@ En diseño. Documento inicial del 2026-10-29 con las tres políticas decididas: 
 
 ## 14. Historial de cambios
 
+- 2026-10-29: incremento 2 implementado —`GET /member/physio`, pantalla «Fisioterapia» de la app con su tarjeta en el inicio, los tres avisos de la cita (`physio_appointment_scheduled`, `physio_appointment_cancelled`, `physio_appointment_rescheduled`), migración `20261029_0057_physio_notifications.py` que amplía el `CHECK` de tipos y prueba de extremo a extremo del portal.
+- 2026-10-29: incremento 1 implementado —tablas, columna en `sales`, permisos, servicio, catorce endpoints, BFF, página «Fisioterapia» con Agenda, Paquetes y Catálogo, seed de vista previa y nueve pruebas—; el panel envía siempre la forma de pago al marcar para poder cobrar una cita cuyo paquete se agotó antes de la visita.
 - 2026-10-29: documento inicial del módulo con las políticas de cobro, agenda y paquete (ADR-039).
