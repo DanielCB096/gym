@@ -527,12 +527,14 @@ from app.modules.staffing.service import (
     AttendanceEventConflict,
     AttendanceNotAllowed,
     InvalidAttendanceTime,
+    ManualAttendanceReasonRequired,
     ShiftNotAvailable,
     ShiftOverlap,
     clock_in,
     clock_out,
     create_shift,
     list_shifts_with_attendance,
+    record_manual_attendance,
 )
 from app.modules.billing import (
     # The memberships module already exposes a ``BillingError`` base class in
@@ -919,6 +921,14 @@ class ScheduleShiftRequest(BaseModel):
 class AttendanceMarkRequest(BaseModel):
     shift_id: UUID
     request_id: UUID
+
+
+class ManualAttendanceRequest(BaseModel):
+    shift_id: UUID
+    request_id: UUID
+    event_type: Literal["check_in", "check_out"]
+    occurred_at: datetime
+    reason: str = Field(min_length=3, max_length=500)
 
 
 class ProductResponse(BaseModel):
@@ -4408,6 +4418,36 @@ def self_clock_out(
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.self"))],
 ) -> dict[str, object]:
     return _self_attendance_mark(session, principal, request, clock_out)
+
+
+@app.post("/admin/staff/attendance", tags=["staff administration"])
+def register_manual_attendance(
+    request: ManualAttendanceRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+) -> dict[str, object]:
+    if request.occurred_at.tzinfo is None or request.occurred_at.utcoffset() is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Attendance timestamps must include a timezone",
+        )
+    try:
+        attendance = record_manual_attendance(
+            session,
+            shift_id=request.shift_id,
+            actor_id=principal.user_id,
+            request_id=request.request_id,
+            event_type=request.event_type,
+            occurred_at=request.occurred_at,
+            reason=request.reason,
+        )
+    except ManualAttendanceReasonRequired as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    except (ShiftNotAvailable, AttendanceAlreadyRecorded, AttendanceEventConflict) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except InvalidAttendanceTime as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    return _attendance_payload(attendance)
 
 
 def _self_attendance_mark(

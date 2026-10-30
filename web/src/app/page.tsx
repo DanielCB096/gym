@@ -150,6 +150,11 @@ type BackendShift = {
   attendance: BackendAttendance | null;
 };
 
+type MyAttendanceBoard = {
+  employee_id: string;
+  items: BackendShift[];
+};
+
 type BackendMember = {
   id: string;
   first_name: string;
@@ -2815,20 +2820,23 @@ function formatSaleTime(value: string): string {
   return new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
-const requiredPermission: Record<PageName, string> = {
-  Resumen: "dashboard.read",
-  Accesos: "access.read",
-  Socios: "members.read",
-  Personal: "staff.read",
-  Clases: "classes.read",
-  Fisioterapia: "physio.read",
-  Rutinas: "routines.read",
-  Inventario: "inventory.read",
-  Mantenimiento: "maintenance.read",
-  Facturación: "billing.read",
-  Conciliación: "finance.read",
-  Reportes: "finance.read",
-  Kiosco: "settings.manage",
+// Pages open when the account holds any of the listed permissions. Personal is
+// shared: whoever can clock in needs the «Mi jornada» tab even without access
+// to the staff directory.
+const requiredPermission: Record<PageName, string[]> = {
+  Resumen: ["dashboard.read"],
+  Accesos: ["access.read"],
+  Socios: ["members.read"],
+  Personal: ["staff.read", "attendance.self"],
+  Clases: ["classes.read"],
+  Fisioterapia: ["physio.read"],
+  Rutinas: ["routines.read"],
+  Inventario: ["inventory.read"],
+  Mantenimiento: ["maintenance.read"],
+  Facturación: ["billing.read"],
+  Conciliación: ["finance.read"],
+  Reportes: ["finance.read"],
+  Kiosco: ["settings.manage"],
 };
 
 const roleLabels: Record<string, string> = {
@@ -2969,6 +2977,8 @@ export default function HomePage() {
   const [backendUsers, setBackendUsers] = useState<BackendUser[] | null>(null);
   const [backendSessions, setBackendSessions] = useState<BackendSession[] | null>(null);
   const [backendShifts, setBackendShifts] = useState<BackendShift[] | null>(null);
+  const [myShifts, setMyShifts] = useState<BackendShift[] | null>(null);
+  const [myAttendanceState, setMyAttendanceState] = useState<"hidden" | "loading" | "ready" | "unlinked" | "error">("hidden");
   const [staffLoading, setStaffLoading] = useState(false);
   const [staffError, setStaffError] = useState("");
   const [staffRefresh, setStaffRefresh] = useState(0);
@@ -3008,18 +3018,23 @@ export default function HomePage() {
     const loadPersonnelData = async () => {
       setStaffLoading(true);
       setStaffError("");
+      setMyAttendanceState("loading");
       try {
-        const staffResponse = await fetch("/api/admin/staff", { cache: "no-store" });
-        if (staffResponse.status === 401) {
-          if (active) {
-            setCurrentUser(null);
-            setAuthState("signed_out");
+        if (currentUser.permissions.includes("staff.read")) {
+          const staffResponse = await fetch("/api/admin/staff", { cache: "no-store" });
+          if (staffResponse.status === 401) {
+            if (active) {
+              setCurrentUser(null);
+              setAuthState("signed_out");
+            }
+            return;
           }
-          return;
+          if (!staffResponse.ok) throw new Error("No se pudo consultar el directorio de personal.");
+          const employees = await staffResponse.json() as BackendEmployee[];
+          if (active) setBackendStaff(employees);
+        } else {
+          setBackendStaff(null);
         }
-        if (!staffResponse.ok) throw new Error("No se pudo consultar el directorio de personal.");
-        const employees = await staffResponse.json() as BackendEmployee[];
-        if (active) setBackendStaff(employees);
 
         if (currentUser.permissions.includes("attendance.read")) {
           const shiftsResponse = await fetch("/api/admin/staff/shifts?days=21", { cache: "no-store" });
@@ -3035,6 +3050,37 @@ export default function HomePage() {
           if (active) setBackendShifts(shifts);
         } else if (active) {
           setBackendShifts(null);
+        }
+
+        if (currentUser.permissions.includes("attendance.self")) {
+          const mineResponse = await fetch("/api/staff/attendance?days=14", { cache: "no-store" });
+          if (mineResponse.status === 401) {
+            if (active) {
+              setCurrentUser(null);
+              setAuthState("signed_out");
+            }
+            return;
+          }
+          if (mineResponse.status === 409) {
+            if (active) {
+              setMyShifts(null);
+              setMyAttendanceState("unlinked");
+            }
+          } else if (!mineResponse.ok) {
+            if (active) {
+              setMyShifts(null);
+              setMyAttendanceState("error");
+            }
+          } else {
+            const board = await mineResponse.json() as MyAttendanceBoard;
+            if (active) {
+              setMyShifts(board.items);
+              setMyAttendanceState("ready");
+            }
+          }
+        } else if (active) {
+          setMyShifts(null);
+          setMyAttendanceState("hidden");
         }
 
         if (currentUser.permissions.includes("roles.manage")) {
@@ -3430,8 +3476,8 @@ export default function HomePage() {
   };
 
   const hasPermission = (permission: string) => currentUser?.permissions.includes(permission) ?? false;
-  const visiblePrimaryNavigation = primaryNavigation.filter(({ label }) => hasPermission(requiredPermission[label]));
-  const visibleOperationsNavigation = operationsNavigation.filter(({ label }) => hasPermission(requiredPermission[label]));
+  const visiblePrimaryNavigation = primaryNavigation.filter(({ label }) => requiredPermission[label].some(hasPermission));
+  const visibleOperationsNavigation = operationsNavigation.filter(({ label }) => requiredPermission[label].some(hasPermission));
 
   if (authState === "checking") return <SessionLoading />;
   if (authState === "signed_out" || !currentUser) {
@@ -3589,7 +3635,7 @@ export default function HomePage() {
               onOpenMember={(member) => hasPermission("members.manage") && setActiveMember(member)}
             />
           )}
-          {activePage === "Personal" && <StaffView onToast={showToast} canManageRoles={hasPermission("roles.manage")} canManageSessions={hasPermission("sessions.manage")} canManageStaff={hasPermission("staff.manage")} canViewAttendance={hasPermission("attendance.read")} canManageAttendance={hasPermission("attendance.manage")} employees={backendStaff} roles={backendRoles} permissionCatalog={permissionCatalog} users={backendUsers} sessions={backendSessions} shifts={backendShifts} loading={staffLoading} error={staffError} onIdentityChanged={() => setStaffRefresh((value) => value + 1)} />}
+          {activePage === "Personal" && <StaffView onToast={showToast} canViewStaff={hasPermission("staff.read")} canManageRoles={hasPermission("roles.manage")} canManageSessions={hasPermission("sessions.manage")} canManageStaff={hasPermission("staff.manage")} canViewAttendance={hasPermission("attendance.read")} canManageAttendance={hasPermission("attendance.manage")} canSelfAttendance={hasPermission("attendance.self")} employees={backendStaff} roles={backendRoles} permissionCatalog={permissionCatalog} users={backendUsers} sessions={backendSessions} shifts={backendShifts} myShifts={myShifts} myAttendanceState={myAttendanceState} loading={staffLoading} error={staffError} onIdentityChanged={() => setStaffRefresh((value) => value + 1)} />}
           {activePage === "Inventario" && <InventoryView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Clases" && <ClassesView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Fisioterapia" && <PhysioView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
@@ -3747,9 +3793,9 @@ function AccessTable({ events, compact = false }: { events: AccessEvent[]; compa
 }
 
 function StatusBadge({ state, detail }: { state: AccessState | string; detail?: string }) {
-  const statusClass = state === "Autorizado" || state === "Activa" || state === "Activo" || state === "En turno" || state === "Programado"
+  const statusClass = state === "Autorizado" || state === "Activa" || state === "Activo" || state === "En turno" || state === "Programado" || state === "Presente"
     ? "status-good"
-    : state === "Manual" || state === "Por vencer" || state === "Pago pendiente" || state === "Congelada"
+    : state === "Manual" || state === "Por vencer" || state === "Pago pendiente" || state === "Congelada" || state === "Tarde"
       ? "status-warn"
       : state === "Denegado" || state === "Vencida" || state === "Baja" || state === "Suspendida" || state === "Cancelada" || state === "Cancelado" || state === "Caducado"
         ? "status-bad"
@@ -4713,6 +4759,30 @@ function shiftClock(value: string): string {
   return new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
 }
 
+const SELF_MARK_EARLY_MS = 15 * 60 * 1000;
+
+type SelfMark = { action: "check_in" | "check_out" | null; hint: string };
+
+function selfMarkFor(shift: BackendShift, now: number): SelfMark {
+  if (shift.status !== "scheduled") return { action: null, hint: "Turno cancelado" };
+  const start = new Date(shift.starts_at).getTime();
+  const end = new Date(shift.ends_at).getTime();
+  if (!shift.attendance) {
+    if (now < start - SELF_MARK_EARLY_MS) return { action: null, hint: "Abre 15 min antes" };
+    if (now > end) return { action: null, hint: "Turno cerrado · recepción puede registrarlo" };
+    return { action: "check_in", hint: "Puedes marcar tu entrada" };
+  }
+  if (!shift.attendance.check_out_at) return { action: "check_out", hint: "Puedes marcar tu salida" };
+  return { action: null, hint: "Jornada completa" };
+}
+
+function attendanceLabel(attendance: BackendAttendance | null): string {
+  if (!attendance) return "Sin registro";
+  const entry = `${shiftClock(attendance.check_in_at)}${attendance.check_in_source === "manual" ? " (manual)" : ""}`;
+  if (!attendance.check_out_at) return `${entry} · en turno`;
+  return `${entry} → ${shiftClock(attendance.check_out_at)}${attendance.check_out_source === "manual" ? " (manual)" : ""}`;
+}
+
 type MemberStateFilter = "" | "active" | "expiring_soon" | "frozen" | "pending";
 
 function MembersView({ directory, loading, error, search, onSearch, sort, direction, state, plan, onSort, onState, onPlan, page, onPageChange, onCreate, onOpenMember }: { directory: MemberDirectory | null; loading: boolean; error: string; search: string; onSearch: (value: string) => void; sort: "name" | "plan" | "renewal"; direction: "asc" | "desc"; state: MemberStateFilter; plan: string; onSort: (field: "name" | "plan" | "renewal") => void; onState: (value: MemberStateFilter) => void; onPlan: (value: string) => void; page: number; onPageChange: (page: number) => void; onCreate: () => void; onOpenMember: (member: BackendMember) => void }) {
@@ -4771,14 +4841,22 @@ function MembersView({ directory, loading, error, search, onSearch, sort, direct
   );
 }
 
-function StaffView({ onToast, canManageRoles, canManageSessions, canManageStaff, canViewAttendance, canManageAttendance, employees, roles, permissionCatalog, users, sessions, shifts, loading, error, onIdentityChanged }: { onToast: (message: string) => void; canManageRoles: boolean; canManageSessions: boolean; canManageStaff: boolean; canViewAttendance: boolean; canManageAttendance: boolean; employees: BackendEmployee[] | null; roles: BackendRole[] | null; permissionCatalog: PermissionCatalogEntry[] | null; users: BackendUser[] | null; sessions: BackendSession[] | null; shifts: BackendShift[] | null; loading: boolean; error: string; onIdentityChanged: () => void }) {
-  const [activeTab, setActiveTab] = useState<"equipo" | "roles" | "usuarios" | "sesiones">("equipo");
+function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, canManageStaff, canViewAttendance, canManageAttendance, canSelfAttendance, employees, roles, permissionCatalog, users, sessions, shifts, myShifts, myAttendanceState, loading, error, onIdentityChanged }: { onToast: (message: string) => void; canViewStaff: boolean; canManageRoles: boolean; canManageSessions: boolean; canManageStaff: boolean; canViewAttendance: boolean; canManageAttendance: boolean; canSelfAttendance: boolean; employees: BackendEmployee[] | null; roles: BackendRole[] | null; permissionCatalog: PermissionCatalogEntry[] | null; users: BackendUser[] | null; sessions: BackendSession[] | null; shifts: BackendShift[] | null; myShifts: BackendShift[] | null; myAttendanceState: "hidden" | "loading" | "ready" | "unlinked" | "error"; loading: boolean; error: string; onIdentityChanged: () => void }) {
+  const [activeTab, setActiveTab] = useState<"equipo" | "jornada" | "roles" | "usuarios" | "sesiones">(canViewStaff ? "equipo" : "jornada");
   const [selectedRoleCode, setSelectedRoleCode] = useState("reception");
   const [busyUserId, setBusyUserId] = useState<string | null>(null);
   const [busySessionId, setBusySessionId] = useState<string | null>(null);
   const [busyPermission, setBusyPermission] = useState<string | null>(null);
   const [newEmployeeOpen, setNewEmployeeOpen] = useState(false);
   const [newShiftOpen, setNewShiftOpen] = useState(false);
+  const [manualShift, setManualShift] = useState<BackendShift | null>(null);
+  const [busyMarkShiftId, setBusyMarkShiftId] = useState<string | null>(null);
+  const pendingMarks = useRef(new Map<string, string>());
+  const [clockNow, setClockNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockNow(Date.now()), 15000);
+    return () => window.clearInterval(timer);
+  }, []);
   const availableRoles = roles ?? [];
   const selectedRole = availableRoles.find((role) => role.code === selectedRoleCode) ?? availableRoles[0] ?? null;
   const employeeList = employees ?? [];
@@ -4794,6 +4872,41 @@ function StaffView({ onToast, canManageRoles, canManageSessions, canManageStaff,
   const employeeById = new Map(employeeList.map((employee) => [employee.id, employee]));
   const nextShiftFor = (employeeId: string): BackendShift | null =>
     upcomingShifts.find((shift) => shift.employee_id === employeeId) ?? null;
+  const myShiftList = myShifts ?? [];
+  const myCurrentShift = myShiftList.find((shift) => selfMarkFor(shift, clockNow).action !== null) ?? null;
+
+  const markAttendance = async (shift: BackendShift, eventType: "check_in" | "check_out") => {
+    const key = `${shift.id}:${eventType}`;
+    const requestId = pendingMarks.current.get(key) ?? crypto.randomUUID();
+    pendingMarks.current.set(key, requestId);
+    setBusyMarkShiftId(shift.id);
+    try {
+      const response = await fetch(`/api/staff/attendance/${eventType === "check_in" ? "clock-in" : "clock-out"}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shift_id: shift.id, request_id: requestId }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { detail?: string };
+        onToast(response.status === 409 ? "Ese turno ya tiene esa marca registrada." : payload.detail || "No se pudo registrar la marca.");
+        return;
+      }
+      pendingMarks.current.delete(key);
+      const attendance = await response.json() as BackendAttendance;
+      if (eventType === "check_in") {
+        onToast(attendance.status === "late"
+          ? `Entrada registrada a las ${shiftClock(attendance.check_in_at)} (tarde).`
+          : `Entrada registrada a las ${shiftClock(attendance.check_in_at)}.`);
+      } else {
+        onToast(`Salida registrada a las ${shiftClock(attendance.check_out_at ?? attendance.check_in_at)}.`);
+      }
+      onIdentityChanged();
+    } catch {
+      onToast("No se pudo conectar con el backend. Reintenta: la marca no se duplicará.");
+    } finally {
+      setBusyMarkShiftId(null);
+    }
+  };
   const curatedCodes = new Set(permissionRows.map((permission) => permission.code));
   const catalogExtras = (permissionCatalog ?? [])
     .filter((entry) => !curatedCodes.has(entry.code))
@@ -4901,21 +5014,77 @@ function StaffView({ onToast, canManageRoles, canManageSessions, canManageStaff,
   return (
     <>
       <div className="staff-tabs" role="tablist" aria-label="Secciones de personal">
-        <button role="tab" aria-selected={activeTab === "equipo"} className={activeTab === "equipo" ? "staff-tab-active" : ""} onClick={() => setActiveTab("equipo")}>Equipo</button>
+        {canSelfAttendance && <button role="tab" aria-selected={activeTab === "jornada"} className={activeTab === "jornada" ? "staff-tab-active" : ""} onClick={() => setActiveTab("jornada")}>Mi jornada</button>}
+        {canViewStaff && <button role="tab" aria-selected={activeTab === "equipo"} className={activeTab === "equipo" ? "staff-tab-active" : ""} onClick={() => setActiveTab("equipo")}>Equipo</button>}
         {canManageRoles && <button role="tab" aria-selected={activeTab === "roles"} className={activeTab === "roles" ? "staff-tab-active" : ""} onClick={() => setActiveTab("roles")}>Roles y permisos</button>}
         {canManageRoles && <button role="tab" aria-selected={activeTab === "usuarios"} className={activeTab === "usuarios" ? "staff-tab-active" : ""} onClick={() => setActiveTab("usuarios")}>Usuarios</button>}
         {canManageSessions && <button role="tab" aria-selected={activeTab === "sesiones"} className={activeTab === "sesiones" ? "staff-tab-active" : ""} onClick={() => setActiveTab("sesiones")}>Sesiones</button>}
         <span className="staff-tabs-note"><ShieldCheck size={14} />Permisos validados en backend</span>
       </div>
 
-      {activeTab === "equipo" ? (
+      {activeTab === "jornada" ? (
+        <>
+          <section className="panel full-panel">
+            <div className="panel-header access-list-heading">
+              <div>
+                <p className="section-kicker">MI JORNADA</p>
+                <h2>{new Intl.DateTimeFormat("es-MX", { weekday: "long", day: "numeric", month: "long" }).format(new Date(clockNow))}</h2>
+              </div>
+              <span className="role-count">{new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(clockNow))}</span>
+            </div>
+            {myAttendanceState === "unlinked" ? (
+              <p className="panel-hint" role="status">Tu cuenta no está enlazada a un expediente de colaborador, así que no hay turnos que marcar. Pide a quien administra el personal que cree tu cuenta desde tu colaborador.</p>
+            ) : myAttendanceState === "error" ? (
+              <p className="panel-hint" role="alert">No se pudo consultar tu jornada. Recarga la página o pide a recepción que registre tu marca.</p>
+            ) : myAttendanceState === "loading" ? (
+              <p className="panel-hint">Cargando tu jornada…</p>
+            ) : myCurrentShift ? (
+              <div className="staff-jornada-now">
+                <div>
+                  <strong>{myCurrentShift.attendance
+                    ? (myCurrentShift.attendance.check_out_at
+                      ? `Jornada completa · ${shiftClock(myCurrentShift.attendance.check_in_at)}–${shiftClock(myCurrentShift.attendance.check_out_at)}`
+                      : `En turno desde las ${shiftClock(myCurrentShift.attendance.check_in_at)}`)
+                    : `Turno de ${shiftClock(myCurrentShift.starts_at)} a ${shiftClock(myCurrentShift.ends_at)}`}</strong>
+                  <p className="panel-hint">{selfMarkFor(myCurrentShift, clockNow).hint}</p>
+                </div>
+                {(() => {
+                  const mark = selfMarkFor(myCurrentShift, clockNow);
+                  return mark.action
+                    ? <button className="button button-primary" disabled={busyMarkShiftId === myCurrentShift.id} onClick={() => void markAttendance(myCurrentShift, mark.action as "check_in" | "check_out")}>{mark.action === "check_in" ? "Marcar entrada" : "Marcar salida"}</button>
+                    : null;
+                })()}
+              </div>
+            ) : (
+              <p className="panel-hint" role="status">No tienes un turno abierto ahora. Tu próximo turno aparece en la lista de abajo.</p>
+            )}
+          </section>
+          <section className="panel full-panel">
+            <div className="panel-header access-list-heading"><div><p className="section-kicker">TURNOS PROPIOS</p><h2>Últimos y próximos 14 días</h2></div></div>
+            <div className="table-scroll"><table className="data-table"><thead><tr><th>DÍA</th><th>HORARIO</th><th>ESTADO</th><th>MARCA</th><th /></tr></thead><tbody>
+              {myAttendanceState === "unlinked" ? <tr><td colSpan={5} className="empty-row">Sin expediente de colaborador.</td></tr>
+                : myShiftList.length === 0 ? <tr><td colSpan={5} className="empty-row">{myAttendanceState === "loading" ? "Cargando turnos…" : "No tienes turnos programados en este periodo."}</td></tr>
+                : myShiftList.map((shift) => {
+                  const mark = selfMarkFor(shift, clockNow);
+                  const state = shift.status === "cancelled"
+                    ? "Cancelado"
+                    : shift.attendance
+                      ? (shift.attendance.status === "late" ? "Tarde" : "Presente")
+                      : "Programado";
+                  return <tr key={shift.id}><td>{shiftDayLabel(shift.starts_at)}</td><td className="time-cell">{shiftClock(shift.starts_at)}–{shiftClock(shift.ends_at)}</td><td><StatusBadge state={state} /></td><td className="time-cell">{attendanceLabel(shift.attendance)}</td><td>{mark.action ? <button className="button button-secondary" disabled={busyMarkShiftId === shift.id} onClick={() => void markAttendance(shift, mark.action as "check_in" | "check_out")}>{mark.action === "check_in" ? "Marcar entrada" : "Marcar salida"}</button> : <span className="table-hint">{mark.hint}</span>}</td></tr>;
+                })}
+            </tbody></table></div>
+            <div className="table-bottom"><span>{myShiftList.length} turnos en el periodo</span><span>Puedes marcar desde 15 minutos antes del inicio</span></div>
+          </section>
+        </>
+      ) : activeTab === "equipo" ? (
         <>
           <section className="member-stat-row staff-stat-row"><div><span>EMPLEADOS ACTIVOS</span><strong>{employeeList.filter((employee) => employee.status === "active").length}</strong><small>directorio del backend</small></div><div><span>TURNOS</span><strong>{canViewAttendance ? upcomingShifts.length : "—"}</strong><small>{canViewAttendance ? "próximos programados" : "acceso restringido"}</small></div><div><span>ASISTENCIA</span><strong>{canViewAttendance ? attendanceCount : "—"}</strong><small>{canViewAttendance ? "registros de entrada" : "acceso restringido"}</small></div><div><span>ROLES BASE</span><strong>{canManageRoles ? availableRoles.length : "—"}</strong><small>{canManageRoles ? "catálogo RBAC" : "acceso restringido"}</small></div></section>
           <section className="panel full-panel"><div className="panel-header access-list-heading"><div><p className="section-kicker">DIRECTORIO DE PERSONAL</p><h2>Colaboradores</h2></div>{canManageStaff && <button className="button button-secondary" onClick={() => setNewEmployeeOpen(true)}><Plus size={16} />Nuevo colaborador</button>}</div><div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>PUESTO</th><th>HORARIO</th><th>ESTADO</th><th /></tr></thead><tbody>{loading ? <tr><td colSpan={5} className="empty-row">Cargando directorio…</td></tr> : error ? <tr><td colSpan={5} className="empty-row">{error}</td></tr> : employeeList.length === 0 ? <tr><td colSpan={5} className="empty-row">No hay colaboradores registrados.</td></tr> : employeeList.map((employee, index) => { const fullName = `${employee.first_name} ${employee.last_name}`; const initials = `${employee.first_name[0] ?? ""}${employee.last_name[0] ?? ""}`.toUpperCase(); const state = employee.status === "active" ? "Activo" : employee.status === "inactive" ? "Inactivo" : "Baja"; const color = ["mint", "peach", "lavender", "blue", "yellow"][index % 5]; return <tr key={employee.id}><td><div className="person-cell"><span className={`person-avatar ${color}`}>{initials}</span><span><strong>{fullName}</strong><small>{employee.email ?? employee.employee_number}</small></span></div></td><td>{employee.job_title}</td><td className="time-cell">{(() => { const shift = nextShiftFor(employee.id); return shift ? `${shiftDayLabel(shift.starts_at)} · ${shiftClock(shift.starts_at)}–${shiftClock(shift.ends_at)}` : "Sin turno"; })()}</td><td><StatusBadge state={state} /></td><td><button className="icon-button row-menu" aria-label={`Opciones de ${fullName}`}><MoreHorizontal size={17} /></button></td></tr>; })}</tbody></table></div><div className="table-bottom"><span>{employeeList.length} colaboradores registrados</span><span>Horario según los turnos del backend</span></div></section>
           {canViewAttendance && <section className="panel full-panel">
             <div className="panel-header access-list-heading"><div><p className="section-kicker">TURNOS DEL PERSONAL</p><h2>Turnos programados</h2></div>{canManageAttendance && <button className="button button-secondary" onClick={() => setNewShiftOpen(true)}><Plus size={16} />Programar turno</button>}</div>
-            <p className="panel-hint">Los turnos se leen del backend. La asistencia se registra desde la app del colaborador (auto-marcaje); aquí se muestra el estado de cada turno.</p>
-            <div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>DÍA</th><th>HORARIO</th><th>ESTADO</th><th>ASISTENCIA</th></tr></thead><tbody>{shiftList.length === 0 ? <tr><td colSpan={5} className="empty-row">No hay turnos programados.</td></tr> : shiftList.map((shift) => { const employee = employeeById.get(shift.employee_id); const fullName = employee ? `${employee.first_name} ${employee.last_name}` : "Colaborador"; const attendance = shift.attendance; return <tr key={shift.id}><td><div className="person-cell"><span className="person-avatar mint">{fullName.slice(0, 1).toUpperCase()}</span><span><strong>{fullName}</strong><small>{employee?.employee_number ?? "—"}</small></span></div></td><td>{shiftDayLabel(shift.starts_at)}</td><td className="time-cell">{shiftClock(shift.starts_at)}–{shiftClock(shift.ends_at)}</td><td><StatusBadge state={shift.status === "scheduled" ? "Programado" : "Cancelado"} /></td><td className="time-cell">{attendance ? `${shiftClock(attendance.check_in_at)}${attendance.check_out_at ? ` → ${shiftClock(attendance.check_out_at)}` : " · en turno"}` : "Sin registro"}</td></tr>; })}</tbody></table></div>
+            <p className="panel-hint">Cada colaborador marca su entrada y salida en «Mi jornada». Desde aquí, quienes tienen el permiso de corregir asistencias registran una marca que el colaborador no pudo hacer; nunca se reescribe una marca ya existente.</p>
+            <div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>DÍA</th><th>HORARIO</th><th>ESTADO</th><th>ASISTENCIA</th><th /></tr></thead><tbody>{shiftList.length === 0 ? <tr><td colSpan={6} className="empty-row">No hay turnos programados.</td></tr> : shiftList.map((shift) => { const employee = employeeById.get(shift.employee_id); const fullName = employee ? `${employee.first_name} ${employee.last_name}` : "Colaborador"; const attendance = shift.attendance; const canRegister = canManageAttendance && shift.status === "scheduled" && (!attendance || !attendance.check_out_at); return <tr key={shift.id}><td><div className="person-cell"><span className="person-avatar mint">{fullName.slice(0, 1).toUpperCase()}</span><span><strong>{fullName}</strong><small>{employee?.employee_number ?? "—"}</small></span></div></td><td>{shiftDayLabel(shift.starts_at)}</td><td className="time-cell">{shiftClock(shift.starts_at)}–{shiftClock(shift.ends_at)}</td><td><StatusBadge state={shift.status === "scheduled" ? "Programado" : "Cancelado"} /></td><td className="time-cell">{attendanceLabel(attendance)}</td><td>{canRegister ? <button className="button button-secondary" onClick={() => setManualShift(shift)}>{!attendance ? "Registrar entrada" : "Registrar salida"}</button> : null}</td></tr>; })}</tbody></table></div>
             <div className="table-bottom"><span>{scheduledShifts.length} turnos programados</span><span>{attendanceCount} asistencias registradas</span></div>
           </section>}
         </>
@@ -4950,6 +5119,7 @@ function StaffView({ onToast, canManageRoles, canManageSessions, canManageStaff,
       )}
       {newEmployeeOpen && canManageStaff && <NewEmployeeModal canCreateAccount={canManageRoles} roles={availableRoles} onClose={() => setNewEmployeeOpen(false)} onCreated={(message) => { onToast(message); onIdentityChanged(); }} />}
       {newShiftOpen && canManageAttendance && <ScheduleShiftModal employees={employeeList} onClose={() => setNewShiftOpen(false)} onCreated={(message) => { onToast(message); onIdentityChanged(); }} />}
+      {manualShift && canManageAttendance && <ManualAttendanceModal shift={manualShift} employee={employeeById.get(manualShift.employee_id) ?? null} onClose={() => setManualShift(null)} onCreated={(message) => { onToast(message); onIdentityChanged(); }} />}
       <footer className="page-footer"><span>Centro Fit · Personal</span><span>DATOS DEL BACKEND · NÓMINA FUERA DE ESTA VISTA</span></footer>
     </>
   );
@@ -14821,6 +14991,77 @@ function ScheduleShiftModal({ employees, onClose, onCreated }: { employees: Back
           {error && <div className="login-error" role="alert">{error}</div>}
           <div className="modal-note"><ShieldCheck size={16} /><span>El turno queda registrado con el responsable y se muestra en la lista de turnos programados.</span></div>
           <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy || employees.length === 0}><Check size={16} />{busy ? "Guardando…" : "Programar turno"}</button></div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function toDateTimeLocal(value: string | Date): string {
+  const date = typeof value === "string" ? new Date(value) : value;
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function ManualAttendanceModal({ shift, employee, onClose, onCreated }: { shift: BackendShift; employee: BackendEmployee | null; onClose: () => void; onCreated: (message: string) => void }) {
+  const eventType = shift.attendance ? "check_out" : "check_in";
+  const name = employee ? `${employee.first_name} ${employee.last_name}` : "el colaborador";
+  const [occurredAt, setOccurredAt] = useState(() => toDateTimeLocal(eventType === "check_in" ? shift.starts_at : shift.ends_at));
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const occurred = new Date(occurredAt);
+    if (Number.isNaN(occurred.getTime())) {
+      setError("Indica la fecha y hora de la marca.");
+      return;
+    }
+    if (reason.trim().length < 3) {
+      setError("Escribe el motivo de la corrección.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/staff/attendance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          shift_id: shift.id,
+          request_id: crypto.randomUUID(),
+          event_type: eventType,
+          occurred_at: occurred.toISOString(),
+          reason: reason.trim(),
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { detail?: string };
+        setError(response.status === 409 ? "Ese turno ya tiene esa marca registrada." : payload.detail || "No se pudo registrar la marca.");
+        setBusy(false);
+        return;
+      }
+      onCreated(eventType === "check_in" ? `Entrada registrada manualmente para ${name}.` : `Salida registrada manualmente para ${name}.`);
+      onClose();
+    } catch {
+      setError("No se pudo conectar con el backend.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal member-modal" role="dialog" aria-modal="true" aria-labelledby="manual-attendance-title">
+        <div className="modal-header"><span className="modal-icon"><Users size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">ASISTENCIA DEL PERSONAL</p><h2 id="manual-attendance-title">{eventType === "check_in" ? "Registrar entrada faltante" : "Registrar salida faltante"}</h2>
+        <p className="modal-subtitle">{name} · {shiftDayLabel(shift.starts_at)} de {shiftClock(shift.starts_at)} a {shiftClock(shift.ends_at)}. Solo se registran marcas que faltan: si el colaborador ya marcó, el backend rechaza la corrección.</p>
+        <form onSubmit={submit}>
+          <label className="form-field"><span>Fecha y hora de la marca</span><input type="datetime-local" value={occurredAt} onChange={(event) => setOccurredAt(event.target.value)} /></label>
+          <label className="form-field"><span>Motivo</span><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="No pudo marcar, olvidó la salida…" maxLength={500} /></label>
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <div className="modal-note"><ShieldCheck size={16} /><span>La marca queda con tu cuenta como responsable y el motivo en la bitácora del turno.</span></div>
+          <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}><Check size={16} />{busy ? "Guardando…" : "Registrar marca"}</button></div>
         </form>
       </section>
     </div>

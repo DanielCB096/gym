@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 from typing import TypeVar
@@ -13,6 +13,11 @@ from app.modules.staffing.models import AttendanceEvent, StaffAttendance, StaffS
 
 
 _RecordT = TypeVar("_RecordT", bound=SQLModel)
+
+# People usually arrive a few minutes before their shift starts. Marking that
+# early is not an error, so the check-in window opens before the scheduled
+# start; the shift's end still bounds it.
+CHECK_IN_EARLY_GRACE = timedelta(minutes=15)
 
 
 class StaffingError(Exception):
@@ -40,6 +45,10 @@ class AttendanceEventConflict(StaffingError):
 
 
 class AttendanceNotAllowed(StaffingError):
+    pass
+
+
+class ManualAttendanceReasonRequired(StaffingError):
     pass
 
 
@@ -138,6 +147,8 @@ def clock_in(
     source: str = "staff_app",
     occurred_at: datetime | None = None,
     enforce_employee_id: UUID | None = None,
+    reason: str | None = None,
+    enforce_window: bool = True,
 ) -> StaffAttendance:
     event_time = _as_utc(occurred_at or utc_now())
     return _record_attendance_event(
@@ -149,6 +160,8 @@ def clock_in(
         event_type="check_in",
         occurred_at=event_time,
         enforce_employee_id=enforce_employee_id,
+        reason=reason,
+        enforce_window=enforce_window,
     )
 
 
@@ -161,6 +174,7 @@ def clock_out(
     source: str = "staff_app",
     occurred_at: datetime | None = None,
     enforce_employee_id: UUID | None = None,
+    reason: str | None = None,
 ) -> StaffAttendance:
     event_time = _as_utc(occurred_at or utc_now())
     return _record_attendance_event(
@@ -172,6 +186,53 @@ def clock_out(
         event_type="check_out",
         occurred_at=event_time,
         enforce_employee_id=enforce_employee_id,
+        reason=reason,
+    )
+
+
+def record_manual_attendance(
+    session: Session,
+    *,
+    shift_id: UUID,
+    actor_id: UUID,
+    request_id: UUID,
+    event_type: str,
+    occurred_at: datetime,
+    reason: str,
+) -> StaffAttendance:
+    """Register a punch the employee could not mark, on their behalf.
+
+    Only missing marks: an existing check-in or check-out is rejected by the
+    shared recorder, so this path never rewrites a punch the employee already
+    made. The operator writes the instant, which is why the shift window is
+    not enforced — a forgotten entry is usually fixed once the shift is over —
+    and a reason is required for the audit trail.
+    """
+    if event_type not in {"check_in", "check_out"}:
+        raise ValueError("Unsupported attendance event")
+    notes = reason.strip()
+    if not notes:
+        raise ManualAttendanceReasonRequired("Manual attendance requires a reason")
+
+    if event_type == "check_in":
+        return clock_in(
+            session,
+            shift_id=shift_id,
+            actor_id=actor_id,
+            request_id=request_id,
+            source="manual",
+            occurred_at=occurred_at,
+            reason=notes,
+            enforce_window=False,
+        )
+    return clock_out(
+        session,
+        shift_id=shift_id,
+        actor_id=actor_id,
+        request_id=request_id,
+        source="manual",
+        occurred_at=occurred_at,
+        reason=notes,
     )
 
 
@@ -185,6 +246,8 @@ def _record_attendance_event(
     event_type: str,
     occurred_at: datetime,
     enforce_employee_id: UUID | None = None,
+    reason: str | None = None,
+    enforce_window: bool = True,
 ) -> StaffAttendance:
     if source not in {"staff_app", "manual", "access_reader"}:
         raise ValueError("Unsupported attendance source")
@@ -210,7 +273,10 @@ def _record_attendance_event(
 
     record = session.exec(select(StaffAttendance).where(StaffAttendance.shift_id == shift_id)).first()
     if event_type == "check_in":
-        if occurred_at < _as_utc(shift.starts_at) or occurred_at > _as_utc(shift.ends_at):
+        if enforce_window and (
+            occurred_at < _as_utc(shift.starts_at) - CHECK_IN_EARLY_GRACE
+            or occurred_at > _as_utc(shift.ends_at)
+        ):
             raise InvalidAttendanceTime("Check-in must be within the scheduled shift")
         if record is not None:
             raise AttendanceAlreadyRecorded("Attendance already has a check-in for this shift")
@@ -250,6 +316,7 @@ def _record_attendance_event(
             event_type=event_type,
             source=source,
             occurred_at=occurred_at,
+            reason=reason,
         )
     )
     try:

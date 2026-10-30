@@ -148,10 +148,41 @@ def test_attendance_scheduling_and_self_service() -> None:
             # An account without a linked employee cannot use self-service.
             assert client.get("/staff/attendance", headers=owner).status_code == 409
 
+            # A missing mark is filled manually by someone with
+            # attendance.manage; the trainer has only attendance.self.
+            manual_body = {
+                "shift_id": other_shift,
+                "request_id": str(uuid4()),
+                "event_type": "check_in",
+                "occurred_at": now.isoformat(),
+                "reason": "No pudo marcar la entrada",
+            }
+            assert client.post(
+                "/admin/staff/attendance", json=manual_body, headers=trainer
+            ).status_code == 403
+            manual = client.post("/admin/staff/attendance", json=manual_body, headers=ana)
+            assert manual.status_code == 200
+            assert manual.json()["check_in_source"] == "manual"
+
+            # Repeating the same mark is rejected, and a naive datetime never
+            # reaches the service.
+            assert client.post(
+                "/admin/staff/attendance",
+                json={**manual_body, "request_id": str(uuid4())},
+                headers=ana,
+            ).status_code == 409
+            assert client.post(
+                "/admin/staff/attendance",
+                json={**manual_body, "request_id": str(uuid4()), "occurred_at": "2026-10-16T14:00:00"},
+                headers=ana,
+            ).status_code == 422
+
             # The admin listing shows both scheduled shifts.
             listing = client.get("/admin/staff/shifts", headers=owner)
             assert listing.status_code == 200
             assert {item["id"] for item in listing.json()} >= {shift_id, other_shift}
+            manual_row = next(item for item in listing.json() if item["id"] == other_shift)
+            assert manual_row["attendance"]["check_in_source"] == "manual"
     finally:
         app.dependency_overrides.pop(get_session, None)
         engine.dispose()

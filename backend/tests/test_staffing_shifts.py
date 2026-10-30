@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
 from sqlmodel import Session, select
@@ -11,11 +12,13 @@ from app.modules.staffing.service import (
     AttendanceEventConflict,
     AttendanceNotAllowed,
     InvalidAttendanceTime,
+    ManualAttendanceReasonRequired,
     ShiftOverlap,
     clock_in,
     clock_out,
     create_shift,
     list_shifts_with_attendance,
+    record_manual_attendance,
 )
 
 
@@ -273,3 +276,108 @@ def test_list_shifts_with_attendance_filters_by_employee_and_window(session: Ses
     assert list_shifts_with_attendance(
         session, employee_id=employee.id, to_at=START - timedelta(days=30)
     ) == []
+
+
+def test_check_in_opens_fifteen_minutes_before_the_shift(session: Session) -> None:
+    employee, manager = seed_employee_and_manager(session)
+    shift = create_shift(
+        session,
+        employee_id=employee.id,
+        starts_at=START,
+        ends_at=START + timedelta(hours=8),
+        created_by=manager.id,
+    )
+
+    early = clock_in(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START - timedelta(minutes=15),
+    )
+    assert early.check_in_at == START - timedelta(minutes=15)
+    assert early.status == "present"
+
+
+def test_check_in_before_the_grace_window_is_rejected(session: Session) -> None:
+    employee, manager = seed_employee_and_manager(session)
+    shift = create_shift(
+        session,
+        employee_id=employee.id,
+        starts_at=START,
+        ends_at=START + timedelta(hours=8),
+        created_by=manager.id,
+    )
+
+    with pytest.raises(InvalidAttendanceTime):
+        clock_in(
+            session,
+            shift_id=shift.id,
+            actor_id=manager.id,
+            request_id=uuid4(),
+            occurred_at=START - timedelta(minutes=16),
+        )
+
+
+def test_manual_attendance_fills_only_missing_marks(session: Session) -> None:
+    employee, manager = seed_employee_and_manager(session)
+    shift = create_shift(
+        session,
+        employee_id=employee.id,
+        starts_at=START,
+        ends_at=START + timedelta(hours=8),
+        created_by=manager.id,
+    )
+
+    # A forgotten entry is registered once the shift is over, so the window
+    # does not apply to the operator.
+    manual = record_manual_attendance(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        event_type="check_in",
+        occurred_at=START + timedelta(hours=9),
+        reason="No pudo marcar la entrada",
+    )
+    assert manual.check_in_source == "manual"
+    assert manual.status == "late"
+    events = session.exec(select(AttendanceEvent)).all()
+    assert [(event.source, event.reason) for event in events] == [
+        ("manual", "No pudo marcar la entrada")
+    ]
+
+    # A manual mark never rewrites one the employee already made.
+    with pytest.raises(AttendanceAlreadyRecorded):
+        record_manual_attendance(
+            session,
+            shift_id=shift.id,
+            actor_id=manager.id,
+            request_id=uuid4(),
+            event_type="check_in",
+            occurred_at=START + timedelta(hours=9, minutes=30),
+            reason="Entrada repetida",
+        )
+
+    with pytest.raises(ManualAttendanceReasonRequired):
+        record_manual_attendance(
+            session,
+            shift_id=shift.id,
+            actor_id=manager.id,
+            request_id=uuid4(),
+            event_type="check_out",
+            occurred_at=START + timedelta(hours=17),
+            reason="   ",
+        )
+
+    closed = record_manual_attendance(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        event_type="check_out",
+        occurred_at=START + timedelta(hours=17),
+        reason="Olvidó marcar la salida",
+    )
+    assert closed.check_out_source == "manual"
+    assert closed.check_out_at == START + timedelta(hours=17)

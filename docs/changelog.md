@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-30 · Asistencia: «Mi jornada» y marcas faltantes
+
+- **Panel**: nueva pestaña **«Mi jornada»** en Personal, con reloj, el turno vigente y sus botones de entrada/salida, y los turnos de los últimos y próximos 14 días con estado (`Programado`, `Presente`, `Tarde`, `Cancelado`) y marca (`HH:MM`, `HH:MM · en turno`, `HH:MM → HH:MM`, con sufijo «(manual)» cuando la registró un operador). La pestaña aparece con `attendance.self` y usa la cuenta enlazada al expediente; sin vínculo muestra el aviso del `409` en lugar de un error.
+- **Navegación**: la página Personal ya no exige `staff.read`: abre con `staff.read` **o** `attendance.self`, y la pestaña «Equipo» —directorio y turnos del club— conserva el requisito. Entrenadores, mantenimiento y contadores llegan así al marcaje sin ver el directorio; el panel no llama a `/admin/staff` cuando falta el permiso.
+- **Ventana de entrada**: el backend acepta el marcaje desde **15 minutos antes** del inicio (`CHECK_IN_EARLY_GRACE`), conserva la regla de retardo y sigue cerrando la entrada al terminar el turno. Fuera de la ventana la fila explica «Abre 15 min antes» o «Turno cerrado · recepción puede registrarlo».
+- **Corrección**: `POST /admin/staff/attendance` (`attendance.manage`) registra una entrada o salida **faltante** con motivo obligatorio y `source = "manual"`; la vista de turnos muestra «Registrar entrada/salida» solo cuando falta esa marca y el servicio rechaza `409` cualquier intento de reescribir una existente. La ruta manual no aplica la ventana —un olvido se corrige después— pero sí exige el motivo, que queda en la bitácora con el actor.
+- **Pruebas**: tres casos nuevos en `test_staffing_shifts.py` (aceptación a los 15 minutos exactos, rechazo a los 16, registro manual que llena el hueco, rechaza duplicados y motivo vacío) y ampliación de `test_attendance_api.py` (403 del rol Entrenador, alta manual, `409` al repetir y `422` sin zona horaria). Suite en **262 pruebas**: 257 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Verificación**: en el panel sobre la vista previa se creó un colaborador con cuenta, se programó un turno vigente y otro pasado, y se recorrió el flujo completo: como entrenador, «Mi jornada» marca entrada (queda «Tarde»), muestra «Marcar salida» y cierra la jornada; como dueño, la tabla de turnos registra entrada y salida manuales con su motivo y las muestra con «(manual)», y un turno futuro indica «Abre 15 min antes». Sin errores de consola.
+- **Documentación**: ADR-041, módulo de personal y roles, deuda técnica, plan de pruebas e índice de documentación.
+
 ## 2026-10-30 · Matriz de permisos completa
 
 - **Backend**: `GET /admin/permissions` (permiso `roles.manage`) devuelve el catálogo con el código y la etiqueta que ya viven en la tabla `permissions`.
