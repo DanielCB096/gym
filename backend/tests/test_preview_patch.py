@@ -125,3 +125,89 @@ def test_preview_upgrade_accepts_attendance_corrections() -> None:
     connection.execute(
         "INSERT INTO staff_attendance_events (id, event_type) VALUES ('e2', 'check_out_correction')"
     )
+
+
+def test_preview_upgrade_accepts_void_events() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.execute(PRE_CORRECTION_TABLE)
+    connection.execute(
+        "INSERT INTO staff_attendance_events (id, event_type) VALUES ('e1', 'check_out')"
+    )
+    connection.commit()
+
+    preview_patch.upgrade_checks(
+        connection,
+        "staff_attendance_events",
+        preview_patch.CHECK_UPGRADES["staff_attendance_events"],
+        preview_patch.ADDED_CONSTRAINTS.get("staff_attendance_events", ()),
+    )
+
+    create_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='staff_attendance_events'"
+    ).fetchone()[0]
+    assert "check_out_voided" in create_sql
+    assert "attendance_voided" in create_sql
+    connection.execute(
+        "INSERT INTO staff_attendance_events (id, event_type) VALUES ('e2', 'attendance_voided')"
+    )
+    connection.execute(
+        "INSERT INTO staff_attendance_events (id, event_type) VALUES ('e3', 'check_out_voided')"
+    )
+    assert connection.execute("SELECT COUNT(*) FROM staff_attendance_events").fetchone()[0] == 3
+
+
+# The table constraint the preview database carried before voiding was added.
+PRE_VOID_ATTENDANCE_TABLE = (
+    'CREATE TABLE "staff_attendance" (\n'
+    "\tid CHAR(32) NOT NULL, \n"
+    "\tshift_id CHAR(32) NOT NULL, \n"
+    "\tstatus VARCHAR(16) NOT NULL, \n"
+    "\tvoided_at DATETIME, \n"
+    "\tPRIMARY KEY (id), \n"
+    "\tCONSTRAINT uq_staff_attendance_shift UNIQUE (shift_id), \n"
+    "\tCONSTRAINT ck_staff_attendance_status CHECK (status IN ('present', 'late'))\n"
+    ")"
+)
+
+
+def test_preview_voiding_frees_the_shift_only_for_voided_rows() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.execute(PRE_VOID_ATTENDANCE_TABLE)
+    connection.execute(
+        "INSERT INTO staff_attendance (id, shift_id, status) VALUES ('a1', 's1', 'present')"
+    )
+    connection.commit()
+
+    preview_patch.relax_attendance_shift_uniqueness(connection)
+
+    create_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='staff_attendance'"
+    ).fetchone()[0]
+    assert "uq_staff_attendance_shift" not in create_sql
+    index_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='uq_staff_attendance_shift'"
+    ).fetchone()[0]
+    assert "WHERE voided_at IS NULL" in index_sql
+    assert connection.execute("SELECT COUNT(*) FROM staff_attendance").fetchone()[0] == 1
+
+    # Two live marks for the same shift remain impossible.
+    try:
+        connection.execute(
+            "INSERT INTO staff_attendance (id, shift_id, status) VALUES ('a2', 's1', 'present')"
+        )
+    except sqlite3.IntegrityError:
+        pass
+    else:  # pragma: no cover - the unique index must reject the duplicate
+        raise AssertionError("a second live attendance for the shift was accepted")
+
+    connection.execute(
+        "UPDATE staff_attendance SET voided_at = '2026-10-30 12:00:00' WHERE id = 'a1'"
+    )
+    connection.execute(
+        "INSERT INTO staff_attendance (id, shift_id, status) VALUES ('a3', 's1', 'present')"
+    )
+    assert connection.execute("SELECT COUNT(*) FROM staff_attendance").fetchone()[0] == 2
+
+    # Running it again keeps the freed-shift semantics.
+    preview_patch.relax_attendance_shift_uniqueness(connection)
+    assert connection.execute("SELECT COUNT(*) FROM staff_attendance").fetchone()[0] == 2

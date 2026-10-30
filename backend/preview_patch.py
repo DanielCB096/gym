@@ -39,6 +39,11 @@ ADDED_COLUMNS = {
         "voided_sessions": "INTEGER NOT NULL DEFAULT 0",
     },
     "physio_appointments": {"room_id": "CHAR(32)"},
+    "staff_attendance": {
+        "voided_at": "DATETIME",
+        "voided_by": "CHAR(32)",
+        "void_reason": "VARCHAR(300)",
+    },
     "member_account_statement_deliveries": {
         "retry_of_id": "CHAR(32)",
         "purpose": "VARCHAR(16) NOT NULL DEFAULT 'statement'",
@@ -250,6 +255,14 @@ CHECK_UPGRADES = {
             "(event_type IN ('check_in', 'check_out', 'check_in_correction', "
             "'check_out_correction'))",
         ),
+        (
+            "CONSTRAINT ck_staff_attendance_events_type CHECK "
+            "(event_type IN ('check_in', 'check_out', 'check_in_correction', "
+            "'check_out_correction'))",
+            "CONSTRAINT ck_staff_attendance_events_type CHECK "
+            "(event_type IN ('check_in', 'check_out', 'check_in_correction', "
+            "'check_out_correction', 'check_out_voided', 'attendance_voided'))",
+        ),
     ),
     "physio_packs": (),
 }
@@ -447,6 +460,51 @@ def upgrade_checks(
     print(f"{table}: rebuilt with the new CHECKs")
 
 
+def relax_attendance_shift_uniqueness(connection: sqlite3.Connection) -> None:
+    """Replace ``UNIQUE (shift_id)`` with a partial unique index.
+
+    A voided attendance keeps its row for the audit log but must stop occupying
+    the shift, so the uniqueness only applies to rows whose ``voided_at`` is
+    NULL. SQLite cannot drop a table constraint in place, so the table is
+    rebuilt; the partial index is created afterwards.
+    """
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name = 'staff_attendance'"
+    ).fetchone()
+    if row is None or row[0] is None:
+        return
+    create_sql = row[0]
+    marker = "CONSTRAINT uq_staff_attendance_shift UNIQUE (shift_id)"
+    if marker in create_sql:
+        index_sql = [
+            item[0]
+            for item in connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name = 'staff_attendance' "
+                "AND sql IS NOT NULL"
+            ).fetchall()
+        ]
+        create_sql = create_sql.replace(f"{marker},", "")
+        temporary = "staff_attendance__upgrade"
+        create_sql = create_sql.replace(
+            'CREATE TABLE "staff_attendance" ', f'CREATE TABLE "{temporary}" ', 1
+        )
+        if "CREATE TABLE staff_attendance " in create_sql:
+            create_sql = create_sql.replace(
+                "CREATE TABLE staff_attendance ", f"CREATE TABLE {temporary} ", 1
+            )
+        connection.execute(create_sql)
+        connection.execute(f"INSERT INTO {temporary} SELECT * FROM staff_attendance")
+        connection.execute("DROP TABLE staff_attendance")
+        connection.execute(f"ALTER TABLE {temporary} RENAME TO staff_attendance")
+        for statement in index_sql:
+            connection.execute(statement)
+        print("staff_attendance: rebuilt without the one-attendance-per-shift constraint")
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_staff_attendance_shift "
+        "ON staff_attendance (shift_id) WHERE voided_at IS NULL"
+    )
+
+
 def main(reset_maintenance: bool) -> None:
     connection = sqlite3.connect(DB)
     try:
@@ -487,6 +545,9 @@ def main(reset_maintenance: bool) -> None:
                     replacements,
                     ADDED_CONSTRAINTS.get(table, ()),
                 )
+
+        if "staff_attendance" in tables:
+            relax_attendance_shift_uniqueness(connection)
 
         seed_preview_permissions(connection)
 

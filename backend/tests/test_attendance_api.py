@@ -63,6 +63,12 @@ def test_attendance_scheduling_and_self_service() -> None:
             employee_id=first.id,
             role_codes=("reception",),
         )
+        register_user(
+            session,
+            email="maintenance@example.com",
+            password="maintenance-correct-horse-battery",
+            role_codes=("maintenance",),
+        )
         first_id, second_id = first.id, second.id
 
     def override_session() -> Iterator[Session]:
@@ -81,6 +87,9 @@ def test_attendance_scheduling_and_self_service() -> None:
             owner = {"Authorization": f"Bearer {token('owner@example.com', 'owner-correct-horse-battery')}"}
             trainer = {"Authorization": f"Bearer {token('trainer@example.com', 'trainer-correct-horse-battery')}"}
             ana = {"Authorization": f"Bearer {token('ana@example.com', 'ana-correct-horse-battery')}"}
+            maintenance = {
+                "Authorization": f"Bearer {token('maintenance@example.com', 'maintenance-correct-horse-battery')}"
+            }
 
             now = datetime.now(timezone.utc).replace(microsecond=0)
             shift_body = {
@@ -219,6 +228,95 @@ def test_attendance_scheduling_and_self_service() -> None:
                 json={**manual_body, "request_id": str(uuid4()), "occurred_at": "2026-10-16T14:00:00"},
                 headers=ana,
             ).status_code == 422
+
+            # The club's attendance policy is configurable and reaches the
+            # employee board so «Mi jornada» can explain the real window.
+            assert client.get("/staff/attendance", headers=ana).json()["settings"] == {
+                "check_in_early_grace_minutes": 15,
+                "lateness_tolerance_minutes": 0,
+            }
+            assert client.get("/admin/staff/settings", headers=trainer).status_code == 403
+            assert client.get("/admin/staff/settings", headers=owner).json()[
+                "lateness_tolerance_minutes"
+            ] == 0
+            policy = {"check_in_early_grace_minutes": 30, "lateness_tolerance_minutes": 10}
+            assert client.patch(
+                "/admin/staff/settings", json=policy, headers=trainer
+            ).status_code == 403
+            assert client.patch(
+                "/admin/staff/settings",
+                json={**policy, "check_in_early_grace_minutes": 241},
+                headers=owner,
+            ).status_code == 422
+            changed = client.patch("/admin/staff/settings", json=policy, headers=owner)
+            assert changed.status_code == 200
+            assert changed.json()["check_in_early_grace_minutes"] == 30
+            assert client.get("/staff/attendance", headers=ana).json()["settings"] == policy
+
+            # The audit log is readable with attendance.read and keeps the actor
+            # and motive of every mark.
+            events_path = f"/admin/staff/attendance/{attendance_id}/events"
+            assert client.get(events_path, headers=maintenance).status_code == 403
+            log = client.get(events_path, headers=trainer)
+            assert log.status_code == 200
+            items = log.json()["items"]
+            assert sorted(item["event_type"] for item in items) == [
+                "check_in",
+                "check_in_correction",
+                "check_out",
+            ]
+            correction_event = next(
+                item for item in items if item["event_type"] == "check_in_correction"
+            )
+            assert correction_event["reason"] == "La marca anterior quedó mal"
+            assert correction_event["actor_email"] == "ana@example.com"
+            assert client.get(
+                f"/admin/staff/attendance/{uuid4()}/events", headers=trainer
+            ).status_code == 404
+
+            # A stray mark can be annulled with a reason; voiding the exit keeps
+            # the entry, voiding the entry frees the shift.
+            void_path = f"/admin/staff/attendance/{attendance_id}/voids"
+            void_out = {"request_id": str(uuid4()), "mark": "check_out", "reason": "Salió por error"}
+            assert client.post(void_path, json=void_out, headers=trainer).status_code == 403
+            assert client.post(
+                void_path, json={**void_out, "reason": "   "}, headers=ana
+            ).status_code == 422
+            voided = client.post(void_path, json=void_out, headers=ana)
+            assert voided.status_code == 200
+            assert voided.json()["check_out_at"] is None
+            assert voided.json()["voided_at"] is None
+            assert client.post(
+                void_path, json={**void_out, "mark": "check_in"}, headers=ana
+            ).status_code == 409
+            assert client.post(
+                f"/admin/staff/attendance/{uuid4()}/voids",
+                json={**void_out, "request_id": str(uuid4())},
+                headers=ana,
+            ).status_code == 404
+            assert client.post(
+                "/staff/attendance/clock-out",
+                json={"shift_id": shift_id, "request_id": str(uuid4())},
+                headers=ana,
+            ).status_code == 200
+
+            void_in = client.post(
+                void_path,
+                json={"request_id": str(uuid4()), "mark": "check_in", "reason": "Era otro turno"},
+                headers=ana,
+            )
+            assert void_in.status_code == 200
+            assert void_in.json()["voided_at"] is not None
+            board = client.get("/staff/attendance", headers=ana)
+            assert board.json()["items"][0]["attendance"] is None
+            assert client.post(
+                "/staff/attendance/clock-in",
+                json={"shift_id": shift_id, "request_id": str(uuid4())},
+                headers=ana,
+            ).status_code == 200
+            assert client.get("/staff/attendance", headers=ana).json()["items"][0][
+                "attendance"
+            ] is not None
 
             # The admin listing shows both scheduled shifts.
             listing = client.get("/admin/staff/shifts", headers=owner)

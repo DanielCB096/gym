@@ -1,0 +1,38 @@
+# ADR-043: Tolerancia configurable, anulación de una marca y bitácora del turno
+
+- Fecha: 2026-10-30
+- Estado: propuesta inicial
+
+## Contexto
+
+ADR-042 cerró la corrección de una marca existente y en sus consecuencias nombró tres huecos que dejaba abiertos: **una marca cargada por error no se podía eliminar** (solo reescribir su hora), **la bitácora del turno no tenía visor** (el historial vivía en `staff_attendance_events` y únicamente se veía en la base) y **la regla de puntualidad era una constante del servicio**: 15 minutos de apertura anticipada y cualquier entrada posterior al inicio marcada como `late`. En el club, la gracia de llegada y la paciencia con el retraso son política del negocio, no del código; y una marca hecha en el turno equivocado no se arregla moviéndole la hora, se quita.
+
+## Decisión
+
+- **La política del club vive en una fila, no en una constante.** La tabla `staffing_settings` (una sola fila, `id = 1`) guarda `check_in_early_grace_minutes` (por defecto **15**) y `lateness_tolerance_minutes` (por defecto **0**), ambas con `CHECK` de 0 a 240. `read_attendance_policy` **nunca escribe**: si la fila no existe devuelve los valores por defecto, así una base recién migrada marca como siempre. La fila la crea la primera lectura del panel (`GET /admin/staff/settings`, permiso `attendance.manage`) o el primer `PATCH`.
+- **La gracia se aplica a la ventana de auto-marcaje; la tolerancia, a la clasificación.** La gracia define cuánto antes del inicio se abre `POST /staff/attendance/clock-in`; el registro manual y la corrección siguen sin aplicarla, porque ocurren después. La tolerancia desplaza el límite de «puntual»: una entrada cuenta como `present` hasta `starts_at + tolerancia` y como `late` después, tanto en el auto-marcaje como en el registro manual y en la corrección de la entrada.
+- **El cambio de política no reescribe el histórico.** El estado del turno se calcula y se guarda en el momento de la marca; bajar o subir la tolerancia cambia las marcas **futuras**, no las ya registradas. Reclasificar hacia atrás exigiría decidir con qué política se juzga cada marca vieja, y eso no está en el alcance.
+- **Una marca equivocada se anula, no se borra.** `POST /admin/staff/attendance/{attendance_id}/voids` (permiso `attendance.manage`) acepta `mark` (`check_in`/`check_out`), `reason` y `request_id`. Anular la **salida** limpia `check_out_at`, su fuente y su actor y conserva la entrada; anular la **entrada** marca la asistencia completa como anulada (`voided_at`, `voided_by`, `void_reason`) y el turno vuelve a quedar sin asistencia. La fila **no se elimina**: se conserva con su bitácora, y el evento de anulación se agrega al final con su motivo y su actor.
+- **El turno se libera con un índice único parcial.** Con `voided_at` en la fila, `uq_staff_attendance_shift` deja de poder ser un `UNIQUE` de tabla y pasa a ser un índice único parcial `WHERE voided_at IS NULL`: un turno admite un solo marcaje **vivo**, pero puede acumular marcajes anulados. Así se puede volver a marcar el turno sin perder la marca anterior.
+- **La bitácora tiene visor.** `GET /admin/staff/attendance/{attendance_id}/events` (permiso `attendance.read`) devuelve los eventos del más viejo al más nuevo con tipo, origen, instante, motivo, correo y nombre de quien actuó, y `404` si la asistencia no existe. El panel los muestra en el modal «Bitácora del turno» con etiquetas legibles por tipo (`Entrada`, `Salida`, `Entrada corregida`, `Salida corregida`, `Salida anulada`, `Asistencia anulada`) y por origen (`app del personal`, `recepción`, `corrección`, `lector de acceso`).
+- **La anulación exige motivo y es idempotente.** El motivo va de 3 a 500 caracteres y no puede quedar en blanco (`422`); el `request_id` es único y la huella `sha256` cubre asistencia, actor y tipo de anulación, así un reintento devuelve la misma asistencia sin escribir otro evento y reutilizar la clave para otra anulación responde `409`. El turno debe seguir `scheduled`, anular una salida inexistente da `409` y una asistencia desconocida o ya anulada da `404`.
+- **El panel pone las tres piezas juntas.** En «Equipo» hay una tarjeta «Tolerancias del club» con los dos valores (validados en el cliente de 0 a 240 y guardados con `PATCH`), los turnos con asistencia ganan los botones «Bitácora» y «Anular» —«Anular» abre un modal que deja elegir entrada o salida, con la salida preseleccionada cuando existe, y pide el motivo— y el pie de «Mi jornada» anuncia la gracia vigente.
+
+## Consecuencias y límites
+
+- **La anulación de la entrada deja su bitácora fuera del alcance del panel.** Cuando la entrada se anula, la tabla de turnos ya no muestra asistencia para ese turno y el botón «Bitácora» desaparece: los eventos quedan en la base y solo se leen con la API por identificador. Un visor de bitácoras anuladas o un reporte de anulaciones por operador sigue pendiente.
+- **No hay deshacer.** Un turno anulado se puede volver a marcar (fila nueva), pero no se reabre la fila anulada; y anular una salida no se revierte moviéndola, se vuelve a registrar.
+- **La política es global.** No hay excepciones por colaborador, por turno ni por área; el club entero comparte la misma gracia y la misma tolerancia, y la fila no guarda quién la cambió —solo `updated_at`—, así que el cambio de política no queda en la bitácora de asistencia.
+- **Los turnos cancelados no se anulan.** Igual que el registro manual y la corrección, la anulación exige un turno `scheduled`; hoy no existe la ruta de cancelación, así que el límite solo importa si aparece después.
+- **La anulación no avisa al colaborador.** Ni el auto-marcaje ni la anulación escriben en `staff_notifications` o `member_notifications`: quien marcó se entera al volver a «Mi jornada».
+- **La vista previa reconstruye la tabla.** SQLite no puede soltar un `UNIQUE` de tabla, así que `preview_patch.relax_attendance_shift_uniqueness` reconstruye `staff_attendance` con `voided_at` y crea el índice parcial; en una base PostgreSQL lo hace la migración `20261030_0060_attendance_void_and_policy.py`, cuya reversión se niega a ejecutarse mientras existan marcas anuladas o eventos de anulación.
+
+## Referencias
+
+- `backend/src/app/modules/staffing/models.py` (`StaffingSettings`, `StaffAttendance.voided_at`, `uq_staff_attendance_shift` como índice parcial)
+- `backend/src/app/modules/staffing/service.py` (`read_attendance_policy`, `get_staffing_settings`, `update_staffing_settings`, `void_attendance_mark`, `list_attendance_events`, `_status_for`)
+- `backend/src/app/main.py` (`GET`/`PATCH /admin/staff/settings`, `GET /admin/staff/attendance/{attendance_id}/events`, `POST /admin/staff/attendance/{attendance_id}/voids`, `settings` en el tablero `/staff/attendance`)
+- `backend/alembic/versions/20261030_0060_attendance_void_and_policy.py`, `backend/preview_patch.py`
+- `backend/tests/test_staffing_shifts.py` (política, ventana y tolerancia, anulación de salida y de entrada, rechazos), `backend/tests/test_attendance_api.py` (permisos, validación, bitácora y anulación de extremo a extremo), `backend/tests/test_preview_patch.py` (índice parcial y eventos de anulación en la vista previa)
+- `web/src/app/page.tsx` (`AttendanceLogModal`, `AttendanceVoidModal`, tarjeta «Tolerancias del club»), `web/src/app/api/admin/staff/settings/route.ts`, `web/src/app/api/admin/staff/attendance/[attendanceId]/events/route.ts`, `web/src/app/api/admin/staff/attendance/[attendanceId]/voids/route.ts`
+- `docs/02-modulos/personal-y-roles.md`, `docs/01-arquitectura/modelo-de-datos.md`, `docs/deuda-tecnica.md`, `docs/07-pruebas/plan-de-pruebas.md`

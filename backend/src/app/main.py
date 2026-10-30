@@ -521,7 +521,7 @@ from app.modules.portal.service import (
     revoke_member_session,
     verify_login_code,
 )
-from app.modules.staffing.models import StaffAttendance, StaffShift
+from app.modules.staffing.models import StaffAttendance, StaffShift, StaffingSettings
 from app.modules.staffing.service import (
     AttendanceAlreadyRecorded,
     AttendanceEventConflict,
@@ -536,8 +536,13 @@ from app.modules.staffing.service import (
     clock_out,
     correct_attendance,
     create_shift,
+    get_staffing_settings,
+    list_attendance_events,
     list_shifts_with_attendance,
+    read_attendance_policy,
     record_manual_attendance,
+    update_staffing_settings,
+    void_attendance_mark,
 )
 from app.modules.billing import (
     # The memberships module already exposes a ``BillingError`` base class in
@@ -939,6 +944,17 @@ class AttendanceCorrectionRequest(BaseModel):
     event_type: Literal["check_in", "check_out"]
     occurred_at: datetime
     reason: str = Field(min_length=3, max_length=500)
+
+
+class AttendanceVoidRequest(BaseModel):
+    request_id: UUID
+    mark: Literal["check_in", "check_out"]
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class StaffingSettingsRequest(BaseModel):
+    check_in_early_grace_minutes: int = Field(ge=0, le=240)
+    lateness_tolerance_minutes: int = Field(ge=0, le=240)
 
 
 class ProductResponse(BaseModel):
@@ -4357,6 +4373,28 @@ def list_staff_shifts(
     return [_shift_payload(shift, attendance) for shift, attendance in rows]
 
 
+@app.get("/admin/staff/settings", tags=["staff administration"])
+def get_staffing_settings_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+) -> dict[str, object]:
+    return _staffing_settings_payload(get_staffing_settings(session))
+
+
+@app.patch("/admin/staff/settings", tags=["staff administration"])
+def update_staffing_settings_endpoint(
+    request: StaffingSettingsRequest,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+) -> dict[str, object]:
+    settings = update_staffing_settings(
+        session,
+        check_in_early_grace_minutes=request.check_in_early_grace_minutes,
+        lateness_tolerance_minutes=request.lateness_tolerance_minutes,
+    )
+    return _staffing_settings_payload(settings)
+
+
 @app.post(
     "/admin/staff/{employee_id}/shifts",
     status_code=status.HTTP_201_CREATED,
@@ -4406,8 +4444,13 @@ def my_attendance(
         from_at=now - timedelta(days=days),
         to_at=now + timedelta(days=days),
     )
+    early_grace_minutes, lateness_tolerance_minutes = read_attendance_policy(session)
     return {
         "employee_id": principal.employee_id,
+        "settings": {
+            "check_in_early_grace_minutes": early_grace_minutes,
+            "lateness_tolerance_minutes": lateness_tolerance_minutes,
+        },
         "items": [_shift_payload(shift, attendance) for shift, attendance in rows],
     }
 
@@ -4496,6 +4539,65 @@ def correct_registered_attendance(
     return _attendance_payload(attendance)
 
 
+@app.get(
+    "/admin/staff/attendance/{attendance_id}/events",
+    tags=["staff administration"],
+)
+def list_registered_attendance_events(
+    attendance_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.read"))],
+) -> dict[str, object]:
+    try:
+        rows = list_attendance_events(session, attendance_id=attendance_id)
+    except AttendanceNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return {
+        "items": [
+            {
+                "id": event.id,
+                "event_type": event.event_type,
+                "source": event.source,
+                "occurred_at": event.occurred_at,
+                "reason": event.reason,
+                "actor_email": actor.email,
+                "actor_name": (
+                    f"{employee.first_name} {employee.last_name}" if employee is not None else None
+                ),
+            }
+            for event, actor, employee in rows
+        ]
+    }
+
+
+@app.post(
+    "/admin/staff/attendance/{attendance_id}/voids",
+    tags=["staff administration"],
+)
+def void_registered_attendance_mark(
+    attendance_id: UUID,
+    request: AttendanceVoidRequest,
+    session: SessionDependency,
+    principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+) -> dict[str, object]:
+    try:
+        attendance = void_attendance_mark(
+            session,
+            attendance_id=attendance_id,
+            actor_id=principal.user_id,
+            request_id=request.request_id,
+            mark=request.mark,
+            reason=request.reason,
+        )
+    except ManualAttendanceReasonRequired as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    except AttendanceNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except (ShiftNotAvailable, AttendanceMarkMissing, AttendanceEventConflict) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    return _attendance_payload(attendance)
+
+
 def _self_attendance_mark(
     session: Session,
     principal: AuthenticatedUser,
@@ -4546,6 +4648,15 @@ def _attendance_payload(attendance: StaffAttendance) -> dict[str, object]:
         "check_in_source": attendance.check_in_source,
         "check_out_at": attendance.check_out_at,
         "check_out_source": attendance.check_out_source,
+        "voided_at": attendance.voided_at,
+    }
+
+
+def _staffing_settings_payload(settings: StaffingSettings) -> dict[str, object]:
+    return {
+        "check_in_early_grace_minutes": settings.check_in_early_grace_minutes,
+        "lateness_tolerance_minutes": settings.lateness_tolerance_minutes,
+        "updated_at": settings.updated_at,
     }
 
 

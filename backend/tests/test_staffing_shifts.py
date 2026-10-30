@@ -6,7 +6,12 @@ from sqlmodel import Session, select
 
 from app.modules.identity.models import AppUser, Employee
 from app.modules.identity.service import ensure_default_access_control, register_user
-from app.modules.staffing.models import AttendanceEvent, StaffAttendance, StaffShift
+from app.modules.staffing.models import (
+    AttendanceEvent,
+    StaffAttendance,
+    StaffingSettings,
+    StaffShift,
+)
 from app.modules.staffing.service import (
     AttendanceAlreadyRecorded,
     AttendanceEventConflict,
@@ -20,8 +25,13 @@ from app.modules.staffing.service import (
     clock_out,
     correct_attendance,
     create_shift,
+    get_staffing_settings,
+    list_attendance_events,
     list_shifts_with_attendance,
+    read_attendance_policy,
     record_manual_attendance,
+    update_staffing_settings,
+    void_attendance_mark,
 )
 
 
@@ -544,3 +554,325 @@ def test_correction_respects_order_and_requires_the_mark(session: Session) -> No
             occurred_at=START,
             reason="Registro inexistente",
         )
+
+
+def test_attendance_policy_defaults_and_validation(session: Session) -> None:
+    assert read_attendance_policy(session) == (15, 0)
+
+    # Reading never writes the singleton row.
+    assert session.get(StaffingSettings, 1) is None
+
+    settings = get_staffing_settings(session)
+    assert settings.check_in_early_grace_minutes == 15
+    assert settings.lateness_tolerance_minutes == 0
+
+    updated = update_staffing_settings(
+        session, check_in_early_grace_minutes=30, lateness_tolerance_minutes=10
+    )
+    assert (updated.check_in_early_grace_minutes, updated.lateness_tolerance_minutes) == (30, 10)
+    assert read_attendance_policy(session) == (30, 10)
+
+    for invalid in (-1, 241):
+        with pytest.raises(ValueError):
+            update_staffing_settings(
+                session, check_in_early_grace_minutes=invalid, lateness_tolerance_minutes=0
+            )
+        with pytest.raises(ValueError):
+            update_staffing_settings(
+                session, check_in_early_grace_minutes=0, lateness_tolerance_minutes=invalid
+            )
+    # A rejected update does not partially persist.
+    assert read_attendance_policy(session) == (30, 10)
+
+
+def test_configurable_grace_and_tolerance_change_the_window_and_status(session: Session) -> None:
+    employee, manager = seed_employee_and_manager(session)
+    update_staffing_settings(
+        session, check_in_early_grace_minutes=30, lateness_tolerance_minutes=10
+    )
+    shift = create_shift(
+        session,
+        employee_id=employee.id,
+        starts_at=START,
+        ends_at=START + timedelta(hours=8),
+        created_by=manager.id,
+    )
+
+    # 25 minutes early would be rejected under the old 15-minute default.
+    early = clock_in(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START - timedelta(minutes=25),
+    )
+    assert early.status == "present"
+
+    # The tolerance is inclusive: exactly ten minutes late is still present.
+    on_time = correct_attendance(
+        session,
+        attendance_id=early.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        event_type="check_in",
+        occurred_at=START + timedelta(minutes=10),
+        reason="Llegó diez minutos tarde, dentro de la tolerancia",
+    )
+    assert on_time.status == "present"
+
+    with pytest.raises(InvalidAttendanceTime):
+        clock_in(
+            session,
+            shift_id=shift.id,
+            actor_id=manager.id,
+            request_id=uuid4(),
+            occurred_at=START - timedelta(minutes=31),
+        )
+
+
+def test_status_uses_the_configured_tolerance_on_the_first_mark(session: Session) -> None:
+    employee, manager = seed_employee_and_manager(session)
+    update_staffing_settings(
+        session, check_in_early_grace_minutes=15, lateness_tolerance_minutes=10
+    )
+    shift = create_shift(
+        session,
+        employee_id=employee.id,
+        starts_at=START,
+        ends_at=START + timedelta(hours=8),
+        created_by=manager.id,
+    )
+
+    attendance = clock_in(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START + timedelta(minutes=11),
+    )
+    assert attendance.status == "late"
+
+
+def test_voiding_the_check_out_keeps_the_entry(session: Session) -> None:
+    employee, manager = seed_employee_and_manager(session)
+    shift = create_shift(
+        session,
+        employee_id=employee.id,
+        starts_at=START,
+        ends_at=START + timedelta(hours=8),
+        created_by=manager.id,
+    )
+    attendance = clock_in(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START,
+    )
+    clock_out(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START + timedelta(hours=8),
+    )
+
+    request_id = uuid4()
+    voided = void_attendance_mark(
+        session,
+        attendance_id=attendance.id,
+        actor_id=manager.id,
+        request_id=request_id,
+        mark="check_out",
+        reason="La salida se registró por error",
+    )
+    assert voided.check_out_at is None
+    assert voided.check_out_source is None
+    assert voided.voided_at is None
+    assert voided.check_in_at == START
+
+    log = list_attendance_events(session, attendance_id=attendance.id)
+    assert [event.event_type for event, _, _ in log] == [
+        "check_in",
+        "check_out",
+        "check_out_voided",
+    ]
+    last_event, actor, employee_row = log[-1]
+    assert last_event.reason == "La salida se registró por error"
+    assert last_event.source == "manual"
+    assert actor.id == manager.id
+    assert employee_row is None
+
+    # The entry still occupies the shift, so the exit can be marked again.
+    with pytest.raises(AttendanceAlreadyRecorded):
+        clock_in(
+            session,
+            shift_id=shift.id,
+            actor_id=manager.id,
+            request_id=uuid4(),
+            occurred_at=START,
+        )
+    again = clock_out(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START + timedelta(hours=7, minutes=30),
+    )
+    assert again.check_out_at == START + timedelta(hours=7, minutes=30)
+
+    # Replaying the annulment neither duplicates the event nor reopens the
+    # already restored exit.
+    replay = void_attendance_mark(
+        session,
+        attendance_id=attendance.id,
+        actor_id=manager.id,
+        request_id=request_id,
+        mark="check_out",
+        reason="La salida se registró por error",
+    )
+    assert replay.id == attendance.id
+    assert len(list_attendance_events(session, attendance_id=attendance.id)) == 4
+
+
+def test_voiding_the_check_in_frees_the_shift(session: Session) -> None:
+    employee, manager = seed_employee_and_manager(session)
+    shift = create_shift(
+        session,
+        employee_id=employee.id,
+        starts_at=START,
+        ends_at=START + timedelta(hours=8),
+        created_by=manager.id,
+    )
+    attendance = clock_in(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START + timedelta(minutes=5),
+    )
+
+    voided = void_attendance_mark(
+        session,
+        attendance_id=attendance.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        mark="check_in",
+        reason="Era el turno de otra persona",
+    )
+    assert voided.voided_at is not None
+    assert voided.voided_by == manager.id
+    assert voided.void_reason == "Era el turno de otra persona"
+
+    # The shift is free again and the view no longer shows the voided row.
+    rows = list_shifts_with_attendance(session, employee_id=employee.id)
+    assert [(row_shift.id, row_attendance) for row_shift, row_attendance in rows] == [
+        (shift.id, None)
+    ]
+
+    replacement = clock_in(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START + timedelta(minutes=2),
+    )
+    assert replacement.id != attendance.id
+    assert replacement.voided_at is None
+
+    # The voided row keeps its history with the annulment on top.
+    assert [event.event_type for event, _, _ in list_attendance_events(
+        session, attendance_id=attendance.id
+    )] == ["check_in", "attendance_voided"]
+
+    listed = list_shifts_with_attendance(session, employee_id=employee.id)
+    assert listed[0][1] is not None
+    assert listed[0][1].id == replacement.id
+
+
+def test_void_rejections(session: Session) -> None:
+    employee, manager = seed_employee_and_manager(session)
+    shift = create_shift(
+        session,
+        employee_id=employee.id,
+        starts_at=START,
+        ends_at=START + timedelta(hours=8),
+        created_by=manager.id,
+    )
+    attendance = clock_in(
+        session,
+        shift_id=shift.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START,
+    )
+
+    with pytest.raises(ManualAttendanceReasonRequired):
+        void_attendance_mark(
+            session,
+            attendance_id=attendance.id,
+            actor_id=manager.id,
+            request_id=uuid4(),
+            mark="check_in",
+            reason="   ",
+        )
+    with pytest.raises(AttendanceMarkMissing):
+        void_attendance_mark(
+            session,
+            attendance_id=attendance.id,
+            actor_id=manager.id,
+            request_id=uuid4(),
+            mark="check_out",
+            reason="No hay salida que anular",
+        )
+    with pytest.raises(AttendanceNotFound):
+        void_attendance_mark(
+            session,
+            attendance_id=uuid4(),
+            actor_id=manager.id,
+            request_id=uuid4(),
+            mark="check_in",
+            reason="Registro inexistente",
+        )
+    with pytest.raises(ValueError):
+        void_attendance_mark(
+            session,
+            attendance_id=attendance.id,
+            actor_id=manager.id,
+            request_id=uuid4(),
+            mark="check_out_correction",
+            reason="Tipo no anulable",
+        )
+
+    request_id = uuid4()
+    void_attendance_mark(
+        session,
+        attendance_id=attendance.id,
+        actor_id=manager.id,
+        request_id=request_id,
+        mark="check_in",
+        reason="Marca duplicada",
+    )
+    # The same request id cannot be reused for a different annulment.
+    with pytest.raises(AttendanceEventConflict):
+        void_attendance_mark(
+            session,
+            attendance_id=attendance.id,
+            actor_id=manager.id,
+            request_id=request_id,
+            mark="check_out",
+            reason="Otra anulación",
+        )
+    # A voided row can no longer be corrected.
+    with pytest.raises(AttendanceNotFound):
+        correct_attendance(
+            session,
+            attendance_id=attendance.id,
+            actor_id=manager.id,
+            request_id=uuid4(),
+            event_type="check_in",
+            occurred_at=START,
+            reason="Corregir algo ya anulado",
+        )
+    with pytest.raises(AttendanceNotFound):
+        list_attendance_events(session, attendance_id=uuid4())

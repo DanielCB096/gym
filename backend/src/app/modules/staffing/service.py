@@ -9,15 +9,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.modules.identity.models import AppUser, Employee
-from app.modules.staffing.models import AttendanceEvent, StaffAttendance, StaffShift, utc_now
+from app.modules.staffing.models import AttendanceEvent, StaffAttendance, StaffShift, StaffingSettings, utc_now
 
 
 _RecordT = TypeVar("_RecordT", bound=SQLModel)
 
 # People usually arrive a few minutes before their shift starts. Marking that
 # early is not an error, so the check-in window opens before the scheduled
-# start; the shift's end still bounds it.
-CHECK_IN_EARLY_GRACE = timedelta(minutes=15)
+# start; the shift's end still bounds it. The club can change both values from
+# the panel; these are only the defaults of a missing settings row.
+DEFAULT_CHECK_IN_EARLY_GRACE_MINUTES = 15
+DEFAULT_LATENESS_TOLERANCE_MINUTES = 0
+MAX_ATTENDANCE_POLICY_MINUTES = 240
+VOIDABLE_MARKS = ("check_in", "check_out")
 
 
 class StaffingError(Exception):
@@ -58,6 +62,51 @@ class AttendanceNotFound(StaffingError):
 
 class AttendanceMarkMissing(StaffingError):
     pass
+
+
+def read_attendance_policy(session: Session) -> tuple[int, int]:
+    """Return the club's check-in grace and lateness tolerance, in minutes.
+
+    The settings row is created lazily from the panel; reading never writes, so
+    a database without it falls back to the defaults.
+    """
+    settings = session.get(StaffingSettings, 1)
+    if settings is None:
+        return DEFAULT_CHECK_IN_EARLY_GRACE_MINUTES, DEFAULT_LATENESS_TOLERANCE_MINUTES
+    return settings.check_in_early_grace_minutes, settings.lateness_tolerance_minutes
+
+
+def get_staffing_settings(session: Session) -> StaffingSettings:
+    """Return the singleton settings row, creating it with defaults if needed."""
+    settings = session.get(StaffingSettings, 1)
+    if settings is None:
+        settings = StaffingSettings(id=1)
+        session.add(settings)
+        session.commit()
+        session.refresh(settings)
+    return settings
+
+
+def update_staffing_settings(
+    session: Session,
+    *,
+    check_in_early_grace_minutes: int,
+    lateness_tolerance_minutes: int,
+) -> StaffingSettings:
+    for value, label in (
+        (check_in_early_grace_minutes, "check_in_early_grace_minutes"),
+        (lateness_tolerance_minutes, "lateness_tolerance_minutes"),
+    ):
+        if not 0 <= value <= MAX_ATTENDANCE_POLICY_MINUTES:
+            raise ValueError(f"{label} must be between 0 and {MAX_ATTENDANCE_POLICY_MINUTES}")
+    settings = get_staffing_settings(session)
+    settings.check_in_early_grace_minutes = check_in_early_grace_minutes
+    settings.lateness_tolerance_minutes = lateness_tolerance_minutes
+    settings.updated_at = utc_now()
+    session.add(settings)
+    session.commit()
+    session.refresh(settings)
+    return _normalize_datetimes(settings, ("updated_at",))
 
 
 def create_shift(
@@ -125,7 +174,11 @@ def list_shifts_with_attendance(
     """
     query = (
         select(StaffShift, StaffAttendance)
-        .join(StaffAttendance, StaffAttendance.shift_id == StaffShift.id, isouter=True)
+        .join(
+            StaffAttendance,
+            (StaffAttendance.shift_id == StaffShift.id) & StaffAttendance.voided_at.is_(None),
+            isouter=True,
+        )
         .order_by(StaffShift.starts_at.desc())
     )
     if employee_id is not None:
@@ -293,7 +346,7 @@ def correct_attendance(
     record = session.exec(
         select(StaffAttendance).where(StaffAttendance.id == attendance_id).with_for_update()
     ).first()
-    if record is None:
+    if record is None or record.voided_at is not None:
         raise AttendanceNotFound("Attendance record was not found")
     shift = session.get(StaffShift, record.shift_id)
     actor = session.get(AppUser, actor_id)
@@ -301,12 +354,13 @@ def correct_attendance(
         raise ShiftNotAvailable("Scheduled shift and active user are required")
 
     if event_type == "check_in":
+        _, lateness_tolerance_minutes = read_attendance_policy(session)
         if record.check_out_at is not None and event_time > _as_utc(record.check_out_at):
             raise InvalidAttendanceTime("Check-in cannot be after check-out")
         record.check_in_at = event_time
         record.check_in_source = "correction"
         record.check_in_actor_id = actor_id
-        record.status = "late" if event_time > _as_utc(shift.starts_at) else "present"
+        record.status = _status_for(shift, event_time, lateness_tolerance_minutes)
     else:
         if record.check_out_at is None:
             raise AttendanceMarkMissing("Attendance has no check-out to correct")
@@ -346,6 +400,120 @@ def correct_attendance(
     return _normalize_datetimes(record, ("check_in_at", "check_out_at", "created_at", "updated_at"))
 
 
+def void_attendance_mark(
+    session: Session,
+    *,
+    attendance_id: UUID,
+    actor_id: UUID,
+    request_id: UUID,
+    mark: str,
+    reason: str,
+) -> StaffAttendance:
+    """Remove a mark that should never have been recorded.
+
+    Voiding the check-in eliminates the attendance itself — the row stays for
+    the audit log but stops occupying the shift, so it can be marked again —
+    while voiding the check-out only clears the exit and keeps the entry. The
+    log keeps every previous event and appends the annulment with its reason,
+    its actor and the instant it was made.
+    """
+    if mark not in VOIDABLE_MARKS:
+        raise ValueError("Unsupported attendance mark")
+    notes = reason.strip()
+    if not notes:
+        raise ManualAttendanceReasonRequired("Voiding a mark requires a reason")
+
+    stored_type = "attendance_voided" if mark == "check_in" else "check_out_voided"
+    fingerprint = _fingerprint(
+        {
+            "attendance_id": str(attendance_id),
+            "actor_id": str(actor_id),
+            "event_type": stored_type,
+        }
+    )
+    prior_event = session.exec(
+        select(AttendanceEvent).where(AttendanceEvent.request_id == request_id)
+    ).first()
+    if prior_event is not None:
+        if prior_event.request_sha256 != fingerprint:
+            raise AttendanceEventConflict("Request ID was reused for a different attendance annulment")
+        record = session.get(StaffAttendance, prior_event.attendance_id)
+        if record is None:
+            raise StaffingError("Attendance record for replayed event is missing")
+        return _normalize_datetimes(record, _ATTENDANCE_DATETIME_FIELDS)
+
+    record = session.exec(
+        select(StaffAttendance).where(StaffAttendance.id == attendance_id).with_for_update()
+    ).first()
+    if record is None or record.voided_at is not None:
+        raise AttendanceNotFound("Attendance record was not found")
+    shift = session.get(StaffShift, record.shift_id)
+    actor = session.get(AppUser, actor_id)
+    if shift is None or shift.status != "scheduled" or actor is None or actor.status != "active":
+        raise ShiftNotAvailable("Scheduled shift and active user are required")
+
+    now = utc_now()
+    if mark == "check_out":
+        if record.check_out_at is None:
+            raise AttendanceMarkMissing("Attendance has no check-out to void")
+        record.check_out_at = None
+        record.check_out_source = None
+        record.check_out_actor_id = None
+    else:
+        record.voided_at = now
+        record.voided_by = actor_id
+        record.void_reason = notes
+    record.updated_at = now
+
+    session.add(
+        AttendanceEvent(
+            request_id=request_id,
+            request_sha256=fingerprint,
+            attendance_id=record.id,
+            actor_id=actor_id,
+            event_type=stored_type,
+            source="manual",
+            occurred_at=now,
+            reason=notes,
+        )
+    )
+    try:
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        prior_event = session.exec(
+            select(AttendanceEvent).where(AttendanceEvent.request_id == request_id)
+        ).first()
+        if prior_event is None or prior_event.request_sha256 != fingerprint:
+            raise AttendanceEventConflict("Attendance annulment conflicted with another request") from error
+        replay_record = session.get(StaffAttendance, prior_event.attendance_id)
+        if replay_record is None:
+            raise StaffingError("Attendance record for replayed event is missing") from error
+        return _normalize_datetimes(replay_record, _ATTENDANCE_DATETIME_FIELDS)
+    session.refresh(record)
+    return _normalize_datetimes(record, _ATTENDANCE_DATETIME_FIELDS)
+
+
+def list_attendance_events(
+    session: Session, *, attendance_id: UUID
+) -> list[tuple[AttendanceEvent, AppUser, Employee | None]]:
+    """Return the attendance log oldest first, with the account that acted."""
+    record = session.get(StaffAttendance, attendance_id)
+    if record is None:
+        raise AttendanceNotFound("Attendance record was not found")
+    rows = session.exec(
+        select(AttendanceEvent, AppUser, Employee)
+        .join(AppUser, AttendanceEvent.actor_id == AppUser.id)
+        .join(Employee, AppUser.employee_id == Employee.id, isouter=True)
+        .where(AttendanceEvent.attendance_id == attendance_id)
+        .order_by(AttendanceEvent.occurred_at, AttendanceEvent.id)
+    ).all()
+    return [
+        (_normalize_datetimes(event, ("occurred_at",)), actor, employee)
+        for event, actor, employee in rows
+    ]
+
+
 def _record_attendance_event(
     session: Session,
     *,
@@ -381,10 +549,16 @@ def _record_attendance_event(
     if enforce_employee_id is not None and shift.employee_id != enforce_employee_id:
         raise AttendanceNotAllowed("The shift does not belong to the acting employee")
 
-    record = session.exec(select(StaffAttendance).where(StaffAttendance.shift_id == shift_id)).first()
+    record = session.exec(
+        select(StaffAttendance).where(
+            StaffAttendance.shift_id == shift_id,
+            StaffAttendance.voided_at.is_(None),
+        )
+    ).first()
     if event_type == "check_in":
+        early_grace_minutes, lateness_tolerance_minutes = read_attendance_policy(session)
         if enforce_window and (
-            occurred_at < _as_utc(shift.starts_at) - CHECK_IN_EARLY_GRACE
+            occurred_at < _as_utc(shift.starts_at) - timedelta(minutes=early_grace_minutes)
             or occurred_at > _as_utc(shift.ends_at)
         ):
             raise InvalidAttendanceTime("Check-in must be within the scheduled shift")
@@ -399,7 +573,7 @@ def _record_attendance_event(
             check_in_at=occurred_at,
             check_in_source=source,
             check_in_actor_id=actor_id,
-            status="late" if occurred_at > _as_utc(shift.starts_at) else "present",
+            status=_status_for(shift, occurred_at, lateness_tolerance_minutes),
             created_at=occurred_at,
             updated_at=occurred_at,
         )
@@ -444,6 +618,21 @@ def _record_attendance_event(
         return _normalize_datetimes(replay_record, ("check_in_at", "check_out_at", "created_at", "updated_at"))
     session.refresh(record)
     return _normalize_datetimes(record, ("check_in_at", "check_out_at", "created_at", "updated_at"))
+
+
+_ATTENDANCE_DATETIME_FIELDS = (
+    "check_in_at",
+    "check_out_at",
+    "voided_at",
+    "created_at",
+    "updated_at",
+)
+
+
+def _status_for(shift: StaffShift, occurred_at: datetime, lateness_tolerance_minutes: int) -> str:
+    """Classify an entry against the start plus the club's lateness tolerance."""
+    limit = _as_utc(shift.starts_at) + timedelta(minutes=lateness_tolerance_minutes)
+    return "late" if _as_utc(occurred_at) > limit else "present"
 
 
 def _request_fingerprint(shift_id: UUID, actor_id: UUID, source: str, event_type: str) -> str:

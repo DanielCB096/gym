@@ -140,6 +140,22 @@ type BackendAttendance = {
   check_in_source: string;
   check_out_at: string | null;
   check_out_source: string | null;
+  voided_at: string | null;
+};
+
+type AttendancePolicy = {
+  check_in_early_grace_minutes: number;
+  lateness_tolerance_minutes: number;
+};
+
+type AttendanceLogEntry = {
+  id: string;
+  event_type: string;
+  source: string;
+  occurred_at: string;
+  reason: string | null;
+  actor_email: string;
+  actor_name: string | null;
 };
 
 type BackendShift = {
@@ -153,6 +169,7 @@ type BackendShift = {
 
 type MyAttendanceBoard = {
   employee_id: string;
+  settings: AttendancePolicy;
   items: BackendShift[];
 };
 
@@ -2980,6 +2997,7 @@ export default function HomePage() {
   const [backendShifts, setBackendShifts] = useState<BackendShift[] | null>(null);
   const [myShifts, setMyShifts] = useState<BackendShift[] | null>(null);
   const [myAttendanceState, setMyAttendanceState] = useState<"hidden" | "loading" | "ready" | "unlinked" | "error">("hidden");
+  const [myAttendancePolicy, setMyAttendancePolicy] = useState<AttendancePolicy>({ check_in_early_grace_minutes: 15, lateness_tolerance_minutes: 0 });
   const [staffLoading, setStaffLoading] = useState(false);
   const [staffError, setStaffError] = useState("");
   const [staffRefresh, setStaffRefresh] = useState(0);
@@ -3076,6 +3094,7 @@ export default function HomePage() {
             const board = await mineResponse.json() as MyAttendanceBoard;
             if (active) {
               setMyShifts(board.items);
+              setMyAttendancePolicy(board.settings);
               setMyAttendanceState("ready");
             }
           }
@@ -3636,7 +3655,7 @@ export default function HomePage() {
               onOpenMember={(member) => hasPermission("members.manage") && setActiveMember(member)}
             />
           )}
-          {activePage === "Personal" && <StaffView onToast={showToast} canViewStaff={hasPermission("staff.read")} canManageRoles={hasPermission("roles.manage")} canManageSessions={hasPermission("sessions.manage")} canManageStaff={hasPermission("staff.manage")} canViewAttendance={hasPermission("attendance.read")} canManageAttendance={hasPermission("attendance.manage")} canSelfAttendance={hasPermission("attendance.self")} employees={backendStaff} roles={backendRoles} permissionCatalog={permissionCatalog} users={backendUsers} sessions={backendSessions} shifts={backendShifts} myShifts={myShifts} myAttendanceState={myAttendanceState} loading={staffLoading} error={staffError} onIdentityChanged={() => setStaffRefresh((value) => value + 1)} />}
+          {activePage === "Personal" && <StaffView onToast={showToast} canViewStaff={hasPermission("staff.read")} canManageRoles={hasPermission("roles.manage")} canManageSessions={hasPermission("sessions.manage")} canManageStaff={hasPermission("staff.manage")} canViewAttendance={hasPermission("attendance.read")} canManageAttendance={hasPermission("attendance.manage")} canSelfAttendance={hasPermission("attendance.self")} employees={backendStaff} roles={backendRoles} permissionCatalog={permissionCatalog} users={backendUsers} sessions={backendSessions} shifts={backendShifts} myShifts={myShifts} myAttendanceState={myAttendanceState} myAttendancePolicy={myAttendancePolicy} loading={staffLoading} error={staffError} onIdentityChanged={() => setStaffRefresh((value) => value + 1)} />}
           {activePage === "Inventario" && <InventoryView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Clases" && <ClassesView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Fisioterapia" && <PhysioView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
@@ -4760,16 +4779,14 @@ function shiftClock(value: string): string {
   return new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
 }
 
-const SELF_MARK_EARLY_MS = 15 * 60 * 1000;
-
 type SelfMark = { action: "check_in" | "check_out" | null; hint: string };
 
-function selfMarkFor(shift: BackendShift, now: number): SelfMark {
+function selfMarkFor(shift: BackendShift, now: number, earlyGraceMinutes: number): SelfMark {
   if (shift.status !== "scheduled") return { action: null, hint: "Turno cancelado" };
   const start = new Date(shift.starts_at).getTime();
   const end = new Date(shift.ends_at).getTime();
   if (!shift.attendance) {
-    if (now < start - SELF_MARK_EARLY_MS) return { action: null, hint: "Abre 15 min antes" };
+    if (now < start - earlyGraceMinutes * 60 * 1000) return { action: null, hint: `Abre ${earlyGraceMinutes} min antes` };
     if (now > end) return { action: null, hint: "Turno cerrado · recepción puede registrarlo" };
     return { action: "check_in", hint: "Puedes marcar tu entrada" };
   }
@@ -4843,7 +4860,7 @@ function MembersView({ directory, loading, error, search, onSearch, sort, direct
   );
 }
 
-function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, canManageStaff, canViewAttendance, canManageAttendance, canSelfAttendance, employees, roles, permissionCatalog, users, sessions, shifts, myShifts, myAttendanceState, loading, error, onIdentityChanged }: { onToast: (message: string) => void; canViewStaff: boolean; canManageRoles: boolean; canManageSessions: boolean; canManageStaff: boolean; canViewAttendance: boolean; canManageAttendance: boolean; canSelfAttendance: boolean; employees: BackendEmployee[] | null; roles: BackendRole[] | null; permissionCatalog: PermissionCatalogEntry[] | null; users: BackendUser[] | null; sessions: BackendSession[] | null; shifts: BackendShift[] | null; myShifts: BackendShift[] | null; myAttendanceState: "hidden" | "loading" | "ready" | "unlinked" | "error"; loading: boolean; error: string; onIdentityChanged: () => void }) {
+function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, canManageStaff, canViewAttendance, canManageAttendance, canSelfAttendance, employees, roles, permissionCatalog, users, sessions, shifts, myShifts, myAttendanceState, myAttendancePolicy, loading, error, onIdentityChanged }: { onToast: (message: string) => void; canViewStaff: boolean; canManageRoles: boolean; canManageSessions: boolean; canManageStaff: boolean; canViewAttendance: boolean; canManageAttendance: boolean; canSelfAttendance: boolean; employees: BackendEmployee[] | null; roles: BackendRole[] | null; permissionCatalog: PermissionCatalogEntry[] | null; users: BackendUser[] | null; sessions: BackendSession[] | null; shifts: BackendShift[] | null; myShifts: BackendShift[] | null; myAttendanceState: "hidden" | "loading" | "ready" | "unlinked" | "error"; myAttendancePolicy: AttendancePolicy; loading: boolean; error: string; onIdentityChanged: () => void }) {
   const [activeTab, setActiveTab] = useState<"equipo" | "jornada" | "roles" | "usuarios" | "sesiones">(canViewStaff ? "equipo" : "jornada");
   const [selectedRoleCode, setSelectedRoleCode] = useState("reception");
   const [busyUserId, setBusyUserId] = useState<string | null>(null);
@@ -4853,6 +4870,12 @@ function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, c
   const [newShiftOpen, setNewShiftOpen] = useState(false);
   const [manualShift, setManualShift] = useState<BackendShift | null>(null);
   const [correctionShift, setCorrectionShift] = useState<BackendShift | null>(null);
+  const [logShift, setLogShift] = useState<BackendShift | null>(null);
+  const [voidShift, setVoidShift] = useState<BackendShift | null>(null);
+  const [policy, setPolicy] = useState<AttendancePolicy | null>(null);
+  const [policyGrace, setPolicyGrace] = useState("");
+  const [policyTolerance, setPolicyTolerance] = useState("");
+  const [policyBusy, setPolicyBusy] = useState(false);
   const [busyMarkShiftId, setBusyMarkShiftId] = useState<string | null>(null);
   const pendingMarks = useRef(new Map<string, string>());
   const [clockNow, setClockNow] = useState(() => Date.now());
@@ -4860,6 +4883,55 @@ function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, c
     const timer = window.setInterval(() => setClockNow(Date.now()), 15000);
     return () => window.clearInterval(timer);
   }, []);
+  useEffect(() => {
+    if (!canManageAttendance) return;
+    let active = true;
+    void (async () => {
+      try {
+        const response = await fetch("/api/admin/staff/settings", { cache: "no-store" });
+        if (!response.ok) return;
+        const settings = await response.json() as AttendancePolicy;
+        if (!active) return;
+        setPolicy(settings);
+        setPolicyGrace(String(settings.check_in_early_grace_minutes));
+        setPolicyTolerance(String(settings.lateness_tolerance_minutes));
+      } catch {
+        // The card stays read-only until the settings endpoint responds.
+      }
+    })();
+    return () => { active = false; };
+  }, [canManageAttendance]);
+  const saveAttendancePolicy = async () => {
+    const grace = Number(policyGrace);
+    const tolerance = Number(policyTolerance);
+    if (!Number.isInteger(grace) || grace < 0 || grace > 240 || !Number.isInteger(tolerance) || tolerance < 0 || tolerance > 240) {
+      onToast("Los minutos deben ser enteros entre 0 y 240.");
+      return;
+    }
+    setPolicyBusy(true);
+    try {
+      const response = await fetch("/api/admin/staff/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ check_in_early_grace_minutes: grace, lateness_tolerance_minutes: tolerance }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { detail?: string };
+        onToast(payload.detail || "No se pudo guardar la política de asistencia.");
+        return;
+      }
+      const settings = await response.json() as AttendancePolicy;
+      setPolicy(settings);
+      setPolicyGrace(String(settings.check_in_early_grace_minutes));
+      setPolicyTolerance(String(settings.lateness_tolerance_minutes));
+      onToast("Política de asistencia guardada.");
+      onIdentityChanged();
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setPolicyBusy(false);
+    }
+  };
   const availableRoles = roles ?? [];
   const selectedRole = availableRoles.find((role) => role.code === selectedRoleCode) ?? availableRoles[0] ?? null;
   const employeeList = employees ?? [];
@@ -4876,7 +4948,8 @@ function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, c
   const nextShiftFor = (employeeId: string): BackendShift | null =>
     upcomingShifts.find((shift) => shift.employee_id === employeeId) ?? null;
   const myShiftList = myShifts ?? [];
-  const myCurrentShift = myShiftList.find((shift) => selfMarkFor(shift, clockNow).action !== null) ?? null;
+  const selfMarkAt = (shift: BackendShift) => selfMarkFor(shift, clockNow, myAttendancePolicy.check_in_early_grace_minutes);
+  const myCurrentShift = myShiftList.find((shift) => selfMarkAt(shift).action !== null) ?? null;
 
   const markAttendance = async (shift: BackendShift, eventType: "check_in" | "check_out") => {
     const key = `${shift.id}:${eventType}`;
@@ -5049,10 +5122,10 @@ function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, c
                       ? `Jornada completa · ${shiftClock(myCurrentShift.attendance.check_in_at)}–${shiftClock(myCurrentShift.attendance.check_out_at)}`
                       : `En turno desde las ${shiftClock(myCurrentShift.attendance.check_in_at)}`)
                     : `Turno de ${shiftClock(myCurrentShift.starts_at)} a ${shiftClock(myCurrentShift.ends_at)}`}</strong>
-                  <p className="panel-hint">{selfMarkFor(myCurrentShift, clockNow).hint}</p>
+                  <p className="panel-hint">{selfMarkAt(myCurrentShift).hint}</p>
                 </div>
                 {(() => {
-                  const mark = selfMarkFor(myCurrentShift, clockNow);
+                  const mark = selfMarkAt(myCurrentShift);
                   return mark.action
                     ? <button className="button button-primary" disabled={busyMarkShiftId === myCurrentShift.id} onClick={() => void markAttendance(myCurrentShift, mark.action as "check_in" | "check_out")}>{mark.action === "check_in" ? "Marcar entrada" : "Marcar salida"}</button>
                     : null;
@@ -5068,7 +5141,7 @@ function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, c
               {myAttendanceState === "unlinked" ? <tr><td colSpan={5} className="empty-row">Sin expediente de colaborador.</td></tr>
                 : myShiftList.length === 0 ? <tr><td colSpan={5} className="empty-row">{myAttendanceState === "loading" ? "Cargando turnos…" : "No tienes turnos programados en este periodo."}</td></tr>
                 : myShiftList.map((shift) => {
-                  const mark = selfMarkFor(shift, clockNow);
+                  const mark = selfMarkAt(shift);
                   const state = shift.status === "cancelled"
                     ? "Cancelado"
                     : shift.attendance
@@ -5077,17 +5150,32 @@ function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, c
                   return <tr key={shift.id}><td>{shiftDayLabel(shift.starts_at)}</td><td className="time-cell">{shiftClock(shift.starts_at)}–{shiftClock(shift.ends_at)}</td><td><StatusBadge state={state} /></td><td className="time-cell">{attendanceLabel(shift.attendance)}</td><td>{mark.action ? <button className="button button-secondary" disabled={busyMarkShiftId === shift.id} onClick={() => void markAttendance(shift, mark.action as "check_in" | "check_out")}>{mark.action === "check_in" ? "Marcar entrada" : "Marcar salida"}</button> : <span className="table-hint">{mark.hint}</span>}</td></tr>;
                 })}
             </tbody></table></div>
-            <div className="table-bottom"><span>{myShiftList.length} turnos en el periodo</span><span>Puedes marcar desde 15 minutos antes del inicio</span></div>
+            <div className="table-bottom"><span>{myShiftList.length} turnos en el periodo</span><span>Puedes marcar desde {myAttendancePolicy.check_in_early_grace_minutes} minutos antes del inicio{myAttendancePolicy.lateness_tolerance_minutes > 0 ? ` · la tolerancia de retardo es de ${myAttendancePolicy.lateness_tolerance_minutes} min` : ""}</span></div>
           </section>
         </>
       ) : activeTab === "equipo" ? (
         <>
           <section className="member-stat-row staff-stat-row"><div><span>EMPLEADOS ACTIVOS</span><strong>{employeeList.filter((employee) => employee.status === "active").length}</strong><small>directorio del backend</small></div><div><span>TURNOS</span><strong>{canViewAttendance ? upcomingShifts.length : "—"}</strong><small>{canViewAttendance ? "próximos programados" : "acceso restringido"}</small></div><div><span>ASISTENCIA</span><strong>{canViewAttendance ? attendanceCount : "—"}</strong><small>{canViewAttendance ? "registros de entrada" : "acceso restringido"}</small></div><div><span>ROLES BASE</span><strong>{canManageRoles ? availableRoles.length : "—"}</strong><small>{canManageRoles ? "catálogo RBAC" : "acceso restringido"}</small></div></section>
+          {canManageAttendance && <section className="panel full-panel">
+            <div className="panel-header access-list-heading"><div><p className="section-kicker">POLÍTICA DE ASISTENCIA</p><h2>Tolerancias del club</h2></div><span className="role-count">{policy ? `${policy.check_in_early_grace_minutes}/${policy.lateness_tolerance_minutes}` : "—"}</span></div>
+            <p className="panel-hint">La apertura anticipada define cuántos minutos antes del inicio se habilita la entrada; la tolerancia define cuántos minutos después del inicio siguen contando como presente. Aplica al marcaje del colaborador, a las correcciones y a los registros manuales.</p>
+            <div className="kiosk-occupancy-row">
+              <label htmlFor="attendance-grace">Apertura anticipada (minutos)</label>
+              <input id="attendance-grace" className="kiosk-limit-input" type="number" min={0} max={240} step={1} inputMode="numeric" value={policyGrace} disabled={policyBusy || policy === null} onChange={(event) => setPolicyGrace(event.target.value)} />
+              <span className="kiosk-antipassback-state">{policy === null ? "Cargando la política…" : `La entrada se abre ${policy.check_in_early_grace_minutes} min antes del inicio.`}</span>
+            </div>
+            <div className="kiosk-occupancy-row">
+              <label htmlFor="attendance-tolerance">Tolerancia de retardo (minutos)</label>
+              <input id="attendance-tolerance" className="kiosk-limit-input" type="number" min={0} max={240} step={1} inputMode="numeric" value={policyTolerance} disabled={policyBusy || policy === null} onChange={(event) => setPolicyTolerance(event.target.value)} />
+              <span className="kiosk-antipassback-state">{policy === null ? "" : policy.lateness_tolerance_minutes === 0 ? "Sin tolerancia: cualquier marca después del inicio es retardo." : `Hasta ${policy.lateness_tolerance_minutes} min tarde se considera presente.`}</span>
+              <button type="button" className="button button-secondary" disabled={policyBusy || policy === null || (policyGrace === String(policy.check_in_early_grace_minutes) && policyTolerance === String(policy.lateness_tolerance_minutes))} onClick={() => void saveAttendancePolicy()}>{policyBusy ? "Guardando…" : "Guardar"}</button>
+            </div>
+          </section>}
           <section className="panel full-panel"><div className="panel-header access-list-heading"><div><p className="section-kicker">DIRECTORIO DE PERSONAL</p><h2>Colaboradores</h2></div>{canManageStaff && <button className="button button-secondary" onClick={() => setNewEmployeeOpen(true)}><Plus size={16} />Nuevo colaborador</button>}</div><div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>PUESTO</th><th>HORARIO</th><th>ESTADO</th><th /></tr></thead><tbody>{loading ? <tr><td colSpan={5} className="empty-row">Cargando directorio…</td></tr> : error ? <tr><td colSpan={5} className="empty-row">{error}</td></tr> : employeeList.length === 0 ? <tr><td colSpan={5} className="empty-row">No hay colaboradores registrados.</td></tr> : employeeList.map((employee, index) => { const fullName = `${employee.first_name} ${employee.last_name}`; const initials = `${employee.first_name[0] ?? ""}${employee.last_name[0] ?? ""}`.toUpperCase(); const state = employee.status === "active" ? "Activo" : employee.status === "inactive" ? "Inactivo" : "Baja"; const color = ["mint", "peach", "lavender", "blue", "yellow"][index % 5]; return <tr key={employee.id}><td><div className="person-cell"><span className={`person-avatar ${color}`}>{initials}</span><span><strong>{fullName}</strong><small>{employee.email ?? employee.employee_number}</small></span></div></td><td>{employee.job_title}</td><td className="time-cell">{(() => { const shift = nextShiftFor(employee.id); return shift ? `${shiftDayLabel(shift.starts_at)} · ${shiftClock(shift.starts_at)}–${shiftClock(shift.ends_at)}` : "Sin turno"; })()}</td><td><StatusBadge state={state} /></td><td><button className="icon-button row-menu" aria-label={`Opciones de ${fullName}`}><MoreHorizontal size={17} /></button></td></tr>; })}</tbody></table></div><div className="table-bottom"><span>{employeeList.length} colaboradores registrados</span><span>Horario según los turnos del backend</span></div></section>
           {canViewAttendance && <section className="panel full-panel">
             <div className="panel-header access-list-heading"><div><p className="section-kicker">TURNOS DEL PERSONAL</p><h2>Turnos programados</h2></div>{canManageAttendance && <button className="button button-secondary" onClick={() => setNewShiftOpen(true)}><Plus size={16} />Programar turno</button>}</div>
-            <p className="panel-hint">Cada colaborador marca su entrada y salida en «Mi jornada». Desde aquí, quienes tienen el permiso de corregir asistencias registran una marca faltante o corrigen una ya registrada; toda corrección exige un motivo y conserva la marca anterior en la bitácora.</p>
-            <div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>DÍA</th><th>HORARIO</th><th>ESTADO</th><th>ASISTENCIA</th><th /></tr></thead><tbody>{shiftList.length === 0 ? <tr><td colSpan={6} className="empty-row">No hay turnos programados.</td></tr> : shiftList.map((shift) => { const employee = employeeById.get(shift.employee_id); const fullName = employee ? `${employee.first_name} ${employee.last_name}` : "Colaborador"; const attendance = shift.attendance; const canRegister = canManageAttendance && shift.status === "scheduled" && (!attendance || !attendance.check_out_at); const canCorrect = canManageAttendance && shift.status === "scheduled" && attendance !== null; return <tr key={shift.id}><td><div className="person-cell"><span className="person-avatar mint">{fullName.slice(0, 1).toUpperCase()}</span><span><strong>{fullName}</strong><small>{employee?.employee_number ?? "—"}</small></span></div></td><td>{shiftDayLabel(shift.starts_at)}</td><td className="time-cell">{shiftClock(shift.starts_at)}–{shiftClock(shift.ends_at)}</td><td><StatusBadge state={shift.status === "scheduled" ? "Programado" : "Cancelado"} /></td><td className="time-cell">{attendanceLabel(attendance)}</td><td><div className="staff-row-actions">{canRegister ? <button className="button button-secondary" onClick={() => setManualShift(shift)}>{!attendance ? "Registrar entrada" : "Registrar salida"}</button> : null}{canCorrect ? <button className="button button-secondary" onClick={() => setCorrectionShift(shift)}>Corregir</button> : null}</div></td></tr>; })}</tbody></table></div>
+            <p className="panel-hint">Cada colaborador marca su entrada y salida en «Mi jornada». Desde aquí, quienes tienen el permiso de corregir asistencias registran una marca faltante, corrigen una ya registrada o anulan una que no debió existir; toda corrección o anulación exige un motivo y conserva la marca anterior en la bitácora del turno.</p>
+            <div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>DÍA</th><th>HORARIO</th><th>ESTADO</th><th>ASISTENCIA</th><th /></tr></thead><tbody>{shiftList.length === 0 ? <tr><td colSpan={6} className="empty-row">No hay turnos programados.</td></tr> : shiftList.map((shift) => { const employee = employeeById.get(shift.employee_id); const fullName = employee ? `${employee.first_name} ${employee.last_name}` : "Colaborador"; const attendance = shift.attendance; const canRegister = canManageAttendance && shift.status === "scheduled" && (!attendance || !attendance.check_out_at); const canCorrect = canManageAttendance && shift.status === "scheduled" && attendance !== null; const canViewLog = canViewAttendance && attendance !== null; const canVoid = canManageAttendance && shift.status === "scheduled" && attendance !== null; return <tr key={shift.id}><td><div className="person-cell"><span className="person-avatar mint">{fullName.slice(0, 1).toUpperCase()}</span><span><strong>{fullName}</strong><small>{employee?.employee_number ?? "—"}</small></span></div></td><td>{shiftDayLabel(shift.starts_at)}</td><td className="time-cell">{shiftClock(shift.starts_at)}–{shiftClock(shift.ends_at)}</td><td><StatusBadge state={shift.status === "scheduled" ? "Programado" : "Cancelado"} /></td><td className="time-cell">{attendanceLabel(attendance)}</td><td><div className="staff-row-actions">{canRegister ? <button className="button button-secondary" onClick={() => setManualShift(shift)}>{!attendance ? "Registrar entrada" : "Registrar salida"}</button> : null}{canCorrect ? <button className="button button-secondary" onClick={() => setCorrectionShift(shift)}>Corregir</button> : null}{canViewLog ? <button className="button button-secondary" onClick={() => setLogShift(shift)}>Bitácora</button> : null}{canVoid ? <button className="button button-secondary" onClick={() => setVoidShift(shift)}>Anular</button> : null}</div></td></tr>; })}</tbody></table></div>
             <div className="table-bottom"><span>{scheduledShifts.length} turnos programados</span><span>{attendanceCount} asistencias registradas</span></div>
           </section>}
         </>
@@ -5124,6 +5212,8 @@ function StaffView({ onToast, canViewStaff, canManageRoles, canManageSessions, c
       {newShiftOpen && canManageAttendance && <ScheduleShiftModal employees={employeeList} onClose={() => setNewShiftOpen(false)} onCreated={(message) => { onToast(message); onIdentityChanged(); }} />}
       {manualShift && canManageAttendance && <ManualAttendanceModal shift={manualShift} employee={employeeById.get(manualShift.employee_id) ?? null} onClose={() => setManualShift(null)} onCreated={(message) => { onToast(message); onIdentityChanged(); }} />}
       {correctionShift && canManageAttendance && <AttendanceCorrectionModal shift={correctionShift} employee={employeeById.get(correctionShift.employee_id) ?? null} onClose={() => setCorrectionShift(null)} onSaved={(message) => { onToast(message); onIdentityChanged(); }} />}
+      {logShift && canViewAttendance && logShift.attendance && <AttendanceLogModal attendance={logShift.attendance} employee={employeeById.get(logShift.employee_id) ?? null} shift={logShift} onClose={() => setLogShift(null)} />}
+      {voidShift && canManageAttendance && voidShift.attendance && <AttendanceVoidModal shift={voidShift} attendance={voidShift.attendance} employee={employeeById.get(voidShift.employee_id) ?? null} onClose={() => setVoidShift(null)} onSaved={(message) => { onToast(message); onIdentityChanged(); }} />}
       <footer className="page-footer"><span>Centro Fit · Personal</span><span>DATOS DEL BACKEND · NÓMINA FUERA DE ESTA VISTA</span></footer>
     </>
   );
@@ -15181,6 +15271,119 @@ function AttendanceCorrectionModal({ shift, employee, onClose, onSaved }: { shif
           {error && <div className="login-error" role="alert">{error}</div>}
           <div className="modal-note"><ShieldCheck size={16} /><span>El backend conserva la marca original, registra tu cuenta como responsable y rechaza una salida anterior a la entrada.</span></div>
           <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}><Check size={16} />{busy ? "Guardando…" : "Corregir marca"}</button></div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+const ATTENDANCE_EVENT_LABELS: Record<string, string> = {
+  check_in: "Entrada",
+  check_out: "Salida",
+  check_in_correction: "Entrada corregida",
+  check_out_correction: "Salida corregida",
+  check_out_voided: "Salida anulada",
+  attendance_voided: "Asistencia anulada",
+};
+
+const ATTENDANCE_SOURCE_LABELS: Record<string, string> = {
+  staff_app: "app del personal",
+  manual: "recepción",
+  correction: "corrección",
+  access_reader: "lector de acceso",
+};
+
+function AttendanceLogModal({ shift, attendance, employee, onClose }: { shift: BackendShift; attendance: BackendAttendance; employee: BackendEmployee | null; onClose: () => void }) {
+  const name = employee ? `${employee.first_name} ${employee.last_name}` : "el colaborador";
+  const [entries, setEntries] = useState<AttendanceLogEntry[] | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const response = await fetch(`/api/admin/staff/attendance/${attendance.id}/events`, { cache: "no-store" });
+        if (!response.ok) {
+          if (active) setError(response.status === 404 ? "La asistencia ya no existe." : "No se pudo consultar la bitácora.");
+          return;
+        }
+        const payload = await response.json() as { items: AttendanceLogEntry[] };
+        if (active) setEntries(payload.items);
+      } catch {
+        if (active) setError("No se pudo conectar con el backend.");
+      }
+    })();
+    return () => { active = false; };
+  }, [attendance.id]);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal member-modal" role="dialog" aria-modal="true" aria-labelledby="attendance-log-title">
+        <div className="modal-header"><span className="modal-icon"><ClipboardList size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">ASISTENCIA DEL PERSONAL</p><h2 id="attendance-log-title">Bitácora del turno</h2>
+        <p className="modal-subtitle">{name} · {shiftDayLabel(shift.starts_at)} de {shiftClock(shift.starts_at)} a {shiftClock(shift.ends_at)}. Cada marca, corrección y anulación queda registrada con su responsable y motivo; la más reciente aparece al final.</p>
+        {error ? <div className="login-error" role="alert">{error}</div>
+          : entries === null ? <p className="panel-hint">Cargando la bitácora…</p>
+          : entries.length === 0 ? <p className="panel-hint">Esta asistencia todavía no tiene eventos.</p>
+          : <ol className="staff-log-list">{entries.map((entry) => <li key={entry.id} className="staff-log-item"><div className="staff-log-head"><strong>{ATTENDANCE_EVENT_LABELS[entry.event_type] ?? entry.event_type}</strong><span className="time-cell">{formatSessionTime(entry.occurred_at)}</span></div><div className="staff-log-meta">{entry.actor_name ?? entry.actor_email} · {ATTENDANCE_SOURCE_LABELS[entry.source] ?? entry.source}</div>{entry.reason ? <p className="staff-log-reason">{entry.reason}</p> : null}</li>)}</ol>}
+        <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cerrar</button></div>
+      </section>
+    </div>
+  );
+}
+
+function AttendanceVoidModal({ shift, attendance, employee, onClose, onSaved }: { shift: BackendShift; attendance: BackendAttendance; employee: BackendEmployee | null; onClose: () => void; onSaved: (message: string) => void }) {
+  const name = employee ? `${employee.first_name} ${employee.last_name}` : "el colaborador";
+  const [mark, setMark] = useState<"check_in" | "check_out">(attendance.check_out_at ? "check_out" : "check_in");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (reason.trim().length < 3) {
+      setError("Escribe el motivo de la anulación.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/staff/attendance/${attendance.id}/voids`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request_id: crypto.randomUUID(), mark, reason: reason.trim() }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { detail?: string };
+        setError(response.status === 409
+          ? "Ese turno cambió mientras anulabas la marca. Vuelve a abrir la anulación."
+          : payload.detail || "No se pudo anular la marca.");
+        setBusy(false);
+        return;
+      }
+      onSaved(mark === "check_out" ? `Salida de ${name} anulada; la entrada se conserva.` : `Asistencia de ${name} anulada; el turno queda libre para marcarse de nuevo.`);
+      onClose();
+    } catch {
+      setError("No se pudo conectar con el backend.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal member-modal" role="dialog" aria-modal="true" aria-labelledby="attendance-void-title">
+        <div className="modal-header"><span className="modal-icon"><Trash2 size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">ASISTENCIA DEL PERSONAL</p><h2 id="attendance-void-title">Anular una marca</h2>
+        <p className="modal-subtitle">{name} · {shiftDayLabel(shift.starts_at)} de {shiftClock(shift.starts_at)} a {shiftClock(shift.ends_at)}. Anular no borra la marca: la conserva en la bitácora junto con el motivo y tu cuenta como responsable.</p>
+        <form onSubmit={submit}>
+          <fieldset className="staff-void-marks"><legend>¿Qué marca se anula?</legend>
+            <label><input type="radio" name="void-mark" value="check_in" checked={mark === "check_in"} disabled={busy} onChange={() => setMark("check_in")} />Entrada · {shiftClock(attendance.check_in_at)}</label>
+            <label><input type="radio" name="void-mark" value="check_out" checked={mark === "check_out"} disabled={busy || !attendance.check_out_at} onChange={() => setMark("check_out")} />{attendance.check_out_at ? `Salida · ${shiftClock(attendance.check_out_at)}` : "Salida · sin marca"}</label>
+          </fieldset>
+          <p className="table-hint">{mark === "check_out" ? "La entrada se conserva y el colaborador puede volver a marcar su salida." : "La asistencia completa queda anulada y el turno vuelve a estar libre para marcarse."}</p>
+          <label className="form-field"><span>Motivo</span><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="La marca se registró en el turno equivocado…" maxLength={500} /></label>
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button type="submit" className="button button-primary" disabled={busy}><Trash2 size={16} />{busy ? "Anulando…" : "Anular marca"}</button></div>
         </form>
       </section>
     </div>

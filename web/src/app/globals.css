@@ -244,6 +244,15 @@ h1 { margin-bottom: 5px; font-size: 29px; line-height: 1.1; letter-spacing: -.45
 .staff-tabs-note { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: #7a8aa4; font-size: 9px; }
 .staff-jornada-now { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 4px 0; }
 .staff-row-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.staff-log-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.staff-log-item { padding: 10px 12px; border: 1px solid #edf0ed; border-radius: 6px; background: #fbfcfa; }
+.staff-log-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.staff-log-head strong { color: #48564d; font-size: 10px; font-weight: 600; }
+.staff-log-meta { margin-top: 4px; color: #8b968e; font-size: 9px; }
+.staff-log-reason { margin: 6px 0 0; color: #5f6c63; font-size: 10px; line-height: 1.45; }
+.staff-void-marks { display: grid; gap: 8px; margin: 0 0 10px; padding: 10px 12px; border: 1px solid #edf0ed; border-radius: 6px; }
+.staff-void-marks legend { padding: 0 4px; color: #8b968e; font-size: 9px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase; }
+.staff-void-marks label { display: flex; align-items: center; gap: 8px; color: #5f6c63; font-size: 10px; }
 .role-management-grid { display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 1.7fr); gap: 15px; }
 .role-list-panel, .role-detail-panel { padding: 18px; }
 .role-count { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; color: #3a5586; background: #e9effa; font-size: 10px; font-weight: 700; }
