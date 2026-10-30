@@ -544,6 +544,59 @@ def ensure_attendance_event_indexes(connection: sqlite3.Connection) -> None:
     )
 
 
+# Mirrors the data migration 20261031_0064. An approval writes the event reason as
+# ``Solicitud del colaborador: <motivo>`` (plus the supervisor's note when there is
+# one), so the link can be recovered without guessing by timestamp; the pairing has
+# to be one-to-one or nothing is linked.
+BACKFILL_ATTENDANCE_REQUEST_LINKS = """
+WITH candidates AS (
+    SELECT r.id AS request_id,
+           e.id AS event_id,
+           COUNT(*) OVER (PARTITION BY r.id) AS request_matches,
+           COUNT(*) OVER (PARTITION BY e.id) AS event_matches
+    FROM staff_attendance_requests AS r
+    JOIN staff_attendance_events AS e
+      ON e.attendance_id = r.attendance_id
+     AND e.actor_id = r.decided_by
+     AND e.source = 'manual'
+     AND e.attendance_request_id IS NULL
+     AND e.event_type = CASE
+             WHEN r.action = 'correct' THEN r.mark || '_correction'
+             WHEN r.mark = 'check_in' THEN 'attendance_voided'
+             ELSE 'check_out_voided'
+         END
+     AND (
+         e.reason = 'Solicitud del colaborador: ' || r.justification
+         OR e.reason LIKE 'Solicitud del colaborador: ' || r.justification
+            || ' · Nota del supervisor: %'
+     )
+    WHERE r.status = 'approved'
+      AND r.decided_by IS NOT NULL
+)
+UPDATE staff_attendance_events
+SET attendance_request_id = (
+        SELECT candidates.request_id
+        FROM candidates
+        WHERE candidates.event_id = staff_attendance_events.id
+          AND candidates.request_matches = 1
+          AND candidates.event_matches = 1
+    )
+WHERE id IN (
+    SELECT candidates.event_id
+    FROM candidates
+    WHERE candidates.request_matches = 1
+      AND candidates.event_matches = 1
+)
+"""
+
+
+def backfill_attendance_request_links(connection: sqlite3.Connection) -> int:
+    """Link the approvals written before the column existed (migration 0064)."""
+    connection.execute(BACKFILL_ATTENDANCE_REQUEST_LINKS)
+    # ``rowcount`` stays -1 for an UPDATE with a CTE; ``changes()`` has the count.
+    return connection.execute("SELECT changes()").fetchone()[0]
+
+
 def main(reset_maintenance: bool) -> None:
     connection = sqlite3.connect(DB)
     try:
@@ -600,6 +653,9 @@ def main(reset_maintenance: bool) -> None:
             relax_attendance_shift_uniqueness(connection)
         if "staff_attendance_events" in tables:
             ensure_attendance_event_indexes(connection)
+            if "staff_attendance_requests" in tables:
+                linked = backfill_attendance_request_links(connection)
+                print(f"Linked {linked} attendance events to their request")
         if "staff_attendance_requests" in tables:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS ix_staff_attendance_requests_status_due "

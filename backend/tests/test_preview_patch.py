@@ -243,3 +243,254 @@ def test_preview_upgrade_registers_the_attendance_request_link() -> None:
         "ix_staff_attendance_events_type_time",
         "ix_staff_attendance_events_request_link",
     } <= indexes
+
+
+LEGACY_REQUESTS_TABLE = (
+    'CREATE TABLE "staff_attendance_requests" (\n'
+    "\tid CHAR(32) NOT NULL, \n"
+    "\tattendance_id CHAR(32) NOT NULL, \n"
+    "\tmark VARCHAR(16) NOT NULL, \n"
+    "\taction VARCHAR(16) NOT NULL, \n"
+    "\tjustification VARCHAR(500) NOT NULL, \n"
+    "\tstatus VARCHAR(16) NOT NULL, \n"
+    "\tdecided_by CHAR(32), \n"
+    "\tdecided_at DATETIME, \n"
+    "\tPRIMARY KEY (id)\n"
+    ")"
+)
+
+LEGACY_EVENTS_TABLE = (
+    'CREATE TABLE "staff_attendance_events" (\n'
+    "\tid CHAR(32) NOT NULL, \n"
+    "\tattendance_id CHAR(32) NOT NULL, \n"
+    "\tactor_id CHAR(32) NOT NULL, \n"
+    "\tevent_type VARCHAR(32) NOT NULL, \n"
+    "\tsource VARCHAR(20) NOT NULL, \n"
+    "\treason TEXT, \n"
+    "\toccurred_at DATETIME NOT NULL, \n"
+    "\tattendance_request_id CHAR(32), \n"
+    "\tPRIMARY KEY (id)\n"
+    ")"
+)
+
+
+def _legacy_request(
+    connection: sqlite3.Connection,
+    request_id: str,
+    *,
+    attendance: str,
+    mark: str,
+    action: str,
+    justification: str,
+    status: str = "approved",
+    decided_by: str | None = "s1",
+) -> None:
+    connection.execute(
+        "INSERT INTO staff_attendance_requests (id, attendance_id, mark, action, "
+        "justification, status, decided_by, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            request_id,
+            attendance,
+            mark,
+            action,
+            justification,
+            status,
+            decided_by,
+            "2026-10-30 20:00:00" if decided_by else None,
+        ),
+    )
+
+
+def _legacy_event(
+    connection: sqlite3.Connection,
+    event_id: str,
+    *,
+    attendance: str,
+    actor: str = "s1",
+    event_type: str,
+    reason: str | None,
+    source: str = "manual",
+    linked_to: str | None = None,
+) -> None:
+    connection.execute(
+        "INSERT INTO staff_attendance_events (id, attendance_id, actor_id, event_type, "
+        "source, reason, occurred_at, attendance_request_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, '2026-10-30 20:00:01', ?)",
+        (event_id, attendance, actor, event_type, source, reason, linked_to),
+    )
+
+
+def test_preview_backfills_the_request_link_on_older_events() -> None:
+    assert preview_patch.ADDED_COLUMNS["staff_attendance_events"] == {
+        "attendance_request_id": "CHAR(32)"
+    }
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute(LEGACY_REQUESTS_TABLE)
+    connection.execute(LEGACY_EVENTS_TABLE)
+
+    # A correction approved before the column existed.
+    _legacy_request(
+        connection,
+        "r1",
+        attendance="a1",
+        mark="check_in",
+        action="correct",
+        justification="Entré a las 19:15 y la marca quedó a las 19:30",
+    )
+    _legacy_event(
+        connection,
+        "e1",
+        attendance="a1",
+        event_type="check_in_correction",
+        reason="Solicitud del colaborador: Entré a las 19:15 y la marca quedó a las 19:30",
+    )
+    # A panel correction on the same mark stays unlinked.
+    _legacy_event(
+        connection,
+        "e2",
+        attendance="a1",
+        event_type="check_in_correction",
+        reason="Entrada corregida a la hora del turno",
+    )
+    # An annulment approved with a supervisor's note.
+    _legacy_request(
+        connection,
+        "r2",
+        attendance="a2",
+        mark="check_out",
+        action="void",
+        justification="Salí a las 21:00 y la salida quedó en cero",
+    )
+    _legacy_event(
+        connection,
+        "e3",
+        attendance="a2",
+        event_type="check_out_voided",
+        reason="Solicitud del colaborador: Salí a las 21:00 y la salida quedó en cero"
+        " · Nota del supervisor: Revisado",
+    )
+    # Voiding the whole attendance.
+    _legacy_request(
+        connection,
+        "r3",
+        attendance="a3",
+        mark="check_in",
+        action="void",
+        justification="Ese turno no era mío",
+    )
+    _legacy_event(
+        connection,
+        "e4",
+        attendance="a3",
+        event_type="attendance_voided",
+        reason="Solicitud del colaborador: Ese turno no era mío",
+    )
+    # Already linked by the current code: never rewritten.
+    _legacy_request(
+        connection,
+        "r4",
+        attendance="a4",
+        mark="check_in",
+        action="correct",
+        justification="Marca duplicada",
+    )
+    _legacy_event(
+        connection,
+        "e5",
+        attendance="a4",
+        event_type="check_in_correction",
+        reason="Solicitud del colaborador: Marca duplicada · Nota del supervisor: Ok",
+        linked_to="r4",
+    )
+    # One request, two candidate events: ambiguous, nothing is linked.
+    _legacy_request(
+        connection,
+        "r5",
+        attendance="a5",
+        mark="check_in",
+        action="correct",
+        justification="Marqué tarde",
+    )
+    for event_id in ("e6", "e7"):
+        _legacy_event(
+            connection,
+            event_id,
+            attendance="a5",
+            event_type="check_in_correction",
+            reason="Solicitud del colaborador: Marqu\u00e9 tarde",
+        )
+    # Rejected requests wrote no event; a reason that matches but came from another
+    # supervisor is not the one the approval wrote.
+    _legacy_request(
+        connection,
+        "r6",
+        attendance="a6",
+        mark="check_in",
+        action="correct",
+        justification="Error del reloj",
+        status="rejected",
+    )
+    _legacy_event(
+        connection,
+        "e8",
+        attendance="a6",
+        event_type="check_in_correction",
+        reason="Solicitud del colaborador: Error del reloj",
+    )
+    _legacy_request(
+        connection,
+        "r7",
+        attendance="a7",
+        mark="check_in",
+        action="correct",
+        justification="Otra justificación",
+    )
+    _legacy_event(
+        connection,
+        "e9",
+        attendance="a7",
+        actor="s2",
+        event_type="check_in_correction",
+        reason="Solicitud del colaborador: Otra justificación",
+    )
+    # A reason with the request prefix but a different mark type is not a candidate.
+    _legacy_request(
+        connection,
+        "r8",
+        attendance="a8",
+        mark="check_out",
+        action="correct",
+        justification="Salí antes",
+    )
+    _legacy_event(
+        connection,
+        "e10",
+        attendance="a8",
+        event_type="check_in_correction",
+        reason="Solicitud del colaborador: Salí antes",
+    )
+    connection.commit()
+
+    assert preview_patch.backfill_attendance_request_links(connection) == 3
+    links = {
+        row[0]: row[1]
+        for row in connection.execute(
+            "SELECT id, attendance_request_id FROM staff_attendance_events"
+        )
+    }
+    assert links == {
+        "e1": "r1",
+        "e2": None,
+        "e3": "r2",
+        "e4": "r3",
+        "e5": "r4",
+        "e6": None,
+        "e7": None,
+        "e8": None,
+        "e9": None,
+        "e10": None,
+    }
+
+    # Running it again finds nothing left to link.
+    assert preview_patch.backfill_attendance_request_links(connection) == 0

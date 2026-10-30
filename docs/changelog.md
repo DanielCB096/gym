@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-30 · Asistencia: relleno del vínculo solicitud→bitácora en el histórico
+
+- **Relleno sin cruzar instantes**: la aprobación de una solicitud escribe el motivo del evento como `Solicitud del colaborador: {justificación}` —con `· Nota del supervisor:` cuando la hay— desde ADR-044, así que las aprobaciones hechas antes de existir la columna se pueden enlazar por su propio texto. La regla exige la misma asistencia, `actor_id = decided_by`, `source = 'manual'`, el tipo de evento que produce el `mark`/`action` y el motivo exacto, y solo enlaza cuando el emparejamiento es uno a uno en ambos lados; lo ambiguo se queda sin vínculo.
+- **Esquema**: migración de datos `20261031_0064_attendance_request_link_backfill.py`, un `WITH … UPDATE` con funciones de ventana que PostgreSQL y SQLite aceptan igual; idempotente porque solo mira filas con `attendance_request_id IS NULL`. Su reversión es un no-op: un vínculo rellenado no se distingue de uno escrito en vivo.
+- **Vista previa**: `preview_patch.backfill_attendance_request_links` ejecuta el mismo relleno en cada arranque y reporta cuántos eventos enlazó (en la base actual, 1).
+- **Pruebas**: `test_preview_patch.py` siembra el esquema heredado y cubre corrección aprobada, anulación aprobada con nota, anulación completa, corrección del panel, evento ya enlazado, solicitud rechazada, actor distinto, tipo de evento contrario, par ambiguo e idempotencia. Suite en **279 pruebas**: 274 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Verificación**: la migración se revisó con `alembic upgrade 20261031_0063:20261031_0064 --sql` y, tras parchear la vista previa, la bitácora del turno de 19:30 mostró «Aplicado al aprobar la solicitud del colaborador · 3a0436dc» en la corrección de las 19:15 —escrita antes de la columna— con su motivo y la nota del supervisor, sin errores en consola.
+- **Documentación**: ADR-047, ADR-046 con el límite cerrado, módulo de personal y roles, modelo de datos, plan de pruebas e índice.
+
 ## 2026-10-30 · Asistencia: vínculo solicitud→bitácora y CSV de anulaciones
 
 - **Vínculo explícito**: `staff_attendance_events.attendance_request_id` (FK nullable con `ON DELETE SET NULL`) guarda la solicitud que originó la corrección o la anulación cuando el cambio se aplicó al aprobarla. `correct_attendance` y `void_attendance_mark` lo reciben como parámetro y `decide_attendance_request` pasa el identificador; los cambios hechos desde el panel quedan con `NULL`. No hay relleno del pasado: cruzar `decided_at` con el evento era ambiguo y un vínculo inventado sería peor que uno ausente.
