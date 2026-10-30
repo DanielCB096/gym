@@ -20,6 +20,7 @@ from app.modules.staffing.service import (
     AttendanceRequestNotFound,
     InvalidAttendanceTime,
     ManualAttendanceReasonRequired,
+    attendance_annulments_export,
     attendance_request_is_overdue,
     clock_in,
     clock_out,
@@ -239,6 +240,10 @@ def test_employee_request_is_approved_and_applies_the_change(session: Session) -
     assert sorted(event.event_type for event in events) == ["check_in", "check_in_correction"]
     correction = next(event for event in events if event.event_type == "check_in_correction")
     assert "Entré a las 13:56" in (correction.reason or "")
+    # The event points at the request that produced it; the original punch does not.
+    assert correction.attendance_request_id == request.id
+    original = next(event for event in events if event.event_type == "check_in")
+    assert original.attendance_request_id is None
 
     # The pending notice closes and the employee is told the outcome.
     session.refresh(pending_notices[0])
@@ -251,6 +256,77 @@ def test_employee_request_is_approved_and_applies_the_change(session: Session) -
 
     assert [row[0].id for row in list_attendance_requests(session, status="approved")] == [request.id]
     assert list_attendance_requests(session, status="pending") == []
+
+
+def test_approved_void_request_links_the_log_and_the_csv_export(session: Session) -> None:
+    employee, account, manager = seed_employee_with_account(session)
+    attendance = seed_attendance(session, employee.id, manager.id, late_minutes=5)
+    clock_out(
+        session,
+        shift_id=attendance.shift_id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        occurred_at=START + timedelta(hours=8),
+    )
+
+    request = request_attendance_change(
+        session,
+        attendance_id=attendance.id,
+        actor_id=account.id,
+        employee_id=employee.id,
+        mark="check_out",
+        action="void",
+        proposed_at=None,
+        justification="Salí a las 21:00 y quedó marcada la salida en cero",
+    )
+    decide_attendance_request(
+        session,
+        request_id=request.id,
+        actor_id=manager.id,
+        decision="approved",
+    )
+    void_event = next(
+        event
+        for event in session.exec(select(AttendanceEvent)).all()
+        if event.event_type == "check_out_voided"
+    )
+    # The applied change points back at the request that asked for it.
+    assert void_event.attendance_request_id == request.id
+    assert void_event.reason == f"Solicitud del colaborador: {request.justification}"
+
+    # A void made straight from the panel keeps the link empty.
+    direct = seed_attendance(session, employee.id, manager.id, day_offset=1)
+    void_attendance_mark(
+        session,
+        attendance_id=direct.id,
+        actor_id=manager.id,
+        request_id=uuid4(),
+        mark="check_in",
+        reason="Entrada duplicada por el lector",
+    )
+
+    report = list_attendance_annulments(
+        session, from_at=datetime.now(timezone.utc) - timedelta(hours=1)
+    )
+    assert [item.attendance_request_id for item in report.items] == [None, request.id]
+
+    table = attendance_annulments_export(report, days=30)
+    assert table.title.endswith("30 días")
+    assert table.headers == [
+        "Fecha y hora",
+        "Colaborador",
+        "Marca",
+        "Responsable",
+        "Origen",
+        "Solicitud",
+        "Motivo",
+    ]
+    by_origin = {row[4]: row for row in table.rows}
+    assert by_origin["Panel"][2] == "Entrada anulada"
+    assert by_origin["Panel"][5] == ""
+    assert by_origin["Solicitud del colaborador"][2] == "Salida anulada"
+    assert by_origin["Solicitud del colaborador"][5] == str(request.id)
+    assert "Salí a las 21:00" in by_origin["Solicitud del colaborador"][6]
 
 
 def test_employee_request_validation_and_rejection(session: Session) -> None:

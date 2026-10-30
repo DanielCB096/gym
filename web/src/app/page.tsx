@@ -184,6 +184,7 @@ type AttendanceAnnulment = {
   actor_id: string;
   actor_email: string;
   actor_name: string | null;
+  attendance_request_id: string | null;
 };
 
 type AttendanceAnnulmentOperator = {
@@ -223,6 +224,7 @@ type AttendanceLogEntry = {
   reason: string | null;
   actor_email: string;
   actor_name: string | null;
+  attendance_request_id: string | null;
 };
 
 type BackendShift = {
@@ -5384,14 +5386,14 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
           {canViewAttendance && <section className="panel full-panel">
             <div className="panel-header access-list-heading">
               <div><p className="section-kicker">ANULACIONES</p><h2>Marcas anuladas y quién las anuló</h2></div>
-              <label className="table-select"><span>Periodo</span><select value={annulmentDays} onChange={(event) => setAnnulmentDays(Number(event.target.value))}><option value={7}>Últimos 7 días</option><option value={30}>Últimos 30 días</option><option value={90}>Últimos 90 días</option></select></label>
+              <div className="staff-row-actions"><label className="table-select"><span>Periodo</span><select value={annulmentDays} onChange={(event) => setAnnulmentDays(Number(event.target.value))}><option value={7}>Últimos 7 días</option><option value={30}>Últimos 30 días</option><option value={90}>Últimos 90 días</option></select></label><a className="button button-secondary" href={`/api/admin/staff/attendance/annulments/export?days=${annulmentDays}`} onClick={() => onToast("Preparando la descarga del reporte en CSV.")}>Exportar CSV</a></div>
             </div>
             <p className="panel-hint">Anular no borra la marca: la conserva en la bitácora con el motivo y la cuenta responsable. Este reporte cuenta cuántas anulaciones hizo cada operador en el periodo elegido.</p>
             {annulmentError ? <div className="login-error" role="alert">{annulmentError}</div> : annulmentReport === null ? <p className="panel-hint">Cargando el reporte…</p> : <>
               <div className="annulment-operators">{annulmentReport.by_operator.length === 0 ? <span className="role-chip-empty">Sin anulaciones en el periodo.</span> : annulmentReport.by_operator.map((operator) => <span key={operator.actor_id} className="annulment-operator"><strong>{operator.actor_name ?? operator.actor_email}</strong><span>{operator.total} {operator.total === 1 ? "anulación" : "anulaciones"} · {operator.check_ins} entrada(s) · {operator.check_outs} salida(s)</span></span>)}</div>
-              <div className="table-scroll"><table className="data-table"><thead><tr><th>FECHA</th><th>COLABORADOR</th><th>MARCA</th><th>RESPONSABLE</th><th>MOTIVO</th></tr></thead><tbody>
-                {annulmentReport.items.length === 0 ? <tr><td colSpan={5} className="empty-row">Sin anulaciones registradas en este periodo.</td></tr>
-                  : annulmentReport.items.map((item) => <tr key={item.event_id}><td className="time-cell">{formatSessionTime(item.occurred_at)}</td><td>{item.employee_name}</td><td>{ATTENDANCE_EVENT_LABELS[item.event_type] ?? item.event_type}</td><td>{item.actor_name ?? item.actor_email}</td><td>{item.reason ?? "—"}</td></tr>)}
+              <div className="table-scroll"><table className="data-table"><thead><tr><th>FECHA</th><th>COLABORADOR</th><th>MARCA</th><th>RESPONSABLE</th><th>ORIGEN</th><th>MOTIVO</th></tr></thead><tbody>
+                {annulmentReport.items.length === 0 ? <tr><td colSpan={6} className="empty-row">Sin anulaciones registradas en este periodo.</td></tr>
+                  : annulmentReport.items.map((item) => <tr key={item.event_id}><td className="time-cell">{formatSessionTime(item.occurred_at)}</td><td>{item.employee_name}</td><td>{ATTENDANCE_EVENT_LABELS[item.event_type] ?? item.event_type}</td><td>{item.actor_name ?? item.actor_email}</td><td>{item.attendance_request_id ? "Solicitud" : "Panel"}</td><td>{item.reason ?? "—"}</td></tr>)}
               </tbody></table></div>
               <div className="table-bottom"><span>{annulmentReport.total} anulaciones en {annulmentDays} días</span><span>{annulmentReport.by_operator.length} operadores con anulaciones</span></div>
             </>}
@@ -15556,7 +15558,7 @@ function AttendanceLogModal({ shift, attendance, employee, onClose }: { shift: B
         {error ? <div className="login-error" role="alert">{error}</div>
           : entries === null ? <p className="panel-hint">Cargando la bitácora…</p>
           : entries.length === 0 ? <p className="panel-hint">Esta asistencia todavía no tiene eventos.</p>
-          : <ol className="staff-log-list">{entries.map((entry) => <li key={entry.id} className="staff-log-item"><div className="staff-log-head"><strong>{ATTENDANCE_EVENT_LABELS[entry.event_type] ?? entry.event_type}</strong><span className="time-cell">{formatSessionTime(entry.occurred_at)}</span></div><div className="staff-log-meta">{entry.actor_name ?? entry.actor_email} · {ATTENDANCE_SOURCE_LABELS[entry.source] ?? entry.source}</div>{entry.reason ? <p className="staff-log-reason">{entry.reason}</p> : null}</li>)}</ol>}
+          : <ol className="staff-log-list">{entries.map((entry) => <li key={entry.id} className="staff-log-item"><div className="staff-log-head"><strong>{ATTENDANCE_EVENT_LABELS[entry.event_type] ?? entry.event_type}</strong><span className="time-cell">{formatSessionTime(entry.occurred_at)}</span></div><div className="staff-log-meta">{entry.actor_name ?? entry.actor_email} · {ATTENDANCE_SOURCE_LABELS[entry.source] ?? entry.source}</div>{entry.attendance_request_id ? <small className="staff-log-link">Aplicado al aprobar la solicitud del colaborador · {entry.attendance_request_id.slice(0, 8)}</small> : null}{entry.reason ? <p className="staff-log-reason">{entry.reason}</p> : null}</li>)}</ol>}
         <div className="modal-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cerrar</button></div>
       </section>
     </div>

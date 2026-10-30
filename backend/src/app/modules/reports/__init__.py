@@ -1,3 +1,4 @@
+from app.exports import ExportTable
 from app.modules.reports.service import (
     AccessDay,
     AmountRow,
@@ -5,7 +6,6 @@ from app.modules.reports.service import (
     CountRow,
     EquipmentTotal,
     EventDay,
-    ExportTable,
     InvalidReportPeriod,
     InventoryProductTotal,
     InventoryReport,

@@ -308,7 +308,7 @@ def test_attendance_scheduling_and_self_service() -> None:
 
             void_in = client.post(
                 void_path,
-                json={"request_id": str(uuid4()), "mark": "check_in", "reason": "Era otro turno"},
+                json={"request_id": str(uuid4()), "mark": "check_in", "reason": "Era otro turno, no el de hoy"},
                 headers=ana,
             )
             assert void_in.status_code == 200
@@ -455,6 +455,20 @@ def test_attendance_scheduling_and_self_service() -> None:
             corrected_row = client.get("/staff/attendance", headers=ana).json()["items"][0]["attendance"]
             assert corrected_row["check_in_source"] == "correction"
             assert datetime.fromisoformat(corrected_row["check_in_at"]) == now - timedelta(minutes=10)
+            # The log names the request that produced the change; the other marks
+            # were not requested and stay unlinked.
+            approved_log = client.get(
+                f"/admin/staff/attendance/{own['id']}/events", headers=trainer
+            ).json()["items"]
+            approved_event = next(
+                item for item in approved_log if item["reason"].startswith("Solicitud del colaborador")
+            )
+            assert approved_event["attendance_request_id"] == request_id
+            assert all(
+                item["attendance_request_id"] is None
+                for item in approved_log
+                if item["id"] != approved_event["id"]
+            )
             resolved_notice = next(
                 item
                 for item in client.get("/admin/notifications", headers=owner).json()["items"]
@@ -514,6 +528,8 @@ def test_attendance_scheduling_and_self_service() -> None:
                 "attendance_voided",
                 "check_out_voided",
             }
+            # Both annulments came from the panel, so none carries a request.
+            assert all(item["attendance_request_id"] is None for item in payload["items"])
             only_voids = client.get(
                 f"{annulments_path}?days=7&employee_id={first_id}", headers=owner
             ).json()
@@ -522,6 +538,30 @@ def test_attendance_scheduling_and_self_service() -> None:
                 f"{annulments_path}?days=7&employee_id={second_id}", headers=owner
             ).json()
             assert empty["total"] == 0 and empty["by_operator"] == []
+
+            # The same report downloads as CSV, quoting any motive with commas.
+            csv_path = f"{annulments_path}.csv"
+            assert client.get(f"{csv_path}?days=7", headers=maintenance).status_code == 403
+            assert client.get(f"{csv_path}?days=0", headers=owner).status_code == 422
+            export = client.get(f"{csv_path}?days=7", headers=trainer)
+            assert export.status_code == 200
+            assert export.headers["content-type"].startswith("text/csv")
+            assert (
+                'attachment; filename="anulaciones-asistencia-7d-'
+                in export.headers["content-disposition"]
+            )
+            lines = export.text.splitlines()
+            assert lines[0] == (
+                "Fecha y hora,Colaborador,Marca,Responsable,Origen,Solicitud,Motivo"
+            )
+            # Newest first: the entry void was made after the exit void.
+            assert len(lines) == 3
+            assert "Entrada anulada" in lines[1]
+            assert '"Era otro turno, no el de hoy"' in lines[1]
+            assert "Salida anulada" in lines[2]
+            assert all(",Ana Ruiz,Panel,," in line for line in lines[1:])
+            filtered = client.get(f"{csv_path}?days=7&employee_id={second_id}", headers=trainer)
+            assert filtered.text.splitlines() == [lines[0]]
     finally:
         app.dependency_overrides.pop(get_session, None)
         engine.dispose()

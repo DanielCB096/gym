@@ -64,6 +64,7 @@ ADDED_COLUMNS = {
         "attendance_request_sla_hours": "INTEGER NOT NULL DEFAULT 24",
     },
     "staff_attendance_requests": {"due_at": "DATETIME"},
+    "staff_attendance_events": {"attendance_request_id": "CHAR(32)"},
     "access_settings": {
         "max_occupancy": "INTEGER",
         "occupancy_window_seconds": "INTEGER NOT NULL DEFAULT 7200",
@@ -531,6 +532,18 @@ def relax_attendance_shift_uniqueness(connection: sqlite3.Connection) -> None:
     )
 
 
+def ensure_attendance_event_indexes(connection: sqlite3.Connection) -> None:
+    """Indexes the attendance reports need on a database created before them."""
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS ix_staff_attendance_events_type_time "
+        "ON staff_attendance_events (event_type, occurred_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS ix_staff_attendance_events_request_link "
+        "ON staff_attendance_events (attendance_request_id)"
+    )
+
+
 def main(reset_maintenance: bool) -> None:
     connection = sqlite3.connect(DB)
     try:
@@ -586,10 +599,7 @@ def main(reset_maintenance: bool) -> None:
         if "staff_attendance" in tables:
             relax_attendance_shift_uniqueness(connection)
         if "staff_attendance_events" in tables:
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS ix_staff_attendance_events_type_time "
-                "ON staff_attendance_events (event_type, occurred_at)"
-            )
+            ensure_attendance_event_indexes(connection)
         if "staff_attendance_requests" in tables:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS ix_staff_attendance_requests_status_due "

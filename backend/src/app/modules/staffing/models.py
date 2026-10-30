@@ -290,6 +290,8 @@ class AttendanceEvent(SQLModel, table=True):
         Index("ix_staff_attendance_events_attendance_time", "attendance_id", "occurred_at"),
         # The annulments report filters by kind over a period.
         Index("ix_staff_attendance_events_type_time", "event_type", "occurred_at"),
+        # Answers "which request produced this change?" without crossing timestamps.
+        Index("ix_staff_attendance_events_request_link", "attendance_request_id"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -303,6 +305,17 @@ class AttendanceEvent(SQLModel, table=True):
     )
     event_type: str = Field(max_length=32)
     source: str = Field(max_length=20)
+    # Null for changes made straight from the panel; set when an approval applied
+    # the change, so the log points at the employee's request instead of asking
+    # anyone to cross two timestamps. Nullable and SET NULL so removing a request
+    # never erases the mark history.
+    attendance_request_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("staff_attendance_requests.id", ondelete="SET NULL"),
+        ),
+    )
     reason: str | None = Field(default=None, sa_type=Text)
     occurred_at: datetime = Field(
         default_factory=utc_now,

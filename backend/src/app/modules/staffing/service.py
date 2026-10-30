@@ -18,6 +18,7 @@ from app.modules.notifications.service import (
     resolve_staff_notifications,
     staff_user_for_employee,
 )
+from app.exports import ExportTable
 from app.modules.staffing.models import (
     AttendanceEvent,
     StaffAttendance,
@@ -100,6 +101,10 @@ class AttendanceRequestNotAllowed(StaffingError):
 
 ANNULMENT_EVENT_TYPES = ("attendance_voided", "check_out_voided")
 MARK_LABELS = {"check_in": "entrada", "check_out": "salida"}
+ANNULMENT_EVENT_LABELS = {
+    "attendance_voided": "Entrada anulada",
+    "check_out_voided": "Salida anulada",
+}
 REQUEST_ACTIONS = ("correct", "void")
 REQUEST_STATUSES = ("pending", "approved", "rejected")
 
@@ -116,6 +121,7 @@ class AttendanceAnnulment:
     actor_id: UUID
     actor_email: str
     actor_name: str | None
+    attendance_request_id: UUID | None
 
 
 @dataclass(frozen=True)
@@ -443,6 +449,7 @@ def correct_attendance(
     reason: str,
     commit: bool = True,
     notify_employee: bool = True,
+    attendance_request_id: UUID | None = None,
 ) -> StaffAttendance:
     """Rewrite a mark the employee already registered.
 
@@ -522,6 +529,7 @@ def correct_attendance(
         source="manual",
         occurred_at=event_time,
         reason=notes,
+        attendance_request_id=attendance_request_id,
     )
     session.add(event)
     if notify_employee:
@@ -567,6 +575,7 @@ def void_attendance_mark(
     reason: str,
     commit: bool = True,
     notify_employee: bool = True,
+    attendance_request_id: UUID | None = None,
 ) -> StaffAttendance:
     """Remove a mark that should never have been recorded.
 
@@ -638,6 +647,7 @@ def void_attendance_mark(
         source="manual",
         occurred_at=now,
         reason=notes,
+        attendance_request_id=attendance_request_id,
     )
     session.add(event)
     if notify_employee:
@@ -914,6 +924,7 @@ def decide_attendance_request(
                 reason=reason,
                 commit=False,
                 notify_employee=False,
+                attendance_request_id=request.id,
             )
         else:
             void_attendance_mark(
@@ -925,6 +936,7 @@ def decide_attendance_request(
                 reason=reason,
                 commit=False,
                 notify_employee=False,
+                attendance_request_id=request.id,
             )
 
     request.status = decision
@@ -1019,6 +1031,7 @@ def list_attendance_annulments(
                 actor_id=actor.id,
                 actor_email=actor.email,
                 actor_name=actor_name,
+                attendance_request_id=event.attendance_request_id,
             )
         )
         summary = summaries.get(actor.id)
@@ -1046,6 +1059,42 @@ def list_attendance_annulments(
             )
     by_operator = sorted(summaries.values(), key=lambda row: (-row.total, row.actor_email))
     return AttendanceAnnulmentReport(items=items, by_operator=by_operator, total=len(items))
+
+
+def attendance_annulments_export(
+    report: AttendanceAnnulmentReport, *, days: int
+) -> ExportTable:
+    """Build the downloadable table of an annulments report.
+
+    One row per annulled mark with the operator, whether the annulment came from
+    the panel or from approving the employee's request, and the request id when
+    it did. The per-operator breakdown stays in the JSON report: a spreadsheet
+    can pivot this table instead of carrying a second, unrelated section.
+    """
+    return ExportTable(
+        title=f"Anulaciones de asistencia de los últimos {days} días",
+        headers=[
+            "Fecha y hora",
+            "Colaborador",
+            "Marca",
+            "Responsable",
+            "Origen",
+            "Solicitud",
+            "Motivo",
+        ],
+        rows=[
+            [
+                to_club_timezone(_as_utc(item.occurred_at)).strftime("%Y-%m-%d %H:%M"),
+                item.employee_name,
+                ANNULMENT_EVENT_LABELS.get(item.event_type, item.event_type),
+                item.actor_name or item.actor_email,
+                "Solicitud del colaborador" if item.attendance_request_id else "Panel",
+                str(item.attendance_request_id) if item.attendance_request_id else "",
+                item.reason or "",
+            ]
+            for item in report.items
+        ],
+    )
 
 
 def _notify_mark_changed(

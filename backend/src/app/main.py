@@ -540,6 +540,7 @@ from app.modules.staffing.service import (
     ManualAttendanceReasonRequired,
     ShiftNotAvailable,
     ShiftOverlap,
+    attendance_annulments_export,
     attendance_request_is_overdue,
     clock_in,
     clock_out,
@@ -641,7 +642,7 @@ from app.modules.reports import (
     build_report,
     resolve_period,
 )
-from app.timezone import DEFAULT_TIMEZONE, validate_club_timezone
+from app.timezone import DEFAULT_TIMEZONE, club_date, validate_club_timezone
 
 PreviewOutcome = Literal["succeeded", "failed", "unknown", "processing"]
 PREVIEW_MODE = os.getenv("PREVIEW_MODE", "").lower() == "true"
@@ -4621,6 +4622,7 @@ def list_registered_attendance_events(
                 "source": event.source,
                 "occurred_at": event.occurred_at,
                 "reason": event.reason,
+                "attendance_request_id": event.attendance_request_id,
                 "actor_email": actor.email,
                 "actor_name": (
                     f"{employee.first_name} {employee.last_name}" if employee is not None else None
@@ -4818,10 +4820,41 @@ def list_attendance_annulments_endpoint(
                 "actor_id": item.actor_id,
                 "actor_email": item.actor_email,
                 "actor_name": item.actor_name,
+                "attendance_request_id": item.attendance_request_id,
             }
             for item in report.items
         ],
     }
+
+
+@app.get("/admin/staff/attendance/annulments.csv", tags=["staff administration"])
+def export_attendance_annulments_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.read"))],
+    days: Annotated[int, Query(ge=1, le=365)] = 30,
+    employee_id: Annotated[UUID | None, Query()] = None,
+    actor_id: Annotated[UUID | None, Query()] = None,
+) -> Response:
+    report = list_attendance_annulments(
+        session,
+        from_at=utc_now() - timedelta(days=days),
+        employee_id=employee_id,
+        actor_id=actor_id,
+    )
+    table = attendance_annulments_export(report, days=days)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(table.headers)
+    writer.writerows(table.rows)
+    filename = f"anulaciones-asistencia-{days}d-{club_date(utc_now()).isoformat()}.csv"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store, private",
+        },
+    )
 
 
 def _self_attendance_mark(

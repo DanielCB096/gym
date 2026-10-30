@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-30 · Asistencia: vínculo solicitud→bitácora y CSV de anulaciones
+
+- **Vínculo explícito**: `staff_attendance_events.attendance_request_id` (FK nullable con `ON DELETE SET NULL`) guarda la solicitud que originó la corrección o la anulación cuando el cambio se aplicó al aprobarla. `correct_attendance` y `void_attendance_mark` lo reciben como parámetro y `decide_attendance_request` pasa el identificador; los cambios hechos desde el panel quedan con `NULL`. No hay relleno del pasado: cruzar `decided_at` con el evento era ambiguo y un vínculo inventado sería peor que uno ausente.
+- **Bitácora**: el payload de `GET /admin/staff/attendance/{id}/events` publica `attendance_request_id` y el modal del turno muestra «Aplicado al aprobar la solicitud del colaborador · {id corto}» bajo el evento.
+- **Reporte con origen**: cada anulación del reporte gana `attendance_request_id`; el panel suma la columna «ORIGEN» (`Solicitud` o `Panel`) y la exportación reutiliza las mismas filas, así pantalla y archivo no pueden discrepar.
+- **CSV**: `GET /admin/staff/attendance/annulments.csv` (`attendance.read`) acepta `days`, `employee_id` y `actor_id` como el JSON, responde `text/csv; charset=utf-8` con `Content-Disposition` y nombre fechado en la zona del club, y el BFF lo descarga por `proxyAuthenticatedDownload` leyendo bytes. El panel añade «Exportar CSV» junto al selector de periodo.
+- **ExportTable compartido**: el contrato de tabla exportable se mueve a `app/exports.py`; reportes, fisioterapia y staffing lo importan sin que asistencia dependa del módulo de reportes.
+- **Esquema**: migración `20261031_0063_attendance_request_event_link.py` agrega la columna, la FK `fk_staff_attendance_events_request_link` y el índice `ix_staff_attendance_events_request_link`, y su reversión se niega mientras existan eventos enlazados; `preview_patch.py` añade la columna y el índice en SQLite.
+- **Pruebas**: un caso nuevo en `test_attendance_requests.py` (aprobación de una anulación que enlaza su evento y deja nulo el cambio desde el panel, más el `ExportTable` con origen y solicitud), ampliación de `test_attendance_api.py` (`attendance_request_id` en la bitácora y el reporte, descarga CSV con comillas, filtros y permisos) y de `test_preview_patch.py` (columna registrada e índices idempotentes). Suite en **278 pruebas**: 273 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Verificación**: en el panel sobre la vista previa la tarjeta «Anulaciones» mostró la columna «ORIGEN» con «Panel», «Exportar CSV» descargó `anulaciones-asistencia-30d-….csv` (`200`, `text/csv`) y, tras una solicitud de corrección aprobada, la bitácora del turno mostró «Aplicado al aprobar la solicitud del colaborador · ce1ea24e» con el motivo. `npx tsc --noEmit` y `npx next build` quedan limpios.
+- **Documentación**: ADR-046, ADR-044 con sus dos límites cerrados, módulo de personal y roles, modelo de datos, deuda técnica, plan de pruebas e índice de documentación.
+
 ## 2026-10-30 · Asistencia: plazo y escalado de las solicitudes pendientes
 
 - **Plazo configurable**: `staffing_settings.attendance_request_sla_hours` guarda cuántas horas tiene la supervisión para decidir una solicitud (24 por defecto, `0` sin plazo, máximo 720) y se edita con el mismo `PATCH /admin/staff/settings`. El cambio queda auditado con `previous_attendance_request_sla_hours`/`attendance_request_sla_hours` en `staffing_settings_events` y el panel lo enseña en el historial como `plazo 24 → 2 h`.

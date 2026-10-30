@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import case, func, select
 from sqlmodel import Session
 
+from app.exports import ExportTable
 from app.modules.access.models import AccessEvent
 from app.modules.billing.service import PpdReceivableSummary, list_ppd_receivables
 from app.modules.classes.models import ClassReservation, ClassSession
@@ -460,13 +461,6 @@ class InventoryReport:
     orders_received: int
     orders_received_value_cents: int
     by_supplier: list[AmountRow]
-
-
-@dataclass(frozen=True)
-class ExportTable:
-    title: str
-    headers: list[str]
-    rows: list[list[str]]
 
 
 # --------------------------------------------------------------------------- #

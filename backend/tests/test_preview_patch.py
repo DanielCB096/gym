@@ -211,3 +211,35 @@ def test_preview_voiding_frees_the_shift_only_for_voided_rows() -> None:
     # Running it again keeps the freed-shift semantics.
     preview_patch.relax_attendance_shift_uniqueness(connection)
     assert connection.execute("SELECT COUNT(*) FROM staff_attendance").fetchone()[0] == 2
+
+
+def test_preview_upgrade_registers_the_attendance_request_link() -> None:
+    assert preview_patch.ADDED_COLUMNS["staff_attendance_events"] == {
+        "attendance_request_id": "CHAR(32)"
+    }
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        'CREATE TABLE "staff_attendance_events" (\n'
+        "\tid CHAR(32) NOT NULL, \n"
+        "\tevent_type VARCHAR(32) NOT NULL, \n"
+        "\toccurred_at DATETIME NOT NULL, \n"
+        "\tPRIMARY KEY (id)\n"
+        ")"
+    )
+    connection.execute("ALTER TABLE staff_attendance_events ADD COLUMN attendance_request_id CHAR(32)")
+
+    # Running it twice keeps the patch idempotent.
+    preview_patch.ensure_attendance_event_indexes(connection)
+    preview_patch.ensure_attendance_event_indexes(connection)
+    indexes = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND tbl_name='staff_attendance_events'"
+        )
+    }
+    assert {
+        "ix_staff_attendance_events_type_time",
+        "ix_staff_attendance_events_request_link",
+    } <= indexes

@@ -26,7 +26,8 @@ from app.modules.physio.models import (
     PhysioPackAdjustment,
     PhysioService,
 )
-from app.modules.reports.service import ExportTable, ReportPeriod
+from app.exports import ExportTable
+from app.modules.reports.service import ReportPeriod
 
 # The occupancy denominator is an estimate: the room has no shift schedule, so
 # every therapist with agenda in the period is assumed to work this many hours
