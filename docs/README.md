@@ -2,6 +2,8 @@
 
 Esta carpeta contiene la memoria del proyecto: contexto de negocio, arquitectura, módulos, procesos, integraciones, decisiones de diseño, operación y pruebas.
 
+Para retomar el trabajo donde se quedó, empieza por [TRASPASO.md](TRASPASO.md).
+
 ## Índice
 
 ### 00-contexto
