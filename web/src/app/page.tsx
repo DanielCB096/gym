@@ -93,6 +93,11 @@ type BackendRole = {
   permissions: string[];
 };
 
+type PermissionCatalogEntry = {
+  code: string;
+  label: string;
+};
+
 type BackendUser = {
   id: string;
   email: string;
@@ -2866,18 +2871,23 @@ const permissionRows = [
   { group: "Seguridad", label: "Administrar sesiones activas", code: "sessions.manage" },
   { group: "Asistencia", label: "Consultar asistencias", code: "attendance.read" },
   { group: "Asistencia", label: "Registrar y corregir", code: "attendance.manage" },
+  { group: "Asistencia", label: "Marcar la propia asistencia", code: "attendance.self" },
   { group: "Clases", label: "Consultar clases", code: "classes.read" },
   { group: "Clases", label: "Administrar clases y reservas", code: "classes.manage" },
   { group: "Fisioterapia", label: "Consultar agenda y paquetes", code: "physio.read" },
   { group: "Fisioterapia", label: "Administrar citas, paquetes y catálogo", code: "physio.manage" },
+  { group: "Fisioterapia", label: "Extender o anular paquetes", code: "physio.adjust" },
   { group: "Rutinas", label: "Consultar rutinas y progreso", code: "routines.read" },
   { group: "Rutinas", label: "Administrar rutinas y progreso", code: "routines.manage" },
   { group: "Inventario", label: "Consultar inventario", code: "inventory.read" },
   { group: "Inventario", label: "Administrar inventario", code: "inventory.manage" },
   { group: "Ventas", label: "Consultar ventas y cortes", code: "sales.read" },
   { group: "Ventas", label: "Registrar ventas y operar la caja", code: "sales.manage" },
+  { group: "Ventas", label: "Administrar límites de crédito", code: "sales.credit" },
+  { group: "Ventas", label: "Reembolsar servicios cobrados", code: "sales.service_refund" },
   { group: "Mantenimiento", label: "Consultar mantenimiento", code: "maintenance.read" },
   { group: "Mantenimiento", label: "Administrar mantenimiento", code: "maintenance.manage" },
+  { group: "Mantenimiento", label: "Reportar fallas y marcar equipos fuera de servicio", code: "maintenance.report" },
   { group: "Finanzas", label: "Consultar reportes financieros", code: "finance.read" },
   { group: "Finanzas", label: "Conciliar pagos y cuentas bancarias", code: "finance.manage" },
   { group: "Facturación", label: "Consultar facturas y datos fiscales", code: "billing.read" },
@@ -2887,6 +2897,30 @@ const permissionRows = [
   { group: "Finanzas", label: "Administrar nómina", code: "payroll.manage" },
   { group: "Configuración", label: "Administrar configuración", code: "settings.manage" },
 ];
+
+const permissionGroupByPrefix: Record<string, string> = {
+  dashboard: "Operación",
+  members: "Socios",
+  access: "Accesos",
+  staff: "Personal",
+  roles: "Seguridad",
+  sessions: "Seguridad",
+  attendance: "Asistencia",
+  classes: "Clases",
+  physio: "Fisioterapia",
+  routines: "Rutinas",
+  inventory: "Inventario",
+  sales: "Ventas",
+  maintenance: "Mantenimiento",
+  billing: "Facturación",
+  payroll: "Finanzas",
+  finance: "Finanzas",
+  settings: "Configuración",
+};
+
+function permissionGroupFor(code: string): string {
+  return permissionGroupByPrefix[code.split(".")[0]] ?? "Otros";
+}
 
 const hourlyTraffic = [
   { label: "06", value: 30 }, { label: "07", value: 52 }, { label: "08", value: 69 },
@@ -2931,6 +2965,7 @@ export default function HomePage() {
   const [loginBusy, setLoginBusy] = useState(false);
   const [backendStaff, setBackendStaff] = useState<BackendEmployee[] | null>(null);
   const [backendRoles, setBackendRoles] = useState<BackendRole[] | null>(null);
+  const [permissionCatalog, setPermissionCatalog] = useState<PermissionCatalogEntry[] | null>(null);
   const [backendUsers, setBackendUsers] = useState<BackendUser[] | null>(null);
   const [backendSessions, setBackendSessions] = useState<BackendSession[] | null>(null);
   const [backendShifts, setBackendShifts] = useState<BackendShift[] | null>(null);
@@ -3015,6 +3050,12 @@ export default function HomePage() {
           const roles = await rolesResponse.json() as BackendRole[];
           if (active) setBackendRoles(roles);
 
+          const catalogResponse = await fetch("/api/admin/permissions", { cache: "no-store" });
+          if (catalogResponse.ok) {
+            const catalog = await catalogResponse.json() as PermissionCatalogEntry[];
+            if (active) setPermissionCatalog(catalog);
+          }
+
           const usersResponse = await fetch("/api/admin/users", { cache: "no-store" });
           if (usersResponse.status === 401) {
             if (active) {
@@ -3028,6 +3069,7 @@ export default function HomePage() {
           if (active) setBackendUsers(users);
         } else if (active) {
           setBackendRoles(null);
+          setPermissionCatalog(null);
           setBackendUsers(null);
         }
 
@@ -3547,7 +3589,7 @@ export default function HomePage() {
               onOpenMember={(member) => hasPermission("members.manage") && setActiveMember(member)}
             />
           )}
-          {activePage === "Personal" && <StaffView onToast={showToast} canManageRoles={hasPermission("roles.manage")} canManageSessions={hasPermission("sessions.manage")} canManageStaff={hasPermission("staff.manage")} canViewAttendance={hasPermission("attendance.read")} canManageAttendance={hasPermission("attendance.manage")} employees={backendStaff} roles={backendRoles} users={backendUsers} sessions={backendSessions} shifts={backendShifts} loading={staffLoading} error={staffError} onIdentityChanged={() => setStaffRefresh((value) => value + 1)} />}
+          {activePage === "Personal" && <StaffView onToast={showToast} canManageRoles={hasPermission("roles.manage")} canManageSessions={hasPermission("sessions.manage")} canManageStaff={hasPermission("staff.manage")} canViewAttendance={hasPermission("attendance.read")} canManageAttendance={hasPermission("attendance.manage")} employees={backendStaff} roles={backendRoles} permissionCatalog={permissionCatalog} users={backendUsers} sessions={backendSessions} shifts={backendShifts} loading={staffLoading} error={staffError} onIdentityChanged={() => setStaffRefresh((value) => value + 1)} />}
           {activePage === "Inventario" && <InventoryView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Clases" && <ClassesView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
           {activePage === "Fisioterapia" && <PhysioView permissions={currentUser.permissions} onUnauthorized={handleSessionExpired} onToast={showToast} />}
@@ -4729,7 +4771,7 @@ function MembersView({ directory, loading, error, search, onSearch, sort, direct
   );
 }
 
-function StaffView({ onToast, canManageRoles, canManageSessions, canManageStaff, canViewAttendance, canManageAttendance, employees, roles, users, sessions, shifts, loading, error, onIdentityChanged }: { onToast: (message: string) => void; canManageRoles: boolean; canManageSessions: boolean; canManageStaff: boolean; canViewAttendance: boolean; canManageAttendance: boolean; employees: BackendEmployee[] | null; roles: BackendRole[] | null; users: BackendUser[] | null; sessions: BackendSession[] | null; shifts: BackendShift[] | null; loading: boolean; error: string; onIdentityChanged: () => void }) {
+function StaffView({ onToast, canManageRoles, canManageSessions, canManageStaff, canViewAttendance, canManageAttendance, employees, roles, permissionCatalog, users, sessions, shifts, loading, error, onIdentityChanged }: { onToast: (message: string) => void; canManageRoles: boolean; canManageSessions: boolean; canManageStaff: boolean; canViewAttendance: boolean; canManageAttendance: boolean; employees: BackendEmployee[] | null; roles: BackendRole[] | null; permissionCatalog: PermissionCatalogEntry[] | null; users: BackendUser[] | null; sessions: BackendSession[] | null; shifts: BackendShift[] | null; loading: boolean; error: string; onIdentityChanged: () => void }) {
   const [activeTab, setActiveTab] = useState<"equipo" | "roles" | "usuarios" | "sesiones">("equipo");
   const [selectedRoleCode, setSelectedRoleCode] = useState("reception");
   const [busyUserId, setBusyUserId] = useState<string | null>(null);
@@ -4752,12 +4794,20 @@ function StaffView({ onToast, canManageRoles, canManageSessions, canManageStaff,
   const employeeById = new Map(employeeList.map((employee) => [employee.id, employee]));
   const nextShiftFor = (employeeId: string): BackendShift | null =>
     upcomingShifts.find((shift) => shift.employee_id === employeeId) ?? null;
-  const catalogPermissionCodes = new Set(permissionRows.map((permission) => permission.code));
+  const curatedCodes = new Set(permissionRows.map((permission) => permission.code));
+  const catalogExtras = (permissionCatalog ?? [])
+    .filter((entry) => !curatedCodes.has(entry.code))
+    .map((entry) => ({ group: permissionGroupFor(entry.code), label: entry.label, code: entry.code }));
+  const knownCodes = new Set([...curatedCodes, ...catalogExtras.map((row) => row.code)]);
   const extraPermissionRows = (selectedRole?.permissions ?? [])
-    .filter((code) => !catalogPermissionCodes.has(code))
+    .filter((code) => !knownCodes.has(code))
     .sort()
     .map((code) => ({ group: "Otros", label: code, code }));
-  const matrixRows = [...permissionRows, ...extraPermissionRows];
+  const rowsByGroup = new Map<string, { group: string; label: string; code: string }[]>();
+  for (const row of [...permissionRows, ...catalogExtras, ...extraPermissionRows]) {
+    rowsByGroup.set(row.group, [...(rowsByGroup.get(row.group) ?? []), row]);
+  }
+  const matrixRows = [...rowsByGroup.values()].flat();
 
   const changeUserRole = async (user: BackendUser, method: "POST" | "DELETE", roleCode: string) => {
     setBusyUserId(user.id);

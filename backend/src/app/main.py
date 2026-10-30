@@ -402,6 +402,7 @@ from app.modules.identity.service import (
     ensure_default_access_control,
     grant_role_permission,
     list_active_sessions,
+    list_permission_catalog,
     list_roles_and_permissions,
     list_users,
     register_user,
@@ -4287,6 +4288,14 @@ def get_roles_and_permissions(
     _: Annotated[AuthenticatedUser, Depends(require_api_permission("roles.manage"))],
 ) -> list[dict[str, object]]:
     return list_roles_and_permissions(session)
+
+
+@app.get("/admin/permissions", tags=["staff administration"])
+def get_permission_catalog(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("roles.manage"))],
+) -> list[dict[str, str]]:
+    return list_permission_catalog(session)
 
 
 @app.get("/admin/staff", tags=["staff administration"])

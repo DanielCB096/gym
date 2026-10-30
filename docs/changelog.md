@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-30 · Matriz de permisos completa
+
+- **Backend**: `GET /admin/permissions` (permiso `roles.manage`) devuelve el catálogo con el código y la etiqueta que ya viven en la tabla `permissions`.
+- **Panel**: la matriz de Personal → Roles y permisos se arma con ese catálogo. Antes el panel tenía su propia copia de 31 permisos y los cinco que llegaron después por migración —`attendance.self`, `physio.adjust`, `sales.credit`, `sales.service_refund` y `maintenance.report`— solo aparecían para los roles que ya los tenían, así que no se podían conceder ni retirar; ahora se ven para todos los roles y un permiso nuevo aparece sin tocar el panel.
+- **Pruebas**: `test_identity_api.py` exige que el catálogo cubra exactamente los permisos sembrados, que cada uno tenga etiqueta y que la ruta guarde `401`/`403`; la suite sigue en **259 pruebas** (254 pasan y 5 opt-in se omiten).
+- **Verificación**: en el panel, con el rol Recepción, `physio.adjust` se concedió y se retiró (17 → 18 → 17 permisos efectivos) sin recargar y sin errores de consola.
+- **Documentación**: deuda técnica y plan de pruebas.
+
 ## 2026-10-30 · Fisioterapia: verificación en navegador del incremento 3
 
 - **Verificación**: el panel se recorrió de extremo a extremo como dueño sobre la vista previa —asistencia que cobra la sesión suelta y deja la venta en el turno, corrección a inasistencia que reembolsa la venta anterior, nueva marcación que crea otra venta dejando la vieja reembolsada, venta de paquete, extensión con su ajuste, anulación con cancelación de las citas futuras y aviso al socio, pestaña Reporte con sus tarjetas y exportación CSV—, y la app del socio en Expo web (pantalla Fisioterapia, las cuatro etiquetas de aviso, el enlace del recordatorio y el aviso de reprogramación con sus dos ventanas). Sin errores de consola ni de red en ninguno de los dos canales.

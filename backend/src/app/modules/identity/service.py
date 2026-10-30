@@ -737,6 +737,18 @@ def list_roles_and_permissions(session: Session) -> list[dict[str, object]]:
     return result
 
 
+def list_permission_catalog(session: Session) -> list[dict[str, str]]:
+    """Return every permission with its label.
+
+    The panel used to keep its own copy of the catalog, so a permission added
+    by a migration stayed invisible until someone remembered to update it.
+    """
+    rows = session.exec(
+        select(Permission.code, Permission.description).order_by(Permission.code)
+    ).all()
+    return [{"code": code, "label": description or code} for code, description in rows]
+
+
 def list_users(session: Session) -> list[UserOverview]:
     """Return login users with their active role codes and employee name."""
     users = session.exec(select(AppUser).order_by(AppUser.email)).all()

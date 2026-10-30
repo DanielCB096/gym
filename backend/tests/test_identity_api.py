@@ -7,7 +7,11 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlalchemy.pool import StaticPool
 
 from app.main import app, get_session
-from app.modules.identity.service import ensure_default_access_control, register_user
+from app.modules.identity.service import (
+    DEFAULT_ROLE_PERMISSIONS,
+    ensure_default_access_control,
+    register_user,
+)
 
 
 def test_authentication_and_permission_guards_are_enforced_by_api() -> None:
@@ -62,6 +66,7 @@ def test_authentication_and_permission_guards_are_enforced_by_api() -> None:
 
             assert client.get("/admin/staff", headers=reception_headers).status_code == 403
             assert client.get("/admin/roles", headers=reception_headers).status_code == 403
+            assert client.get("/admin/permissions", headers=reception_headers).status_code == 403
             assert client.get("/admin/users", headers=reception_headers).status_code == 403
 
             owner_login = client.post(
@@ -71,6 +76,19 @@ def test_authentication_and_permission_guards_are_enforced_by_api() -> None:
             assert owner_login.status_code == 200
             owner_headers = {"Authorization": f"Bearer {owner_login.json()['access_token']}"}
             assert client.get("/admin/roles", headers=owner_headers).status_code == 200
+
+            # The panel builds its permission matrix from this catalog, so it
+            # has to list every seeded permission, labels included.
+            assert client.get("/admin/permissions").status_code == 401
+            catalog_response = client.get("/admin/permissions", headers=owner_headers)
+            assert catalog_response.status_code == 200
+            catalog = {entry["code"]: entry["label"] for entry in catalog_response.json()}
+            assert set(catalog) == {
+                code for codes in DEFAULT_ROLE_PERMISSIONS.values() for code in codes
+            }
+            assert catalog["physio.adjust"] == "Extender o anular paquetes de fisioterapia"
+            assert catalog["attendance.self"] == "Marcar la propia asistencia"
+            assert all(label for label in catalog.values())
             owner_users = client.get("/admin/users", headers=owner_headers)
             assert owner_users.status_code == 200
             assert [user["email"] for user in owner_users.json()] == [
