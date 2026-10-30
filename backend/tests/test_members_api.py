@@ -119,6 +119,16 @@ def test_admin_members_pagination_search_and_summary() -> None:
             # Summary stays club-wide even while searching.
             assert searched_body["summary"]["active"] == 2
 
+            # A full name spans two columns and still has to match.
+            full_name = client.get("/admin/members", headers=headers, params={"search": "Carla Mendez"})
+            full_name_body = full_name.json()
+            assert full_name_body["total"] == 1
+            assert full_name_body["items"][0]["email"] == "carla@example.com"
+
+            # Every word has to match, so an unrelated word finds nobody.
+            mixed = client.get("/admin/members", headers=headers, params={"search": "Carla Ruiz"})
+            assert mixed.json()["total"] == 0
+
             ana = next(item for item in body["items"] if item["email"] == "ana@example.com")
             assert ana["membership_status"] == "active"
             assert ana["plan_name"] == "Mensual"

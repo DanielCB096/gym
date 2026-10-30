@@ -2792,6 +2792,12 @@ function formatMoney(cents: number): string {
   return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(cents / 100);
 }
 
+function formatAgendaMinutes(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const hours = minutes / 60;
+  return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} h`;
+}
+
 function parseMoneyToCents(value: string): number | null {
   const normalized = value.replace(/[^0-9.]/g, "").trim();
   if (!normalized) return null;
@@ -8923,7 +8929,7 @@ function PhysioView({ permissions, onUnauthorized, onToast }: { permissions: str
                   <ReportStat label="Citas" value={String(report.totals.appointments)} hint={`${report.totals.scheduled} agendadas · ${report.totals.cancelled} canceladas`} />
                   <ReportStat label="Asistencia" value={`${report.totals.attendance_rate_percent}%`} hint={`${report.totals.attended} asistencias`} />
                   <ReportStat label="Inasistencias" value={`${report.totals.no_show_rate_percent}%`} hint={`${report.totals.no_show} no asistidas · ${report.totals.cancellation_rate_percent}% cancelación`} />
-                  <ReportStat label="Ocupación" value={`${report.occupancy.percent}%`} hint={`${Math.round(report.occupancy.booked_minutes / 60)} h agendadas de ${Math.round(report.occupancy.available_minutes / 60)} h disponibles`} />
+                  <ReportStat label="Ocupación" value={`${report.occupancy.percent}%`} hint={`${formatAgendaMinutes(report.occupancy.booked_minutes)} agendadas de ${formatAgendaMinutes(report.occupancy.available_minutes)} disponibles`} />
                   <ReportStat label="Ingresos netos" value={formatMoney(report.revenue.net_cents)} hint={`Paquetes ${formatMoney(report.revenue.package_cents)} · Sueltas ${formatMoney(report.revenue.single_cents)} · Devoluciones ${formatMoney(report.revenue.refunded_cents)}`} />
                   <ReportStat label="Paquetes vendidos" value={String(report.revenue.packages_sold)} hint={`${report.revenue.sessions_sold} sesiones · descuento ${formatMoney(report.revenue.discount_cents)}`} />
                   <ReportStat label="Sesiones sueltas" value={String(report.revenue.single_charges)} hint={formatMoney(report.revenue.single_cents)} />

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-30 · Fisioterapia: verificación en navegador del incremento 3
+
+- **Verificación**: el panel se recorrió de extremo a extremo como dueño sobre la vista previa —asistencia que cobra la sesión suelta y deja la venta en el turno, corrección a inasistencia que reembolsa la venta anterior, nueva marcación que crea otra venta dejando la vieja reembolsada, venta de paquete, extensión con su ajuste, anulación con cancelación de las citas futuras y aviso al socio, pestaña Reporte con sus tarjetas y exportación CSV—, y la app del socio en Expo web (pantalla Fisioterapia, las cuatro etiquetas de aviso, el enlace del recordatorio y el aviso de reprogramación con sus dos ventanas). Sin errores de consola ni de red en ninguno de los dos canales.
+- **Búsqueda de socios**: `_member_search_condition` ahora separa el término por palabras y exige que cada una coincida con algún campo, así «Carla Mendez» encuentra a la socia aunque nombre y apellido vivan en columnas distintas; una palabra ajena sigue devolviendo cero. Dos casos nuevos en `test_members_api.py`.
+- **Reporte**: la tarjeta de ocupación formatea los minutos («30 min», «1 h», «1.5 h») en lugar de redondear a horas enteras.
+- **Vista previa**: `preview_patch.py` incorpora el tramo de `CHECK` de 14 a 17 tipos de aviso que faltaba en la cadena, así una base de vista previa detenida antes de fisioterapia recibe los cuatro tipos nuevos. `tests/test_preview_patch.py` lo cubre con una tabla de 14 tipos, la fila existente y una segunda pasada idempotente.
+- **Pruebas**: la suite queda en **259 pruebas**: 254 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+
 ## 2026-10-30 · Fisioterapia: control del negocio (incremento 3)
 
 - **Esquema**: migración `20261030_0058_physio_control.py` con cuatro piezas: `physio_rooms` y `physio_specialties` (catálogos con `is_active`), `physio_therapist_profiles` (especialidad y consultorio predeterminado por `employee_id`, único), las columnas de anulación del paquete (`voided_at`, `voided_by`, `void_reason`, `voided_sessions`) más la bitácora `physio_pack_adjustments` (`kind` `extension`/`void`, `days`, `reason`, `actor_id`), y `room_id` en `physio_appointments`. La misma migración siembra el permiso `physio.adjust` —solo dueño y gerente, con la matriz en **36**— y amplía el `CHECK` de tipos de aviso a 18 con `physio_reminder`. `preview_patch.py` reproduce columnas, restricciones, índices, permisos y el `CHECK`, y `seed_physio.py` siembra consultorios y especialidades de ejemplo.

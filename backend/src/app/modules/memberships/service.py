@@ -349,14 +349,23 @@ def _latest_membership_subquery():
 
 
 def _member_search_condition(term: str):
-    like = f"%{term}%"
-    return or_(
-        func.lower(Member.first_name).like(like),
-        func.lower(Member.last_name).like(like),
-        func.lower(func.coalesce(Member.email, "")).like(like),
-        func.lower(func.coalesce(Member.phone, "")).like(like),
-        func.lower(func.coalesce(Plan.name, "")).like(like),
-    )
+    # Each word has to match some field on its own, so writing the full name
+    # ("Ana López") finds the member even though name and surname live in
+    # separate columns.
+    tokens = term.split() or [term]
+    conditions = []
+    for token in tokens:
+        like = f"%{token}%"
+        conditions.append(
+            or_(
+                func.lower(Member.first_name).like(like),
+                func.lower(Member.last_name).like(like),
+                func.lower(func.coalesce(Member.email, "")).like(like),
+                func.lower(func.coalesce(Member.phone, "")).like(like),
+                func.lower(func.coalesce(Plan.name, "")).like(like),
+            )
+        )
+    return and_(*conditions)
 
 
 def _member_state_condition(state: str):
