@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-31 · Avisos: retención de la bandeja y de las entregas del personal (ADR-075)
+
+- `backend/purge_inbox_data.py` y `app/modules/notifications/inbox_retention.py` podan la bandeja y las colas del personal en una corrida: borran los avisos del socio **ya leídos** y los del personal **cerrados** anteriores al corte (`NOTIFICATION_INBOX_RETENTION_DAYS`, 365 días por defecto de 30 a 3650), y las entregas terminales (`sent`, `simulated`, `failed`) de correo y de push web del personal anteriores al suyo (`STAFF_DELIVERY_RETENTION_DAYS`, 365 de 1 a 3650). Nunca borra un aviso sin leer, un aviso con trabajo pendiente ni la advertencia de token del kiosco, que se regenera mientras el dispositivo siga ahí; borra primero las entregas y salta cualquiera con entrega o acuse vivos, así que las ventanas cruzadas no rompen las claves foráneas `RESTRICT`. Acepta `--preview`, `--database-url`, `--inbox-days`, `--delivery-days` y `--dry-run`, con códigos 2 para configuración y 1 para base inalcanzable.
+- `ops_cron.py` pasó a siete entradas: la bandeja es la cuarta purga diaria, a las `04:45` con los valores por defecto (90 minutos después de la primera) y bitácora `purge-inbox.log`; `--install` exige también el script. Sin migración: los índices de ADR-058 y ADR-062 ya sirven. Se actualizaron ADR-058, ADR-063, ADR-074, la ficha de avisos, la guía de despliegue, la deuda, el plan de pruebas, TRASPASO y el README del backend.
+- Suite backend completa: **560 pruebas, 552 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL` (`test_inbox_retention.py` suma 26 y el cron sigue en 32).
+
 ## 2026-10-31 · Push del socio: retención de acuses y entregas (ADR-074)
 
 - `backend/purge_push_data.py` y `app/modules/notifications/push_retention.py` podan el push del socio en una corrida: los acuses de Expo se cuentan desde `received_at` (90 días por defecto, `PUSH_RECEIPT_RETENTION_DAYS`) y las entregas en estado terminal (`sent`, `simulated`, `failed`) desde `created_at` (365, `PUSH_DELIVERY_RETENTION_DAYS`), de 1 a 3650 cada ventana. Nunca se borra una `pending` ni una entrega con acuse vivo, y el script acepta `--preview`, `--database-url`, `--receipt-days`, `--delivery-days` y `--dry-run`, con códigos 2 para configuración y 1 para base inalcanzable.

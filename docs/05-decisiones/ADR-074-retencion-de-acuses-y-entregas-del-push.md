@@ -27,6 +27,7 @@ La operación ya estrena un patrón para esto: `purge_access_data.py` (ADR-040) 
 - **La purga no reescribe el estado de la entrega ni la bandeja.** Borra acuses y entregas terminadas; la tabla `member_notifications` y el historial del token quedan intactos.
 - **Depende del cron del host.** Sin `ops_cron.py` instalado, la retención es una capacidad del script y no una tarea que ocurra sola; la bitácora `purge-push.log` es la única señal de fallo.
 - **No hay retención de `staff_push_deliveries` ni de las notificaciones.** Esta decisión solo cubre las dos tablas del push del socio; el push web del personal y las bandejas siguen creciendo sin poda.
+- **Actualización de ADR-075 (2026-10-31).** La retención de `staff_push_deliveries` y de las bandejas ya existe con `backend/purge_inbox_data.py`; esta ADR sigue cubriendo solo el push del socio y la purga del personal corre en su propio escalón (`04:45`). Esta nota sustituye al límite anterior.
 
 ## Referencias
 

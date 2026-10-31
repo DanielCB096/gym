@@ -1,9 +1,9 @@
 """Install the cron entries that keep the operations data fresh.
 
 The application has no scheduler: the maintenance scripts run from the host's
-cron (ADR-058, ADR-062, ADR-071, ADR-073, ADR-074). This script renders the
-six entries
-as one block delimited by markers, so reinstalling after moving the app,
+cron (ADR-058, ADR-062, ADR-071, ADR-073, ADR-074, ADR-075). This script renders
+the seven entries as one block delimited by markers, so reinstalling after
+moving the app,
 changing the database password or adjusting the schedule replaces the old block
 instead of duplicating lines, and unrelated crontab entries are left untouched.
 
@@ -46,6 +46,7 @@ _SCRIPTS = (
     "purge_access_data.py",
     "purge_email_receipts.py",
     "purge_push_data.py",
+    "purge_inbox_data.py",
     "sync_push_receipts.py",
     "flush_staff_push.py",
     "close_physio_day.py",
@@ -102,7 +103,7 @@ def add_minutes(hour: int, minute: int, offset: int) -> tuple[int, int]:
 
 
 def build_block(config: OpsCronConfig) -> str:
-    """Render the marked crontab block for the six maintenance jobs."""
+    """Render the marked crontab block for the seven maintenance jobs."""
 
     database_url = config.database_url.strip()
     if not database_url:
@@ -116,6 +117,9 @@ def build_block(config: OpsCronConfig) -> str:
     second_hour, second_minute = add_minutes(hour, minute, PURGE_STAGGER_MINUTES)
     third_hour, third_minute = add_minutes(
         hour, minute, PURGE_STAGGER_MINUTES * 2
+    )
+    fourth_hour, fourth_minute = add_minutes(
+        hour, minute, PURGE_STAGGER_MINUTES * 3
     )
     close_hour, close_minute = parse_daily_at(config.physio_close_at)
     receipts = receipts_schedule(config.receipts_every)
@@ -136,8 +140,9 @@ def build_block(config: OpsCronConfig) -> str:
             f"{config.receipts_every} min, push del personal cada "
             f"{config.staff_push_every} min, cierre de fisioterapia a las "
             f"{close_hour:02d}:{close_minute:02d} y purgas diarias a las "
-            f"{hour:02d}:{minute:02d}, {second_hour:02d}:{second_minute:02d} y "
-            f"{third_hour:02d}:{third_minute:02d}."
+            f"{hour:02d}:{minute:02d}, {second_hour:02d}:{second_minute:02d}, "
+            f"{third_hour:02d}:{third_minute:02d} y "
+            f"{fourth_hour:02d}:{fourth_minute:02d}."
         ),
         (
             f"{close_minute} {close_hour} * * * "
@@ -151,6 +156,10 @@ def build_block(config: OpsCronConfig) -> str:
         (
             f"{third_minute} {third_hour} * * * "
             f"{command('purge_push_data.py', '', 'purge-push.log')}"
+        ),
+        (
+            f"{fourth_minute} {fourth_hour} * * * "
+            f"{command('purge_inbox_data.py', '', 'purge-inbox.log')}"
         ),
         (
             f"{receipts} "
@@ -266,8 +275,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=(
             "Genera o instala el bloque de cron de las tareas de operación: "
             "cierre del día de fisioterapia, purga de accesos, purga de acuses "
-            "de correo, purga de acuses y entregas del push, consulta de acuses "
-            "del push y envío de la cola del push web del personal."
+            "de correo, purga de acuses y entregas del push, purga de la "
+            "bandeja y de las entregas del personal, consulta de acuses del "
+            "push y envío de la cola del push web del personal."
         )
     )
     action = parser.add_mutually_exclusive_group()
@@ -383,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Bloque instalado en el crontab: acuses cada {config.receipts_every} min, "
         f"push del personal cada {config.staff_push_every} min, cierre de "
-        f"fisioterapia a las {config.physio_close_at} y tres purgas diarias "
+        f"fisioterapia a las {config.physio_close_at} y cuatro purgas diarias "
         f"desde las {config.daily_at}. Revisa con: crontab -l"
     )
     return 0
