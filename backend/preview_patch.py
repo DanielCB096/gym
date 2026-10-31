@@ -706,6 +706,12 @@ def main(reset_maintenance: bool) -> None:
                 "ix_staff_notification_deliveries_message_id "
                 "ON staff_notification_deliveries (message_id)"
             )
+        if "staff_notification_delivery_receipts" in tables:
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_staff_notification_delivery_receipts_received "
+                "ON staff_notification_delivery_receipts (received_at)"
+            )
         if "member_push_deliveries" in tables:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS ix_member_push_deliveries_status_next "

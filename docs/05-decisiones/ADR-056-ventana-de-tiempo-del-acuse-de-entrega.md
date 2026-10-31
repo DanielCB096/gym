@@ -24,7 +24,7 @@ ADR-051 dejó ese hueco anotado como límite antes de producción: «añadir una
 - **Las tolerancias son constantes, no configuración.** Si un proveedor real necesita más de siete días para reportar un rebote, se ajusta la constante en código y se documenta; no hay variable de entorno ni endpoint.
 - **Un rebote legítimo y muy tardío se descarta.** El caso queda fuera por diseño; los proveedores suelen reintentar en horas, no en semanas, y el adaptador siempre puede reenviar con la fecha original si el club lo necesita.
 - **La ventana depende del reloj del club.** Un servidor con la hora mal puesta rechazaría eventos válidos o aceptaría viejos; el club ya valida `APP_TIMEZONE` al arrancar, pero el reloj del sistema queda fuera del alcance de la aplicación.
-- **Los recibos siguen sin retención.** Sigue pendiente purgar `staff_notification_delivery_receipts` con una política como la del kiosco (ADR-040). La rotación de `EMAIL_WEBHOOK_SECRET` con periodo de gracia quedó resuelta por ADR-057.
+- **La retención quedó resuelta por ADR-058.** Los acuses se purgan por `received_at` con 90 días por defecto y un script externo; el mínimo de retención es esta misma ventana, así que un acuse purgado no puede volver por un reintento tardío. La rotación de `EMAIL_WEBHOOK_SECRET` con periodo de gracia quedó resuelta por ADR-057.
 
 ## Referencias
 

@@ -291,6 +291,10 @@ class StaffNotificationDeliveryReceipt(SQLModel, table=True):
             "delivery_id",
             "received_at",
         ),
+        Index(
+            "ix_staff_notification_delivery_receipts_received",
+            "received_at",
+        ),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)

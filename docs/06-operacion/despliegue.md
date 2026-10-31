@@ -25,18 +25,21 @@ La validación del paso 2 incluye el job `migrations`: aplica la cadena Alembic 
 
 ## Mantenimiento programado
 
-La purga de los datos operativos del kiosco **no corre sola**: no hay programador dentro de la aplicación y depende de una tarea externa. Programa a diario `backend/purge_access_data.py`, con el usuario de la aplicación y después del respaldo:
+La purga de los datos operativos **no corre sola**: no hay programador dentro de la aplicación y depende de tareas externas. Programa a diario los dos scripts —primero el de accesos y después el de acuses—, con el usuario de la aplicación y después del respaldo:
 
 ```bash
 cd /srv/gimnasio/backend
 DATABASE_URL="postgresql+psycopg://gym:...@db:5432/gym" .venv/bin/python purge_access_data.py --dry-run
 DATABASE_URL="postgresql+psycopg://gym:...@db:5432/gym" .venv/bin/python purge_access_data.py >> /var/log/gimnasio-purge.log 2>&1
+DATABASE_URL="postgresql+psycopg://gym:...@db:5432/gym" .venv/bin/python purge_email_receipts.py --dry-run
+DATABASE_URL="postgresql+psycopg://gym:...@db:5432/gym" .venv/bin/python purge_email_receipts.py >> /var/log/gimnasio-purge.log 2>&1
 ```
 
-- Borra los códigos rotativos cuyo `expires_at` quedó antes del corte —vencidos o consumidos hace días, nunca uno vigente— y los intentos del kiosco anteriores al corte. **No toca `access_events`**: la bitácora es registro de negocio y su retención debe acordarse con el club.
-- La retención se ajusta con `KIOSK_CODE_RETENTION_DAYS` (7 días por defecto) y `KIOSK_ATTEMPT_RETENTION_DAYS` (30), enteros entre 1 y 3650; las banderas `--codes-days` y `--attempts-days` permiten una corrida puntual sin cambiar el entorno.
-- Es idempotente: una segunda corrida seguida borra `0`. Una configuración inválida sale con código 2 y no modifica nada.
-- En la vista previa se ejecuta con `--preview` (o sin `--database-url` si `DATABASE_URL` apunta a `gym_preview.db`); la primera corrida conviene hacerla con `--dry-run`.
+- `purge_access_data.py` borra los códigos rotativos cuyo `expires_at` quedó antes del corte —vencidos o consumidos hace días, nunca uno vigente— y los intentos del kiosco anteriores al corte. **No toca `access_events`**: la bitácora es registro de negocio y su retención debe acordarse con el club.
+- La retención del kiosco se ajusta con `KIOSK_CODE_RETENTION_DAYS` (7 días por defecto) y `KIOSK_ATTEMPT_RETENTION_DAYS` (30), enteros entre 1 y 3650; las banderas `--codes-days` y `--attempts-days` permiten una corrida puntual sin cambiar el entorno.
+- `purge_email_receipts.py` borra de `staff_notification_delivery_receipts` los acuses con `received_at` anterior al corte. **No toca las entregas ni la bandeja**: solo los reportes del proveedor de correo. La retención es `STAFF_RECEIPT_RETENTION_DAYS` (90 días por defecto) o `--days`, entre 7 —la ventana del webhook, para que un acuse purgado no vuelva por un reintento tardío— y 3650.
+- Ambos son idempotentes: una segunda corrida seguida borra `0`. Una configuración inválida sale con código 2 y no modifica nada.
+- En la vista previa se ejecutan con `--preview` (o sin `--database-url` si `DATABASE_URL` apunta a `gym_preview.db`); la primera corrida conviene hacerla con `--dry-run`.
 
 ## Riesgos
 

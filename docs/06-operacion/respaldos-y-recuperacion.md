@@ -10,6 +10,7 @@ Mantener continuidad del negocio con copias periódicas y una estrategia de recu
 - almacenamiento en repositorio seguro y cifrado
 - retención escalonada por tipo de dato
 - purga diaria de códigos rotativos e intentos del kiosco con `backend/purge_access_data.py` (no toca la bitácora de accesos; ver `despliegue.md`)
+- purga diaria de los acuses del correo con `backend/purge_email_receipts.py` (no toca las entregas ni la bandeja; ver `despliegue.md`)
 - prueba de restauración al menos mensual
 
 ## Flujos críticos

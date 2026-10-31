@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-31 · Avisos: retención de los acuses de entrega
+
+- **Purga por fecha de recepción**: `staff_notification_delivery_receipts` se limpia con `purge_expired_receipts`, que borra los acuses con `received_at` anterior al corte. Las entregas y la bandeja no se tocan: el acuse es lo operativo, la entrega es el registro del envío.
+- **Retención configurable**: `STAFF_RECEIPT_RETENTION_DAYS` con 90 días por defecto, de 7 a 3650; el mínimo es la ventana del webhook (`RECEIPT_MAX_AGE`), así que un acuse purgado no puede volver por un reintento tardío. Fuera de rango la corrida se rechaza sin tocar la base.
+- **Script externo**: `backend/purge_email_receipts.py` con `--preview`, `--database-url`, `--days` y `--dry-run`, hermano de `purge_access_data.py` y programable en el mismo cron diario.
+- **Índice por recepción**: migración `20261031_0070` agrega `ix_staff_notification_delivery_receipts_received`, porque el índice `(delivery_id, received_at)` no sirve para un corte global por fecha; `preview_patch.py` lo crea en la base de vista previa.
+- **Pruebas**: 13 casos nuevos en `test_staff_receipt_retention.py` —corte por defecto, entregas intactas, idempotencia, simulación, dos banderas de retención, fecha de recepción frente a la del proveedor, el mínimo igual a la ventana, validación de valores y política por entorno—. Suite en **359 pruebas**: 354 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Documentación**: ADR-058, ADR-051, ADR-056, ADR-057, deuda técnica, plan de pruebas, README, README del backend, modelo de datos, módulo de personal, despliegue, traspaso y este changelog.
+
 ## 2026-10-31 · Avisos: rotación del secreto del webhook con periodo de gracia
 
 - **Segundo secreto solo para verificar**: `EMAIL_WEBHOOK_SECRET_PREVIOUS` (opcional) se acepta únicamente al comprobar `X-Email-Signature`; el club sigue firmando con `EMAIL_WEBHOOK_SECRET`, que es obligatorio. Sin el actual, el webhook responde `503` aunque haya uno anterior.

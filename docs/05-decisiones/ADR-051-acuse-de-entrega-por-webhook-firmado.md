@@ -25,7 +25,7 @@ Conectar un proveedor concreto (Resend, SendGrid, SES…) traería su propio mod
 - **El acuse no dispara acciones.** Ni reintentos ni avisos al remitente: el panel enseña el estado y la persona decide. El club no pidió automatizar rebotes.
 - **Solo se acusa lo enviado.** Una entrega en cola o simulada no admite acuse, y una entrega fallida tampoco; si el proveedor responde por un mensaje que el club nunca envió, se rechaza.
 - **El orden depende del proveedor.** El panel muestra el último evento por fecha de recepción; un `delivered` que llegue después de un `bounced` será el que se vea. Se conservan todos los eventos para auditar.
-- **Sin retención definida.** Los acuses se guardan indefinidamente; purgarlos exigirá una política de retención como la del kiosco (ADR-040).
+- **Sin retención definida (resuelto por ADR-058).** Los acuses se guardaban indefinidamente; ADR-058 los purga por `received_at` con 90 días por defecto, un mínimo igual a la ventana del webhook y un script externo junto al de accesos, sin tocar las entregas ni la bandeja.
 - **El secreto es del club.** `EMAIL_WEBHOOK_SECRET` vive en el entorno; no hay endpoint para generarlo ni rotarlo.
 
 ## Referencias
