@@ -58,6 +58,7 @@ ADDED_COLUMNS = {
     "progress_photos": {"origin": "VARCHAR(8) NOT NULL DEFAULT 'staff'"},
     "kiosk_devices": {"token_expires_at": "DATETIME"},
     "staff_notifications": {"resolved_at": "DATETIME"},
+    "staff_notification_deliveries": {"message_id": "VARCHAR(320)"},
     "staffing_settings": {
         "attendance_request_sla_hours": "INTEGER NOT NULL DEFAULT 24",
         "attendance_email_enabled": "BOOLEAN NOT NULL DEFAULT 1",
@@ -673,6 +674,12 @@ def main(reset_maintenance: bool) -> None:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS ix_staff_attendance_requests_status_due "
                 "ON staff_attendance_requests (status, due_at)"
+            )
+        if "staff_notification_deliveries" in tables:
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ix_staff_notification_deliveries_message_id "
+                "ON staff_notification_deliveries (message_id)"
             )
 
         seed_preview_permissions(connection)

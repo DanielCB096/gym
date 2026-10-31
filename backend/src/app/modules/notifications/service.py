@@ -29,8 +29,9 @@ service that completes the work a staff notice announced closes it with
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+import os
 from typing import Sequence, TypeVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, or_, update
 from sqlalchemy.exc import IntegrityError
@@ -41,11 +42,14 @@ from app.modules.memberships.models import Member, Membership
 from app.modules.notifications.models import (
     MAX_BODY_CHARS,
     MAX_DEDUPE_CHARS,
+    MAX_MESSAGE_ID_CHARS,
     MAX_TITLE_CHARS,
     NOTIFICATION_KINDS,
     STAFF_NOTIFICATION_EMAIL_KINDS,
     STAFF_NOTIFICATION_KINDS,
     MemberNotification,
+    MemberPushDelivery,
+    MemberPushToken,
     StaffNotification,
     StaffNotificationDelivery,
     utc_now,
@@ -61,6 +65,7 @@ CLASS_REMINDER_WINDOWS_HOURS = (2, 24)
 PHYSIO_REMINDER_WINDOWS_HOURS = (24,)
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
+DEFAULT_MESSAGE_ID_DOMAIN = "centro-fit.local"
 
 
 class NotificationError(Exception):
@@ -184,22 +189,56 @@ def create_notification(
     ref_id: UUID | None = None,
     dedupe_key: str | None = None,
     now: datetime | None = None,
+    push: bool = True,
 ) -> MemberNotification:
-    """Append a message for a member."""
+    """Append a message for a member and queue its push.
+
+    ``push=False`` is for the reminders materialised while the member is reading
+    the inbox: they were not caused by an event, so pushing them at that moment
+    would announce something the member is already looking at.
+    """
     clean_title, clean_body = _validated_message(kind, title, body, NOTIFICATION_KINDS)
-    return _append(
-        session,
-        MemberNotification(
-            member_id=member_id,
-            kind=kind,
-            title=clean_title,
-            body=clean_body,
-            ref_id=ref_id,
-            dedupe_key=_clean_dedupe_key(dedupe_key),
-            created_at=_as_utc(now or utc_now()),
-        ),
-        MemberNotification,
+    notice = MemberNotification(
+        member_id=member_id,
+        kind=kind,
+        title=clean_title,
+        body=clean_body,
+        ref_id=ref_id,
+        dedupe_key=_clean_dedupe_key(dedupe_key),
+        created_at=_as_utc(now or utc_now()),
     )
+    stored = _append(session, notice, MemberNotification)
+    if stored is notice and push:
+        _enqueue_member_push_deliveries(session, notice)
+    return stored
+
+
+def _enqueue_member_push_deliveries(
+    session: Session, notice: MemberNotification
+) -> list[MemberPushDelivery]:
+    """One row per active device, written with the notice.
+
+    Devices registered after this point do not receive the notice: the audience
+    is the one that existed when the event happened.
+    """
+
+    tokens = session.exec(
+        select(MemberPushToken).where(
+            MemberPushToken.member_id == notice.member_id,
+            MemberPushToken.active.is_(True),
+        )
+    ).all()
+    deliveries = [
+        MemberPushDelivery(
+            notification_id=notice.id,
+            member_id=notice.member_id,
+            token=push_token.token,
+        )
+        for push_token in tokens
+    ]
+    for delivery in deliveries:
+        session.add(delivery)
+    return deliveries
 
 
 def create_staff_notification(
@@ -235,14 +274,28 @@ def create_staff_notification(
     return stored
 
 
+def new_message_id() -> str:
+    """Identifier stored with the delivery and written on the message header.
+
+    The domain only has to be stable enough for a provider to echo it back; the
+    club's real domain is configured with ``EMAIL_MESSAGE_ID_DOMAIN``.
+    """
+
+    domain = (
+        os.getenv("EMAIL_MESSAGE_ID_DOMAIN", DEFAULT_MESSAGE_ID_DOMAIN).strip()
+        or DEFAULT_MESSAGE_ID_DOMAIN
+    )
+    return f"{uuid4().hex}@{domain.lower()}"[:MAX_MESSAGE_ID_CHARS]
+
+
 def _enqueue_staff_notification_email(
     session: Session, notice: StaffNotification
 ) -> StaffNotificationDelivery | None:
     """Queue an email for the notice when the club has the channel open.
 
-    Only the attendance kinds leave the panel today. The switch belongs to the
-    staffing policy; the import is late because that service imports this module
-    to write its own notices.
+    Every staff kind leaves the panel today; the tuple is the opt-in list. The
+    switch belongs to the staffing policy; the import is late because that
+    service imports this module to write its own notices.
     """
     if notice.kind not in STAFF_NOTIFICATION_EMAIL_KINDS:
         return None
@@ -259,6 +312,7 @@ def _enqueue_staff_notification_email(
     delivery = StaffNotificationDelivery(
         notice_id=notice.id,
         recipient=recipient,
+        message_id=new_message_id(),
     )
     session.add(delivery)
     return delivery
@@ -1157,6 +1211,7 @@ def _ensure_physio_reminders(
             ref_id=appointment.id,
             dedupe_key=f"physio_reminder:{appointment.id}:24",
             now=occurred,
+            push=False,
         )
     if rows:
         session.commit()
@@ -1216,6 +1271,7 @@ def _ensure_class_reminders(
             ref_id=reservation.id,
             dedupe_key=f"class_reminder:{reservation.id}:{window}",
             now=occurred,
+            push=False,
         )
     session.commit()
 
@@ -1262,6 +1318,7 @@ def _ensure_membership_expiring(
         ref_id=row.id,
         dedupe_key=f"membership_expiring:{row.id}:{window}",
         now=occurred,
+        push=False,
     )
     session.commit()
 

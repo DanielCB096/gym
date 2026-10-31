@@ -342,6 +342,16 @@ export type MemberNotificationPage = {
   unread_total: number;
 };
 
+export type MemberPushPlatform = "ios" | "android";
+
+export type MemberPushToken = {
+  id: string;
+  platform: MemberPushPlatform;
+  active: boolean;
+  created_at: string;
+  last_seen_at: string | null;
+};
+
 export type MemberInvoice = {
   id: string;
   series: string;

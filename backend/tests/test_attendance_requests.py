@@ -728,15 +728,17 @@ def test_attendance_notices_queue_one_email_for_the_recipient(session: Session) 
         for delivery in session.exec(select(StaffNotificationDelivery)).all()
     )
 
-    # Only the attendance cycle leaves the panel for now.
+    # Every staff kind leaves the panel now, not only the attendance cycle.
     create_staff_notification(
         session,
         user_id=manager.id,
         kind="workout_pending_review",
         title="Entrenamiento pendiente de revisión",
-        body="Un aviso que todavía no sale por correo.",
+        body="Un aviso que también sale por correo.",
     )
-    assert len(queued_emails(session)) == 6
+    emails = queued_emails(session)
+    assert len(emails) == 7
+    assert sum(1 for kind, *_ in emails if kind == "workout_pending_review") == 1
 
 
 def test_email_queue_respects_the_switch_and_never_repeats(session: Session) -> None:

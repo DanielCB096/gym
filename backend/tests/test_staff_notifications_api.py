@@ -10,9 +10,11 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.main import app, get_session
+from app.modules.access.models import KioskDevice
 from app.modules.identity.models import AppUser, Employee
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.memberships.models import Member, Membership, Plan
+from app.modules.notifications import delivery as delivery_module
 from app.modules.notifications.models import StaffNotification
 from app.modules.routines import (
     RoutineItemInput,
@@ -469,5 +471,118 @@ def test_reviewing_the_workout_closes_the_trainers_pending_notice(monkeypatch) -
             assert [item["kind"] for item in member_inbox.json()["items"]] == ["workout_reviewed"]
             assert member_inbox.json()["items"][0]["ref_id"] == workout_id
             assert _inbox(client, owner)["total"] == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_the_new_staff_kinds_leave_by_email_after_the_response(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-staff-notifications-secret")
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+
+    engine, ids = _prepare()
+    app.dependency_overrides[get_session] = _override(engine)
+    outbox: list[dict[str, str]] = []
+
+    def working_send(*, recipient: str, subject: str, body: str, **_kwargs) -> str:
+        outbox.append({"recipient": recipient, "subject": subject, "body": body})
+        return "sent"
+
+    monkeypatch.setattr(delivery_module, "send_email", working_send)
+    try:
+        with TestClient(app) as client:
+            owner = _login(client, "owner@example.com", "owner-strong-password")
+            trainer = _login(client, "trainer@example.com", "trainer-strong-password")
+            technician = _login(client, "tech@example.com", "tecnico-strong-password")
+            socio = _member_headers(client, "socio@example.com")
+
+            # A workout the member logs queues the trainer's email, and the pass
+            # that runs after the response sends it without holding the workout.
+            logged = client.post(
+                f"/member/routines/{ids['assignment']}/workouts",
+                headers=socio,
+                json={"performed_at": ids["today"], "duration_minutes": 45},
+            )
+            assert logged.status_code == 201, logged.text
+            assert outbox[-1]["recipient"] == "trainer@example.com"
+            assert outbox[-1]["subject"] == "[Rutinas] Entrenamiento pendiente de revisión"
+            assert "pestaña Rutinas" in outbox[-1]["body"]
+
+            equipment = client.post(
+                "/admin/maintenance/equipment",
+                headers=owner,
+                json={"name": "Cinta 2", "category": "Cardio", "useful_life_months": 60},
+            )
+            assert equipment.status_code == 201, equipment.text
+            ticket = client.post(
+                "/admin/maintenance/tickets",
+                headers=owner,
+                json={
+                    "equipment_id": equipment.json()["id"],
+                    "title": "Banda desgastada",
+                    "severity": "low",
+                    "assigned_to": str(ids["technician_employee"]),
+                },
+            )
+            assert ticket.status_code == 201, ticket.text
+            assert outbox[-1]["recipient"] == "tech@example.com"
+            assert outbox[-1]["subject"] == "[Mantenimiento] Se te asignó un ticket"
+            assert "pestaña Mantenimiento" in outbox[-1]["body"]
+
+            # Reassigning the ticket tells the new technician.
+            with Session(engine) as session:
+                other = _employee(
+                    session, number="M-004", first_name="Rita", last_name="Soto", job_title="Técnica"
+                )
+                register_user(
+                    session,
+                    email="tech2@example.com",
+                    password="tech2-strong-password",
+                    employee_id=other,
+                    role_codes=("maintenance",),
+                )
+                session.commit()
+            reassigned = client.patch(
+                f"/admin/maintenance/tickets/{ticket.json()['id']}",
+                headers=owner,
+                json={"assigned_to": str(other)},
+            )
+            assert reassigned.status_code == 200, reassigned.text
+            assert outbox[-1]["recipient"] == "tech2@example.com"
+            assert outbox[-1]["subject"] == "[Mantenimiento] Se te asignó un ticket"
+
+            # A token about to expire is announced when the bell is read, and
+            # the email follows that response.
+            with Session(engine) as session:
+                session.add(
+                    KioskDevice(
+                        label="Recepción",
+                        token_sha256="c" * 64,
+                        token_expires_at=datetime.now(timezone.utc) + timedelta(days=3),
+                    )
+                )
+                session.commit()
+            bell = client.get("/admin/notifications", headers=owner)
+            assert bell.status_code == 200, bell.text
+            assert outbox[-1]["recipient"] == "owner@example.com"
+            assert outbox[-1]["subject"] == "[Kiosco] El token de un kiosco está por vencer"
+            assert "página Kiosco" in outbox[-1]["body"]
+
+            # The queue card lists the new kinds as sent, with the account that
+            # owns each notice as recipient.
+            board = client.get("/admin/staff/notifications/deliveries", headers=owner)
+            assert board.status_code == 200, board.text
+            payload = board.json()
+            assert payload["total"] == 4
+            assert {item["kind"] for item in payload["items"]} == {
+                "workout_pending_review",
+                "maintenance_ticket_assigned",
+                "kiosk_token_expiring",
+            }
+            assert all(item["status"] == "sent" for item in payload["items"])
+            assert all(item["attempts"] == 1 for item in payload["items"])
+
+            # The technician's own bell still holds the ticket row.
+            assert _inbox(client, technician)["total"] == 1
+            assert _inbox(client, trainer)["total"] == 1
     finally:
         app.dependency_overrides.clear()

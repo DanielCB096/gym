@@ -27,6 +27,7 @@ from app.mailer import MailerError, send_email
 from app.modules.notifications.models import (
     StaffNotification,
     StaffNotificationDelivery,
+    StaffNotificationDeliveryReceipt,
     utc_now,
 )
 
@@ -40,7 +41,20 @@ DELIVERY_STATUSES = ("pending", "sent", "simulated", "failed")
 # the next pass on its own.
 RETRYABLE_DELIVERY_STATUSES = ("failed",)
 DEFAULT_GYM_NAME = "Centro Fit"
-SUBJECT_PREFIX = "[Asistencia] "
+# The subject prefix and the closing line tell the reader which panel tab owns
+# the notice; every kind the department mails has an entry here.
+DEFAULT_SUBJECT_PREFIX = "[Asistencia] "
+SUBJECT_PREFIXES = {
+    "workout_pending_review": "[Rutinas] ",
+    "maintenance_ticket_assigned": "[Mantenimiento] ",
+    "kiosk_token_expiring": "[Kiosco] ",
+}
+DEFAULT_NOTICE_LOCATION = "Puedes revisarlo en la pestaña Personal del panel del club."
+NOTICE_LOCATIONS = {
+    "workout_pending_review": "Puedes revisarlo en la pestaña Rutinas del panel del club.",
+    "maintenance_ticket_assigned": "Puedes revisarlo en la pestaña Mantenimiento del panel del club.",
+    "kiosk_token_expiring": "Puedes rotarlo en la página Kiosco del panel del club.",
+}
 MAX_SUBJECT_CHARS = 180
 
 
@@ -85,6 +99,9 @@ class StaffNotificationDeliveryItem:
     created_at: datetime
     last_attempt_at: datetime | None
     sent_at: datetime | None
+    ack_status: str | None
+    ack_at: datetime | None
+    ack_detail: str | None
 
 
 @dataclass(frozen=True)
@@ -105,7 +122,7 @@ class StaffNotificationDeliveryCounts:
 
 
 def email_message_for_notice(notice: StaffNotification) -> tuple[str, str]:
-    """Subject and plain-text body of one attendance notice.
+    """Subject and plain-text body of one staff notice.
 
     The body is the notice the panel already stores, plus where to look and a
     line that says the message is automatic. Nothing is recomputed from the
@@ -113,12 +130,14 @@ def email_message_for_notice(notice: StaffNotification) -> tuple[str, str]:
     """
 
     gym_name = os.getenv("GYM_NAME", DEFAULT_GYM_NAME).strip() or DEFAULT_GYM_NAME
-    subject = f"{SUBJECT_PREFIX}{notice.title}".strip()
+    prefix = SUBJECT_PREFIXES.get(notice.kind, DEFAULT_SUBJECT_PREFIX)
+    subject = f"{prefix}{notice.title}".strip()
     if len(subject) > MAX_SUBJECT_CHARS:
         subject = f"{subject[: MAX_SUBJECT_CHARS - 1].rstrip()}…"
+    location = NOTICE_LOCATIONS.get(notice.kind, DEFAULT_NOTICE_LOCATION)
     body = (
         f"Hola,\n\n{notice.body}\n\n"
-        "Puedes revisarlo en la pestaña Personal del panel del club.\n\n"
+        f"{location}\n\n"
         f"{gym_name} · Este correo se envió automáticamente.\n"
     )
     return subject, body
@@ -202,10 +221,11 @@ def _deliver(session: Session, delivery: StaffNotificationDelivery, *, now: date
             recipient=delivery.recipient,
             subject=subject,
             body=body,
+            message_id=delivery.message_id,
             not_configured_message=(
-                "El correo de asistencia no está configurado (SMTP_HOST)."
+                "El correo del personal no está configurado (SMTP_HOST)."
             ),
-            failure_label="No se pudo enviar el aviso de asistencia",
+            failure_label="No se pudo enviar el aviso al personal",
         )
     except MailerError as error:
         delivery.status = "failed"
@@ -235,9 +255,9 @@ def send_pending_staff_notification_emails(
     """Send the oldest pending deliveries, at most ``limit`` per pass.
 
     The club switch is re-checked here, not only when the notice was written:
-    turning the attendance email off stops the queue instead of letting it
-    drain. Rows skipped this way stay ``pending`` and go out on the next pass
-    after the switch is turned back on.
+    turning the staff email off stops the queue instead of letting it drain.
+    Rows skipped this way stay ``pending`` and go out on the next pass after
+    the switch is turned back on.
     """
 
     occurred = _as_utc(now or utc_now())
@@ -315,7 +335,7 @@ def retry_staff_notification_delivery(
         )
     if not _email_channel_enabled(session):
         raise AttendanceEmailDisabled(
-            "El correo de asistencia está apagado en la política del club."
+            "El correo del personal está apagado en la política del club."
         )
     if not _claim(session, delivery, from_status="failed", now=occurred):
         raise NotificationDeliveryRetryNotAllowed(
@@ -373,10 +393,18 @@ def list_staff_notification_deliveries(
         .offset((page - 1) * page_size)
         .limit(page_size)
     ).all()
+    latest_receipts = _latest_receipts(
+        session, [delivery.id for delivery, _ in rows]
+    )
     pages = (total + page_size - 1) // page_size if total > 0 else 0
     return StaffNotificationDeliveryPage(
         items=[
-            _delivery_item(session, delivery, notice=notice)
+            _delivery_item(
+                session,
+                delivery,
+                notice=notice,
+                receipt=latest_receipts.get(delivery.id),
+            )
             for delivery, notice in rows
         ],
         total=total,
@@ -386,14 +414,35 @@ def list_staff_notification_deliveries(
     )
 
 
+def _latest_receipts(
+    session: Session, delivery_ids: list[UUID]
+) -> dict[UUID, StaffNotificationDeliveryReceipt]:
+    """Newest acknowledgement per delivery, in one query for the whole page."""
+
+    if not delivery_ids:
+        return {}
+    rows = session.exec(
+        select(StaffNotificationDeliveryReceipt)
+        .where(StaffNotificationDeliveryReceipt.delivery_id.in_(delivery_ids))
+        .order_by(
+            StaffNotificationDeliveryReceipt.received_at,
+            StaffNotificationDeliveryReceipt.id,
+        )
+    ).all()
+    return {receipt.delivery_id: receipt for receipt in rows}
+
+
 def _delivery_item(
     session: Session,
     delivery: StaffNotificationDelivery,
     *,
     notice: StaffNotification | None = None,
+    receipt: StaffNotificationDeliveryReceipt | None = None,
 ) -> StaffNotificationDeliveryItem:
     if notice is None:
         notice = session.get(StaffNotification, delivery.notice_id)
+    if receipt is None:
+        receipt = _latest_receipts(session, [delivery.id]).get(delivery.id)
     return StaffNotificationDeliveryItem(
         id=delivery.id,
         notice_id=delivery.notice_id,
@@ -412,6 +461,11 @@ def _delivery_item(
         sent_at=(
             _as_utc(delivery.sent_at) if delivery.sent_at is not None else None
         ),
+        ack_status=receipt.event_type if receipt is not None else None,
+        ack_at=(
+            _as_utc(receipt.occurred_at) if receipt is not None else None
+        ),
+        ack_detail=receipt.detail if receipt is not None else None,
     )
 
 

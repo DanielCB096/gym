@@ -19,6 +19,7 @@ from app.modules.notifications.delivery import (
     staff_notification_delivery_counts,
 )
 from app.modules.notifications.models import (
+    STAFF_NOTIFICATION_KINDS,
     StaffNotification,
     StaffNotificationDelivery,
 )
@@ -334,3 +335,76 @@ def test_message_carries_the_notice_text(session: Session) -> None:
 
     assert subject == "[Asistencia] Se corrigió tu marca"
     assert notice.body in body
+
+
+def test_claim_is_a_compare_and_set_on_the_attempt_count(session: Session) -> None:
+    _, account, _ = seed_accounts(session)
+    queue_notice(session, account.id, now=NOW)
+    delivery = session.exec(select(StaffNotificationDelivery)).one()
+    session.commit()
+
+    # Both passes read the row with attempts == 0 before either writes; the
+    # second compare-and-set matches nothing, so only one takes the delivery.
+    other = Session(session.get_bind())
+    try:
+        stale = other.get(StaffNotificationDelivery, delivery.id)
+        assert stale is not None and stale.attempts == 0
+
+        assert (
+            delivery_module._claim(session, delivery, from_status="pending", now=NOW)
+            is True
+        )
+        assert delivery.attempts == 1
+
+        assert (
+            delivery_module._claim(
+                other, stale, from_status="pending", now=NOW + timedelta(seconds=1)
+            )
+            is False
+        )
+        assert stale.attempts == 1
+        assert stale.last_attempt_at is not None
+    finally:
+        other.close()
+
+
+def test_every_staff_kind_queues_one_email(session: Session) -> None:
+    _, account, _ = seed_accounts(session)
+
+    for index, kind in enumerate(STAFF_NOTIFICATION_KINDS):
+        create_staff_notification(
+            session,
+            user_id=account.id,
+            kind=kind,
+            title=f"Aviso {index}",
+            body=f"Cuerpo del aviso {index}.",
+            now=NOW + timedelta(minutes=index),
+        )
+
+    queued = session.exec(select(StaffNotificationDelivery)).all()
+    assert len(queued) == len(STAFF_NOTIFICATION_KINDS)
+    assert {delivery.recipient for delivery in queued} == {"lucia.account@example.test"}
+    assert all(delivery.status == "pending" for delivery in queued)
+
+
+def test_subject_and_destination_follow_the_notice_kind(session: Session) -> None:
+    _, account, _ = seed_accounts(session)
+    cases = {
+        "attendance_corrected": ("[Asistencia] ", "pestaña Personal"),
+        "workout_pending_review": ("[Rutinas] ", "pestaña Rutinas"),
+        "maintenance_ticket_assigned": ("[Mantenimiento] ", "pestaña Mantenimiento"),
+        "kiosk_token_expiring": ("[Kiosco] ", "página Kiosco"),
+    }
+
+    for kind, (prefix, location) in cases.items():
+        notice = create_staff_notification(
+            session,
+            user_id=account.id,
+            kind=kind,
+            title="Aviso",
+            body="Cuerpo del aviso.",
+            now=NOW,
+        )
+        subject, body = email_message_for_notice(notice)
+        assert subject == f"{prefix}Aviso"
+        assert location in body

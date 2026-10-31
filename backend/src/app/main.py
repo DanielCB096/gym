@@ -9,7 +9,7 @@ import os
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -469,6 +469,26 @@ from app.modules.notifications.delivery import (
     send_pending_staff_notification_emails,
     send_pending_staff_notification_emails_from_engine,
     staff_notification_delivery_counts,
+)
+from app.modules.notifications.receipts import (
+    ReceiptInvalid,
+    ReceiptNotConfigured,
+    ReceiptNotFound,
+    ReceiptRejected,
+    ReceiptSignatureInvalid,
+    parse_delivery_report,
+    record_email_receipt,
+    verify_signature,
+)
+from app.modules.notifications.models import MemberPushToken
+from app.modules.notifications.push import (
+    InvalidPushPlatform,
+    InvalidPushToken,
+    PushMemberNotFound,
+    deactivate_member_push_token,
+    deactivate_member_push_tokens,
+    register_member_push_token,
+    send_pending_member_push_deliveries_from_engine,
 )
 from app.modules.portal.classes import (
     MemberClassItem,
@@ -2487,6 +2507,23 @@ class MemberNotificationReadAllResponse(BaseModel):
     updated: int
 
 
+class MemberPushTokenRequest(BaseModel):
+    token: str = Field(min_length=10, max_length=255)
+    platform: Literal["ios", "android"]
+
+
+class MemberPushTokenRevokeRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=255)
+
+
+class MemberPushTokenResponse(BaseModel):
+    id: UUID
+    platform: str
+    active: bool
+    created_at: datetime
+    last_seen_at: datetime | None
+
+
 class StaffNotificationResponse(BaseModel):
     id: UUID
     kind: str
@@ -2534,6 +2571,9 @@ class StaffNotificationDeliveryResponse(BaseModel):
     created_at: datetime
     last_attempt_at: datetime | None
     sent_at: datetime | None
+    ack_status: str | None
+    ack_at: datetime | None
+    ack_detail: str | None
 
 
 class StaffNotificationDeliveryPageResponse(BaseModel):
@@ -2553,6 +2593,15 @@ class StaffNotificationDeliveryPassResponse(BaseModel):
     simulated: int
     failed: int
     remaining: int
+
+
+class EmailDeliveryReceiptResponse(BaseModel):
+    id: UUID
+    delivery_id: UUID
+    event_type: str
+    occurred_at: datetime
+    received_at: datetime
+    duplicate: bool
 
 
 class EquipmentResponse(BaseModel):
@@ -3391,6 +3440,25 @@ def flush_attendance_emails_after_response(
 AttendanceEmailFlush = Annotated[None, Depends(flush_attendance_emails_after_response)]
 
 
+def flush_member_pushes_after_response(
+    background: BackgroundTasks,
+    session: SessionDependency,
+) -> None:
+    """Queue one member-push pass to run after the response is sent.
+
+    Same shape as the email hook: the task opens its own session on the
+    request's engine and the pass re-reads the queue, so a stale task only finds
+    nothing to do.
+    """
+
+    bind = session.get_bind()
+    if isinstance(bind, Engine):
+        background.add_task(send_pending_member_push_deliveries_from_engine, bind)
+
+
+MemberPushFlush = Annotated[None, Depends(flush_member_pushes_after_response)]
+
+
 def get_current_principal(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     session: SessionDependency,
@@ -3606,6 +3674,9 @@ def member_logout(
     member: Annotated[AuthenticatedMember, Depends(get_current_member)],
     session: SessionDependency,
 ) -> None:
+    # The device stops receiving notices as soon as the session ends; the app
+    # registers the token again on the next sign-in.
+    deactivate_member_push_tokens(session, member.member_id)
     revoke_member_session(session, member)
 
 
@@ -3697,6 +3768,7 @@ def reserve_member_class_endpoint(
     session_id: UUID,
     member: Annotated[AuthenticatedMember, Depends(get_current_member)],
     session: SessionDependency,
+    flush: MemberPushFlush,
 ) -> MemberClassReservationResponse:
     try:
         reservation = reserve_member_class(session, member.member_id, session_id)
@@ -3716,6 +3788,7 @@ def cancel_member_reservation_endpoint(
     reservation_id: UUID,
     member: Annotated[AuthenticatedMember, Depends(get_current_member)],
     session: SessionDependency,
+    flush: MemberPushFlush,
 ) -> MemberClassReservationResponse:
     try:
         reservation = cancel_member_reservation(session, member.member_id, reservation_id)
@@ -3843,6 +3916,7 @@ def member_log_workout(
     request: LogWorkoutRequest,
     member: Annotated[AuthenticatedMember, Depends(get_current_member)],
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
 ) -> WorkoutResponse:
     try:
         item = log_member_workout(
@@ -3872,6 +3946,7 @@ def member_record_measurement(
     request: RecordMeasurementRequest,
     member: Annotated[AuthenticatedMember, Depends(get_current_member)],
     session: SessionDependency,
+    flush: MemberPushFlush,
 ) -> MeasurementResponse:
     try:
         item = record_member_measurement(
@@ -4198,6 +4273,7 @@ def member_request_invoice(
     payload: MemberInvoiceCreateRequest,
     member: Annotated[AuthenticatedMember, Depends(get_current_member)],
     session: SessionDependency,
+    flush: MemberPushFlush,
 ) -> MemberInvoiceRequestResponse:
     receptor = payload.receptor
     try:
@@ -4290,6 +4366,7 @@ def member_invoice_xml(
 def member_notifications(
     member: Annotated[AuthenticatedMember, Depends(get_current_member)],
     session: SessionDependency,
+    flush: MemberPushFlush,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> MemberNotificationPageResponse:
@@ -4317,6 +4394,7 @@ def member_notifications(
 def member_notifications_unread(
     member: Annotated[AuthenticatedMember, Depends(get_current_member)],
     session: SessionDependency,
+    flush: MemberPushFlush,
 ) -> MemberNotificationCountResponse:
     return MemberNotificationCountResponse(unread=unread_notification_count(session, member.member_id))
 
@@ -4352,6 +4430,48 @@ def member_notifications_read_all(
     )
 
 
+@app.post(
+    "/member/push-tokens",
+    response_model=MemberPushTokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["member self-service"],
+)
+def member_register_push_token(
+    request: MemberPushTokenRequest,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberPushTokenResponse:
+    try:
+        row = register_member_push_token(
+            session,
+            member.member_id,
+            token=request.token,
+            platform=request.platform,
+        )
+    except (InvalidPushToken, InvalidPushPlatform) as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    except PushMemberNotFound as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+        ) from error
+    return _member_push_token_response(row)
+
+
+@app.post(
+    "/member/push-tokens/revoke",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["member self-service"],
+)
+def member_revoke_push_token(
+    request: MemberPushTokenRevokeRequest,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> None:
+    deactivate_member_push_token(session, member.member_id, request.token)
+
+
 @app.get(
     "/admin/notifications",
     response_model=StaffNotificationPageResponse,
@@ -4360,6 +4480,7 @@ def member_notifications_read_all(
 def staff_notifications(
     principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> StaffNotificationPageResponse:
@@ -4496,6 +4617,57 @@ def retry_staff_notification_delivery_endpoint(
     except (NotificationDeliveryRetryNotAllowed, AttendanceEmailDisabled) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     return _staff_notification_delivery_response(item)
+
+
+@app.post(
+    "/webhooks/email/delivery",
+    response_model=EmailDeliveryReceiptResponse,
+    tags=["webhooks"],
+    description=(
+        "Acuse de entrega del proveedor de correo. El cuerpo se firma con "
+        "EMAIL_WEBHOOK_SECRET y se envía en X-Email-Signature como sha256=<hex>. "
+        "Campos: message_id, event_id, event (delivered|bounced|complained), "
+        "occurred_at y detail. El mismo event_id se responde como repetido."
+    ),
+)
+async def email_delivery_webhook(
+    request: Request,
+    session: SessionDependency,
+    signature: Annotated[str | None, Header(alias="X-Email-Signature")] = None,
+) -> EmailDeliveryReceiptResponse:
+    payload = await request.body()
+    try:
+        verify_signature(payload, signature)
+    except ReceiptNotConfigured as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)
+        ) from error
+    except ReceiptSignatureInvalid as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)
+        ) from error
+    try:
+        receipt, created = record_email_receipt(session, parse_delivery_report(payload))
+    except ReceiptInvalid as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    except ReceiptNotFound as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+        ) from error
+    except ReceiptRejected as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(error)
+        ) from error
+    return EmailDeliveryReceiptResponse(
+        id=receipt.id,
+        delivery_id=receipt.delivery_id,
+        event_type=receipt.event_type,
+        occurred_at=receipt.occurred_at,
+        received_at=receipt.received_at,
+        duplicate=not created,
+    )
 
 
 @app.get("/admin/roles", tags=["staff administration"])
@@ -4820,6 +4992,7 @@ def void_registered_attendance_mark(
 @app.get("/staff/attendance/requests", tags=["staff self-service"])
 def my_attendance_requests(
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.self"))],
 ) -> dict[str, object]:
     if principal.employee_id is None:
@@ -4889,6 +5062,7 @@ def create_attendance_request(
 @app.get("/admin/staff/attendance/requests", tags=["staff administration"])
 def list_attendance_requests_endpoint(
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
     _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.read"))],
     status_filter: Annotated[Literal["pending", "approved", "rejected"] | None, Query(alias="status")] = None,
     employee_id: Annotated[UUID | None, Query()] = None,
@@ -7270,6 +7444,7 @@ def update_class_session_endpoint(
     request: UpdateClassSessionRequest,
     session: SessionDependency,
     _: Annotated[AuthenticatedUser, Depends(require_api_permission("classes.manage"))],
+    flush: MemberPushFlush,
 ) -> ClassSessionResponse:
     provided = request.model_fields_set
     try:
@@ -7302,6 +7477,7 @@ def cancel_class_session_endpoint(
     session_id: UUID,
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("classes.manage"))],
+    flush: MemberPushFlush,
 ) -> ClassSessionResponse:
     try:
         item = cancel_class_session(session, session_id, actor_id=principal.user_id)
@@ -7341,6 +7517,7 @@ def reserve_seat_endpoint(
     request: ReserveSeatRequest,
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("classes.manage"))],
+    flush: MemberPushFlush,
 ) -> ReservationResponse:
     try:
         item = reserve_seat(
@@ -7365,6 +7542,7 @@ def cancel_reservation_endpoint(
     reservation_id: UUID,
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("classes.manage"))],
+    flush: MemberPushFlush,
 ) -> ReservationResponse:
     try:
         item = cancel_reservation(session, reservation_id, actor_id=principal.user_id)
@@ -7383,6 +7561,7 @@ def mark_attendance_endpoint(
     request: MarkAttendanceRequest,
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("classes.manage"))],
+    flush: MemberPushFlush,
 ) -> ReservationResponse:
     try:
         item = mark_attendance(
@@ -7938,6 +8117,7 @@ def create_physio_appointment_endpoint(
     request: CreatePhysioAppointmentRequest,
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+    flush: MemberPushFlush,
 ) -> PhysioAppointmentResponse:
     try:
         item = create_physio_appointment(
@@ -7966,6 +8146,7 @@ def update_physio_appointment_endpoint(
     request: UpdatePhysioAppointmentRequest,
     session: SessionDependency,
     _: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+    flush: MemberPushFlush,
 ) -> PhysioAppointmentResponse:
     provided = request.model_fields_set
     try:
@@ -8016,6 +8197,7 @@ def cancel_physio_appointment_endpoint(
     appointment_id: UUID,
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("physio.manage"))],
+    flush: MemberPushFlush,
 ) -> PhysioAppointmentResponse:
     try:
         item = cancel_physio_appointment(
@@ -8725,6 +8907,7 @@ def review_workout_endpoint(
     workout_id: UUID,
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.manage"))],
+    flush: MemberPushFlush,
 ) -> WorkoutResponse:
     try:
         item = review_workout(session, workout_id, actor_id=principal.user_id)
@@ -8793,6 +8976,7 @@ def record_measurement_endpoint(
     request: RecordMeasurementRequest,
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.manage"))],
+    flush: MemberPushFlush,
 ) -> MeasurementResponse:
     try:
         item = record_measurement(
@@ -8961,6 +9145,7 @@ def update_member_goal_endpoint(
     request: UpdateMemberGoalRequest,
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.manage"))],
+    flush: MemberPushFlush,
 ) -> MemberGoalResponse:
     provided = request.model_fields_set
     try:
@@ -8986,6 +9171,7 @@ def cancel_member_goal_endpoint(
     goal_id: UUID,
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("routines.manage"))],
+    flush: MemberPushFlush,
 ) -> MemberGoalResponse:
     try:
         item = cancel_member_goal(session, goal_id, actor_id=principal.user_id)
@@ -9445,6 +9631,7 @@ def set_equipment_status_endpoint(
     request: SetEquipmentStatusRequest,
     session: SessionDependency,
     _: Annotated[AuthenticatedUser, Depends(require_api_permission("maintenance.report"))],
+    flush: MemberPushFlush,
 ) -> EquipmentResponse:
     try:
         item = set_equipment_status(session, equipment_id, status=request.status)
@@ -9566,6 +9753,7 @@ def list_tickets_endpoint(
 def create_ticket_endpoint(
     request: CreateTicketRequest,
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("maintenance.report"))],
 ) -> TicketResponse:
     try:
@@ -9612,6 +9800,7 @@ def update_ticket_endpoint(
     ticket_id: UUID,
     request: UpdateTicketRequest,
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
     _: Annotated[AuthenticatedUser, Depends(require_api_permission("maintenance.manage"))],
 ) -> TicketResponse:
     provided = request.model_fields_set
@@ -10200,6 +10389,16 @@ def _member_notification_response(item: MemberNotificationItem) -> MemberNotific
     )
 
 
+def _member_push_token_response(row: MemberPushToken) -> MemberPushTokenResponse:
+    return MemberPushTokenResponse(
+        id=row.id,
+        platform=row.platform,
+        active=row.active,
+        created_at=row.created_at,
+        last_seen_at=row.last_seen_at,
+    )
+
+
 def _staff_notification_response(item: StaffNotificationItem) -> StaffNotificationResponse:
     return StaffNotificationResponse(
         id=item.id,
@@ -10228,6 +10427,9 @@ def _staff_notification_delivery_response(
         created_at=item.created_at,
         last_attempt_at=item.last_attempt_at,
         sent_at=item.sent_at,
+        ack_status=item.ack_status,
+        ack_at=item.ack_at,
+        ack_detail=item.ack_detail,
     )
 
 
@@ -11147,6 +11349,7 @@ def stamp_invoice_detail(
     invoice_id: UUID,
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.manage"))],
+    flush: MemberPushFlush,
 ):
     try:
         return stamp_invoice(session, invoice_id, actor_id=principal.user_id)
@@ -11161,6 +11364,7 @@ def cancel_invoice_detail(
     session: SessionDependency,
     principal: Annotated[AuthenticatedUser, Depends(require_api_permission("billing.manage"))],
     response: Response,
+    flush: MemberPushFlush,
 ):
     try:
         view = cancel_invoice(

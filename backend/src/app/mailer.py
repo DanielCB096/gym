@@ -56,6 +56,7 @@ def send_email(
     subject: str,
     body: str,
     attachments: Sequence[EmailAttachment] = (),
+    message_id: str | None = None,
     not_configured_message: str = DEFAULT_NOT_CONFIGURED_MESSAGE,
     failure_label: str = DEFAULT_FAILURE_LABEL,
 ) -> str:
@@ -63,7 +64,8 @@ def send_email(
 
     Preview mode never contacts a real SMTP server, even when ``SMTP_HOST`` is
     configured: it returns ``simulated`` so the caller can audit the attempt
-    without sending private data during a demo.
+    without sending private data during a demo. ``message_id`` is stored bare
+    (``token@domain``); the header takes it wrapped in angle brackets.
     """
 
     if preview_mode():
@@ -90,6 +92,10 @@ def send_email(
     message["From"] = sender
     message["To"] = recipient
     message["Subject"] = subject
+    if message_id:
+        message["Message-ID"] = (
+            message_id if message_id.startswith("<") else f"<{message_id}>"
+        )
     message.set_content(body)
     for attachment in attachments:
         message.add_attachment(

@@ -206,6 +206,8 @@ type AttendanceAnnulmentReport = {
 
 type NotificationDeliveryStatus = "pending" | "sent" | "simulated" | "failed";
 
+type NotificationAckStatus = "delivered" | "bounced" | "complained";
+
 type NotificationDelivery = {
   id: string;
   notice_id: string;
@@ -218,6 +220,9 @@ type NotificationDelivery = {
   created_at: string;
   last_attempt_at: string | null;
   sent_at: string | null;
+  ack_status: NotificationAckStatus | null;
+  ack_at: string | null;
+  ack_detail: string | null;
 };
 
 type NotificationDeliveryBoard = {
@@ -3911,11 +3916,11 @@ function AccessTable({ events, compact = false }: { events: AccessEvent[]; compa
 }
 
 function StatusBadge({ state, detail }: { state: AccessState | string; detail?: string }) {
-  const statusClass = state === "Autorizado" || state === "Activa" || state === "Activo" || state === "En turno" || state === "Programado" || state === "Presente" || state === "Enviado"
+  const statusClass = state === "Autorizado" || state === "Activa" || state === "Activo" || state === "En turno" || state === "Programado" || state === "Presente" || state === "Enviado" || state === "Entregado"
     ? "status-good"
-    : state === "Manual" || state === "Por vencer" || state === "Pago pendiente" || state === "Congelada" || state === "Tarde" || state === "Simulado"
+    : state === "Manual" || state === "Por vencer" || state === "Pago pendiente" || state === "Congelada" || state === "Tarde" || state === "Simulado" || state === "Queja"
       ? "status-warn"
-      : state === "Denegado" || state === "Vencida" || state === "Baja" || state === "Suspendida" || state === "Cancelada" || state === "Cancelado" || state === "Caducado" || state === "Con error"
+      : state === "Denegado" || state === "Vencida" || state === "Baja" || state === "Suspendida" || state === "Cancelada" || state === "Cancelado" || state === "Caducado" || state === "Con error" || state === "Rebotado"
         ? "status-bad"
         : "status-neutral";
   return <span className={`status-badge ${statusClass}`} title={detail}><i />{state}</span>;
@@ -5112,7 +5117,7 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
         onToast(payload.detail || "No se pudo enviar la cola de correos.");
         return;
       }
-      if (payload.enabled === false) onToast("El correo de asistencia está apagado en la política del club.");
+      if (payload.enabled === false) onToast("El correo del personal está apagado en la política del club.");
       else if ((payload.attempted ?? 0) === 0) onToast("No hay correos pendientes.");
       else onToast(`${payload.attempted} intento(s): ${payload.sent} enviado(s), ${payload.simulated} simulado(s), ${payload.failed} con error.`);
       setRequestsRefresh((value) => value + 1);
@@ -5461,8 +5466,8 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
               <span className="kiosk-antipassback-state">{policy === null ? "" : policy.attendance_request_sla_hours === 0 ? "Sin plazo: las solicitudes no vencen." : `Si una solicitud sigue pendiente después de ${policy.attendance_request_sla_hours} h, la dirección recibe el aviso de vencimiento.`}</span>
             </div>
             <div className="kiosk-occupancy-row">
-              <label className="form-check"><input type="checkbox" checked={policyEmail} disabled={policyBusy || policy === null} onChange={(event) => setPolicyEmail(event.target.checked)} /><span>Enviar por correo los avisos de asistencia</span></label>
-              <span className="kiosk-antipassback-state">{policy === null ? "" : policyEmailEnabled ? "Las correcciones, anulaciones y decisiones de solicitud también salen por correo a la cuenta del panel." : "Apagado: los avisos siguen en la campana y no se encolan correos nuevos; los que ya esperan se conservan."}</span>
+              <label className="form-check"><input type="checkbox" checked={policyEmail} disabled={policyBusy || policy === null} onChange={(event) => setPolicyEmail(event.target.checked)} /><span>Enviar por correo los avisos del personal</span></label>
+              <span className="kiosk-antipassback-state">{policy === null ? "" : policyEmailEnabled ? "Los avisos de asistencia, rutinas, mantenimiento y kiosco salen por correo a la cuenta del panel que los recibe." : "Apagado: los avisos siguen en la campana y no se encolan correos nuevos; los que ya esperan se conservan."}</span>
             </div>
             <div className="kiosk-occupancy-row">
               <span className="kiosk-antipassback-state">{policy?.updated_at ? `Última modificación: ${formatSessionTime(policy.updated_at)}` : "Sin cambios registrados todavía."}</span>
@@ -5486,22 +5491,23 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
           </section>}
           {canViewAttendance && <section className="panel full-panel">
             <div className="panel-header access-list-heading">
-              <div><p className="section-kicker">CORREOS DE ASISTENCIA</p><h2>Cola de entrega de avisos</h2></div>
+              <div><p className="section-kicker">CORREOS DEL PERSONAL</p><h2>Cola de entrega de avisos</h2></div>
               <div className="staff-row-actions">
                 <label className="table-select"><span>Estado</span><select value={deliveryStatus} onChange={(event) => { setDeliveryStatus(event.target.value as "" | NotificationDeliveryStatus); setDeliveryPage(1); }}><option value="">Todos</option><option value="pending">En cola</option><option value="sent">Enviados</option><option value="simulated">Simulados</option><option value="failed">Con error</option></select></label>
                 {canManageAttendance && <button className="button button-primary" disabled={deliveryBusy !== null || deliveryBoard?.enabled === false} onClick={() => void sendQueuedAttendanceEmails()}><Mail size={16} />{deliveryBusy === "send" ? "Enviando…" : "Enviar pendientes"}</button>}
               </div>
             </div>
-            <p className="panel-hint">Cada aviso del ciclo de asistencia se guarda como una entrega y sale por correo después de que el panel responde, nunca dentro de la transacción que registra la marca. El destinatario es la cuenta del panel que recibe el aviso, y el interruptor de la política decide si se encola. En la vista previa el envío queda marcado como simulado.</p>
+            <p className="panel-hint">Cada aviso del personal se guarda como una entrega y sale por correo después de que el panel responde, nunca dentro de la transacción que registra el cambio. El destinatario es la cuenta del panel que recibe el aviso, y el interruptor de la política decide si se encola. En la vista previa el envío queda marcado como simulado.</p>
+            <p className="panel-hint">El acuse llega aparte, por el webhook firmado del proveedor de correo: entregado, rebotado o queja. Se muestra siempre el último evento de cada entrega y no cambia el estado del envío, que solo dice lo que respondió el servidor al aceptarlo.</p>
             <div className="table-toolbar">
               <span className={`status-badge ${deliveryBoard === null ? "status-neutral" : deliveryBoard.enabled ? "status-good" : "status-bad"}`}><i />{deliveryBoard === null ? "Consultando…" : deliveryBoard.enabled ? "Correo activo" : "Correo apagado"}</span>
               <span className="table-hint">{deliveryBoard === null ? "" : `${deliveryBoard.counts.pending} en cola · ${deliveryBoard.counts.sent} enviados · ${deliveryBoard.counts.simulated} simulados · ${deliveryBoard.counts.failed} con error`}</span>
             </div>
-            <div className="table-scroll"><table className="data-table"><thead><tr><th>DESTINATARIO</th><th>AVISO</th><th>ESTADO</th><th>INTENTOS</th><th>ÚLTIMO INTENTO</th><th>DETALLE</th><th /></tr></thead><tbody>
-              {deliveryError ? <tr><td colSpan={7} className="empty-row">{deliveryError}</td></tr>
-                : deliveryBoard === null ? <tr><td colSpan={7} className="empty-row">Cargando la cola…</td></tr>
-                : deliveryBoard.items.length === 0 ? <tr><td colSpan={7} className="empty-row">{deliveryStatus ? "No hay entregas en ese estado." : "Todavía no hay correos encolados."}</td></tr>
-                : deliveryBoard.items.map((delivery) => <tr key={delivery.id}><td><div className="person-cell"><span className="person-avatar lavender">{delivery.recipient.slice(0, 1).toUpperCase()}</span><span><strong>{delivery.recipient}</strong><small>{formatSessionTime(delivery.created_at)}</small></span></div></td><td><strong>{delivery.title}</strong><small className="staff-request-current">{delivery.kind}</small></td><td><StatusBadge state={NOTIFICATION_DELIVERY_LABELS[delivery.status]} /></td><td className="time-cell">{delivery.attempts}</td><td className="time-cell">{delivery.last_attempt_at ? formatSessionTime(delivery.last_attempt_at) : "—"}</td><td>{delivery.error ? <small className="request-overdue">{delivery.error}</small> : delivery.sent_at ? <span className="time-cell">{formatSessionTime(delivery.sent_at)}</span> : <span className="table-hint">en espera</span>}</td><td>{delivery.status === "failed" && canManageAttendance ? <button className="button button-secondary" disabled={deliveryBusy !== null} onClick={() => void retryNotificationDelivery(delivery)}>{deliveryBusy === delivery.id ? "Reintentando…" : "Reintentar"}</button> : null}</td></tr>)}
+            <div className="table-scroll"><table className="data-table"><thead><tr><th>DESTINATARIO</th><th>AVISO</th><th>ESTADO</th><th>ACUSE</th><th>INTENTOS</th><th>ÚLTIMO INTENTO</th><th>DETALLE</th><th /></tr></thead><tbody>
+              {deliveryError ? <tr><td colSpan={8} className="empty-row">{deliveryError}</td></tr>
+                : deliveryBoard === null ? <tr><td colSpan={8} className="empty-row">Cargando la cola…</td></tr>
+                : deliveryBoard.items.length === 0 ? <tr><td colSpan={8} className="empty-row">{deliveryStatus ? "No hay entregas en ese estado." : "Todavía no hay correos encolados."}</td></tr>
+                : deliveryBoard.items.map((delivery) => <tr key={delivery.id}><td><div className="person-cell"><span className="person-avatar lavender">{delivery.recipient.slice(0, 1).toUpperCase()}</span><span><strong>{delivery.recipient}</strong><small>{formatSessionTime(delivery.created_at)}</small></span></div></td><td><strong>{delivery.title}</strong><small className="staff-request-current">{STAFF_NOTIFICATION_KIND_LABELS[delivery.kind] ?? delivery.kind}</small></td><td><StatusBadge state={NOTIFICATION_DELIVERY_LABELS[delivery.status]} /></td><td>{delivery.ack_status ? <><StatusBadge state={NOTIFICATION_ACK_LABELS[delivery.ack_status] ?? delivery.ack_status} detail={delivery.ack_detail ?? undefined} />{delivery.ack_at && <small className="staff-request-current">{formatSessionTime(delivery.ack_at)}</small>}</> : <span className="table-hint">Sin acuse</span>}</td><td className="time-cell">{delivery.attempts}</td><td className="time-cell">{delivery.last_attempt_at ? formatSessionTime(delivery.last_attempt_at) : "—"}</td><td>{delivery.error ? <small className="request-overdue">{delivery.error}</small> : delivery.sent_at ? <span className="time-cell">{formatSessionTime(delivery.sent_at)}</span> : <span className="table-hint">en espera</span>}</td><td>{delivery.status === "failed" && canManageAttendance ? <button className="button button-secondary" disabled={deliveryBusy !== null} onClick={() => void retryNotificationDelivery(delivery)}>{deliveryBusy === delivery.id ? "Reintentando…" : "Reintentar"}</button> : null}</td></tr>)}
             </tbody></table></div>
             <div className="table-bottom">
               <span>{deliveryBoard?.total ?? 0} entregas registradas</span>
@@ -15659,6 +15665,24 @@ const NOTIFICATION_DELIVERY_LABELS: Record<NotificationDeliveryStatus, string> =
   sent: "Enviado",
   simulated: "Simulado",
   failed: "Con error",
+};
+
+const NOTIFICATION_ACK_LABELS: Record<NotificationAckStatus, string> = {
+  delivered: "Entregado",
+  bounced: "Rebotado",
+  complained: "Queja",
+};
+
+const STAFF_NOTIFICATION_KIND_LABELS: Record<string, string> = {
+  attendance_corrected: "Asistencia · corrección",
+  attendance_voided: "Asistencia · anulación",
+  attendance_request_pending: "Asistencia · solicitud pendiente",
+  attendance_request_approved: "Asistencia · solicitud aprobada",
+  attendance_request_rejected: "Asistencia · solicitud rechazada",
+  attendance_request_overdue: "Asistencia · solicitud vencida",
+  workout_pending_review: "Rutinas · revisión pendiente",
+  maintenance_ticket_assigned: "Mantenimiento · ticket asignado",
+  kiosk_token_expiring: "Kiosco · vencimiento del token",
 };
 
 function attendanceMarkLabel(mark: "check_in" | "check_out"): string {

@@ -18,6 +18,7 @@ import { ProgressPhotosScreen } from "./src/screens/ProgressPhotosScreen";
 import { RoutineDetailScreen } from "./src/screens/RoutineDetailScreen";
 import { RoutinesScreen } from "./src/screens/RoutinesScreen";
 import { clearToken, loadToken, saveToken } from "./src/storage";
+import { registerPushForSession, unregisterPushForSession } from "./src/push";
 import { colors } from "./src/theme";
 import type { MemberLoginResult, MemberProfile } from "./src/types";
 
@@ -72,6 +73,7 @@ export default function App() {
         setFallbackName(next.first_name);
         setStage("home");
         void refreshUnreadNotifications(stored);
+        void registerPushForSession(stored);
       } catch (error) {
         if (!active) {
           return;
@@ -113,6 +115,7 @@ export default function App() {
     await saveToken(result.access_token);
     setStage("home");
     void refreshUnreadNotifications(result.access_token);
+    void registerPushForSession(result.access_token);
     try {
       const next = await getMemberProfile(result.access_token);
       setProfile(next);
@@ -168,6 +171,7 @@ export default function App() {
     setUnreadNotifications(0);
     setStage("email");
     if (activeToken) {
+      await unregisterPushForSession(activeToken);
       try {
         await logoutMember(activeToken);
       } catch {

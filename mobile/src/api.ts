@@ -27,6 +27,8 @@ import type {
   MemberProgressPhoto,
   MemberProgressPhotoInput,
   MemberProgressPhotoList,
+  MemberPushPlatform,
+  MemberPushToken,
   MemberRoutineDetail,
   MemberRoutineList,
   MemberWorkout,
@@ -364,4 +366,27 @@ export function markAllMemberNotificationsRead(
     method: "POST",
     token,
   }).then((result) => result.updated);
+}
+
+export function registerMemberPushToken(
+  token: string,
+  pushToken: string,
+  platform: MemberPushPlatform,
+): Promise<MemberPushToken> {
+  return request<MemberPushToken>("/member/push-tokens", {
+    method: "POST",
+    token,
+    body: { token: pushToken, platform },
+  });
+}
+
+export function revokeMemberPushToken(
+  token: string,
+  pushToken: string,
+): Promise<void> {
+  return request<void>("/member/push-tokens/revoke", {
+    method: "POST",
+    token,
+    body: { token: pushToken },
+  });
 }
