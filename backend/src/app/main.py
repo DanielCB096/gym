@@ -500,6 +500,7 @@ from app.modules.notifications.push import (
     deactivate_member_push_tokens,
     list_member_push_deliveries,
     member_push_delivery_counts,
+    member_push_quiet_window,
     register_member_push_token,
     retry_member_push_delivery,
     send_pending_member_push_deliveries,
@@ -2638,6 +2639,12 @@ class MemberPushDeliveryCountsResponse(BaseModel):
     active_tokens: int
 
 
+class MemberPushQuietWindowResponse(BaseModel):
+    start: str
+    end: str
+    active: bool
+
+
 class MemberPushDeliveryResponse(BaseModel):
     id: UUID
     notification_id: UUID
@@ -2664,6 +2671,7 @@ class MemberPushDeliveryPageResponse(BaseModel):
     page_size: int
     pages: int
     max_attempts: int
+    quiet_window: MemberPushQuietWindowResponse | None = None
 
 
 class MemberPushDeliveryPassResponse(BaseModel):
@@ -4772,6 +4780,7 @@ def member_push_deliveries(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
         ) from error
     counts = member_push_delivery_counts(session)
+    quiet = member_push_quiet_window()
     return MemberPushDeliveryPageResponse(
         counts=MemberPushDeliveryCountsResponse(
             pending=counts.pending,
@@ -4786,6 +4795,13 @@ def member_push_deliveries(
         page_size=inbox.page_size,
         pages=inbox.pages,
         max_attempts=inbox.max_attempts,
+        quiet_window=(
+            MemberPushQuietWindowResponse(
+                start=quiet.start, end=quiet.end, active=quiet.active
+            )
+            if quiet is not None
+            else None
+        ),
     )
 
 

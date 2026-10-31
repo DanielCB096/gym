@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-31 · Avisos: el panel anuncia el horario de silencio
+
+- **La ventana viaja con la cola**: `GET /admin/notifications/push-deliveries` publica `quiet_window` (`start`, `end`, `active`) calculado con la misma función que consulta la pasada (`member_push_quiet_window`), así que el panel no adivina: si la pasada esperaría ahora mismo, `active` lo dice.
+- **La tarjeta «Push del socio» lo muestra**: con la ventana activa pinta «En silencio hasta las HH:MM»; fuera de ella, «Silencio de HH:MM a HH:MM»; sin variables no aparece la insignia y la respuesta trae `null`. El texto de ayuda explica que «Enviar pendientes» y «Reintentar» son decisiones del operador y no esperan al silencio.
+- **Pruebas**: 2 casos nuevos en `test_member_push_quiet_hours.py` —la ventana tal como la ve el panel y el `quiet_window: null` del listado—. Suite en **388 pruebas**: 383 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Documentación**: ADR-061, módulo de avisos del socio, plan de pruebas, traspaso y este changelog.
+
 ## 2026-10-31 · Avisos: horario de silencio del push del socio
 
 - **Una ventana por club, en hora local**: `MEMBER_PUSH_QUIET_START` y `MEMBER_PUSH_QUIET_END` (formato `HH:MM`) se interpretan en `APP_TIMEZONE` —`America/Mexico_City` por defecto— y pueden cruzar medianoche (`22:00`–`07:00`). Sin variables, con las dos iguales o vacías no hay silencio; definir solo una es un error con el nombre de la variable, y el arranque llama a `validate_push_quiet_window()` junto a la comprobación de zona horaria para detener un arranque mal configurado.

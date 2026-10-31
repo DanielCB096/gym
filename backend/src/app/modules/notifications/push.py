@@ -111,6 +111,15 @@ class MemberPushPass:
 
 
 @dataclass(frozen=True)
+class MemberPushQuietWindow:
+    """The club's silence window as the panel shows it."""
+
+    start: str
+    end: str
+    active: bool
+
+
+@dataclass(frozen=True)
 class MemberPushDeliveryItem:
     """One queued push as the panel shows it, with the token masked."""
 
@@ -327,6 +336,24 @@ def _ticket(payload: object) -> dict[str, str | None]:
         "code": code if isinstance(code, str) else None,
         "message": message if isinstance(message, str) else None,
     }
+
+
+def member_push_quiet_window(now: datetime | None = None) -> MemberPushQuietWindow | None:
+    """The silence window configured for the club, or ``None`` without one.
+
+    ``active`` answers "would a pass fired this second send?": the panel uses it
+    to say the queue is waiting instead of guessing why it does not move.
+    """
+
+    occurred = _as_utc(now or utc_now())
+    window = parse_push_quiet_window()
+    if window is None:
+        return None
+    return MemberPushQuietWindow(
+        start=window[0].strftime("%H:%M"),
+        end=window[1].strftime("%H:%M"),
+        active=_in_quiet_window(window[0], window[1], to_club_timezone(occurred).time()),
+    )
 
 
 def _remaining_count(session: Session) -> int:
@@ -864,6 +891,7 @@ __all__ = [
     "MemberPushDeliveryItem",
     "MemberPushDeliveryPage",
     "MemberPushPass",
+    "MemberPushQuietWindow",
     "PUSH_RETRY_BACKOFF",
     "PushDeliveryFailed",
     "PushDeliveryNotFound",
@@ -880,6 +908,7 @@ __all__ = [
     "list_member_push_deliveries",
     "mask_push_token",
     "member_push_delivery_counts",
+    "member_push_quiet_window",
     "parse_push_quiet_window",
     "register_member_push_token",
     "retry_member_push_delivery",

@@ -22,7 +22,7 @@ ADR-059 apagó el ruido por tipo de aviso de forma individual; su límite explí
 ## Consecuencias y límites
 
 - **El horario de silencio por socio queda abierto.** ADR-059 imaginaba la decisión del socio como «otra tabla»; este corte es la política del club. Quien quiera su propio horario (por ejemplo, 21:00 en vez de 22:00) tendría `member_notification_quiet_hours` o una columna en `member_notification_preferences`, con su consulta en `_enqueue_member_push_deliveries` o en la pasada.
-- **El panel no muestra que hay silencio.** La tarjeta «Push del socio» cuenta pendientes y fallidos como siempre, y la respuesta del envío lleva `deferred: false` siempre (el botón anula la ventana); el operador que pregunte por qué la cola no baja de noche no lo ve en la pantalla. Mostrar «En silencio hasta las 07:00» es trabajo de panel pendiente.
+- **El panel anuncia el silencio.** `GET /admin/notifications/push-deliveries` publica `quiet_window` (`start`, `end`, `active`) y la tarjeta «Push del socio» muestra «En silencio hasta las HH:MM» mientras la pasada automática estaría esperando, o «Silencio de HH:MM a HH:MM» fuera de la ventana; sin variables la clave llega `null` y no aparece la insignia. El envío manual sigue llevando `deferred: false` porque anula la ventana, y el operador ya ve por qué la cola no baja de noche.
 - **Sin planificador, la salida depende de la próxima petición.** Igual que el resto del proyecto sin worker: si nadie abre el panel ni toca el backend entre las 07:00 y el mediodía, los push esperan a la primera petición que dispare la pasada. La tecnología es la de siempre (ADR-052); el horario puede empujarla unas horas.
 - **Las alertas de agotamiento no se silencian.** El aviso `member_push_failed` (ADR-055) es para el personal y viaja por correo y campana, no por push: la ventana no lo toca y una madrugada agitada puede dejar correos al amanecer, que es lo que se debe.
 - **Un socio sin fila de preferencias es encendido; un club sin variables de ventana es sin silencio.** El valor por defecto de las dos decisiones es sonar, y el silencio siempre es una elección explícita.
@@ -33,5 +33,5 @@ ADR-059 apagó el ruido por tipo de aviso de forma individual; su límite explí
 - `backend/src/app/main.py` (`lifespan` llama a `validate_push_quiet_window`, `POST /admin/notifications/push-deliveries/send` con `deferred` y `override_quiet_hours=True`)
 - `backend/src/app/timezone.py` (`to_club_timezone` para la hora local de la comparación)
 - `.env.example` (`MEMBER_PUSH_QUIET_START` / `MEMBER_PUSH_QUIET_END`)
-- `backend/tests/test_member_push_quiet_hours.py` (13 pruebas)
+- `backend/tests/test_member_push_quiet_hours.py` (15 pruebas, dos de ellas del aviso del panel)
 - ADR-052 (push del socio), ADR-054 (reintento automático), ADR-055 (aviso de agotamiento), ADR-059 (preferencias del socio)

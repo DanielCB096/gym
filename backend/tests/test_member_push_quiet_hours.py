@@ -8,16 +8,24 @@ A deliberate operator action from the panel is not the window's to defer, and
 preview mode ignores it because a simulation never rings a phone.
 """
 
+from collections.abc import Iterator
 from datetime import datetime, timedelta, time, timezone
 
 import pytest
-from sqlmodel import Session, select
+from fastapi.testclient import TestClient
+from sqlalchemy import event
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine, select
 
+from app.main import app, get_session
+from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.memberships.models import Member
 from app.modules.notifications import push as push_module
 from app.modules.notifications.models import MemberPushDelivery
 from app.modules.notifications.push import (
+    MemberPushQuietWindow,
     PushDeliveryFailed,
+    member_push_quiet_window,
     parse_push_quiet_window,
     register_member_push_token,
     retry_member_push_delivery,
@@ -253,3 +261,84 @@ def test_silence_covers_the_hours_after_midnight(
     assert result.sent == 1
     session.refresh(delivery)
     assert delivery.status == "sent"
+
+
+def test_the_window_tells_the_panel_where_it_stands(monkeypatch) -> None:
+    _quiet_window(monkeypatch)
+
+    inside = member_push_quiet_window(now=INSIDE)
+    assert inside == MemberPushQuietWindow(start="22:00", end="07:00", active=True)
+    assert member_push_quiet_window(now=NOW).active is False
+    assert member_push_quiet_window(now=AFTER).active is False
+    midnight = NOW + timedelta(hours=13, minutes=30)  # 00:30 local, Oct 31
+    assert member_push_quiet_window(now=midnight).active is True
+
+    _quiet_window(monkeypatch, start=None, end=None)
+    assert member_push_quiet_window(now=INSIDE) is None
+
+
+def _build_engine():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(connection, _: object) -> None:
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    return engine
+
+
+def test_the_board_publishes_the_silence_window(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-quiet-window-secret")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ensure_default_access_control(session)
+        register_user(
+            session,
+            email="owner@example.com",
+            password="owner-correct-horse-battery",
+            role_codes=("owner",),
+        )
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/auth/login",
+                json={
+                    "email": "owner@example.com",
+                    "password": "owner-correct-horse-battery",
+                },
+            )
+            assert response.status_code == 200, response.text
+            owner = {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+            board = client.get("/admin/notifications/push-deliveries", headers=owner)
+            assert board.status_code == 200, board.text
+            assert board.json()["quiet_window"] is None
+
+            _quiet_window(monkeypatch)
+            monkeypatch.setattr(push_module, "utc_now", lambda: INSIDE)
+            inside = client.get(
+                "/admin/notifications/push-deliveries", headers=owner
+            ).json()["quiet_window"]
+            assert inside == {"start": "22:00", "end": "07:00", "active": True}
+
+            monkeypatch.setattr(push_module, "utc_now", lambda: NOW)
+            outside = client.get(
+                "/admin/notifications/push-deliveries", headers=owner
+            ).json()["quiet_window"]
+            assert outside == {"start": "22:00", "end": "07:00", "active": False}
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+    engine.dispose()

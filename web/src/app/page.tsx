@@ -261,6 +261,7 @@ type MemberPushDeliveryBoard = {
   page_size: number;
   pages: number;
   max_attempts: number;
+  quiet_window: { start: string; end: string; active: boolean } | null;
 };
 
 type StaffingSettingsEvent = {
@@ -5615,10 +5616,11 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
               </div>
             </div>
             <p className="panel-hint">Cada aviso al socio encola un push por dispositivo activo y sale después de que el backend responde, nunca dentro de la transacción que registra el cambio. Un dispositivo que Expo reporta como desinstalado se retira y deja de recibir avisos. En la vista previa el envío queda marcado como simulado.</p>
-            <p className="panel-hint">El token se muestra enmascarado: el panel nunca necesita la dirección completa del dispositivo. Un push que falla por un error de transporte se reintenta solo, con esperas de un minuto y luego cinco, hasta tres intentos; la columna Detalle indica cuándo toca el próximo o «Sin reintentos» cuando ya no habrá más. Reintentar a mano sigue disponible y conserva el historial de intentos sin duplicar el aviso.</p>
+            <p className="panel-hint">El token se muestra enmascarado: el panel nunca necesita la dirección completa del dispositivo. Un push que falla por un error de transporte se reintenta solo, con esperas de un minuto y luego cinco, hasta tres intentos; la columna Detalle indica cuándo toca el próximo o «Sin reintentos» cuando ya no habrá más. Reintentar a mano sigue disponible y conserva el historial de intentos sin duplicar el aviso. Si el club configuró un horario de silencio, la cola espera: la pasada automática no suena durante la ventana y la primera pasada posterior retoma lo acumulado, junto con los reintentos que vencieron de madrugada; «Enviar pendientes» y «Reintentar» son decisiones del operador y no esperan al silencio.</p>
             <div className="table-toolbar">
               <span className={`status-badge ${pushBoard === null ? "status-neutral" : "status-good"}`}><i />{pushBoard === null ? "Consultando…" : `${pushBoard.counts.active_tokens} dispositivo(s) activos`}</span>
               <span className="table-hint">{pushBoard === null ? "" : `${pushBoard.counts.pending} en cola · ${pushBoard.counts.sent} enviados · ${pushBoard.counts.simulated} simulados · ${pushBoard.counts.failed} con error`}</span>
+              {pushBoard?.quiet_window ? <span className={pushBoard.quiet_window.active ? "status-badge status-neutral" : "table-hint"}><i />{pushBoard.quiet_window.active ? `En silencio hasta las ${pushBoard.quiet_window.end}` : `Silencio de ${pushBoard.quiet_window.start} a ${pushBoard.quiet_window.end}`}</span> : null}
             </div>
             <div className="table-scroll"><table className="data-table"><thead><tr><th>SOCIO</th><th>AVISO</th><th>DISPOSITIVO</th><th>ESTADO</th><th>INTENTOS</th><th>ÚLTIMO INTENTO</th><th>DETALLE</th><th /></tr></thead><tbody>
               {pushError ? <tr><td colSpan={8} className="empty-row">{pushError}</td></tr>
