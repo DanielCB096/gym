@@ -342,6 +342,24 @@ export type MemberNotificationPage = {
   unread_total: number;
 };
 
+export type MemberNotificationCategory =
+  | "membership"
+  | "classes"
+  | "training"
+  | "billing"
+  | "equipment"
+  | "physio";
+
+export type MemberNotificationPreference = {
+  category: MemberNotificationCategory;
+  push_enabled: boolean;
+  updated_at: string | null;
+};
+
+export type MemberNotificationPreferences = {
+  items: MemberNotificationPreference[];
+};
+
 export type MemberPushPlatform = "ios" | "android";
 
 export type MemberPushToken = {

@@ -54,6 +54,7 @@ from app.modules.notifications.models import (
     StaffNotificationDelivery,
     utc_now,
 )
+from app.modules.notifications.preferences import is_push_enabled
 from app.timezone import to_club_timezone
 
 MEMBERSHIP_EXPIRY_WINDOWS = (7, 3, 1)
@@ -219,9 +220,13 @@ def _enqueue_member_push_deliveries(
     """One row per active device, written with the notice.
 
     Devices registered after this point do not receive the notice: the audience
-    is the one that existed when the event happened.
+    is the one that existed when the event happened. A category the member
+    switched off writes the notice and queues nothing, so the inbox stays whole
+    and only the phone is quiet.
     """
 
+    if not is_push_enabled(session, notice.member_id, notice.kind):
+        return []
     tokens = session.exec(
         select(MemberPushToken).where(
             MemberPushToken.member_id == notice.member_id,

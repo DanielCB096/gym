@@ -5,20 +5,28 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from "react-native";
 
 import {
   ApiError,
+  getMemberNotificationPreferences,
   getMemberNotifications,
   markAllMemberNotificationsRead,
   markMemberNotificationRead,
+  updateMemberNotificationPreferences,
 } from "../api";
 import { describeError } from "../errors";
 import { formatDateTime, notificationKindLabel } from "../format";
 import { colors, radius, sharedStyles, spacing } from "../theme";
-import type { MemberNotification, MemberNotificationPage } from "../types";
+import type {
+  MemberNotification,
+  MemberNotificationCategory,
+  MemberNotificationPage,
+  MemberNotificationPreference,
+} from "../types";
 
 const CLASS_KINDS = new Set([
   "class_reminder",
@@ -34,6 +42,15 @@ const PHYSIO_KINDS = new Set([
   "physio_appointment_rescheduled",
   "physio_reminder",
 ]);
+
+const CATEGORY_LABELS: Record<MemberNotificationCategory, string> = {
+  membership: "Membresía",
+  classes: "Clases",
+  training: "Rutinas y metas",
+  billing: "Facturas",
+  equipment: "Equipo fuera de servicio",
+  physio: "Fisioterapia",
+};
 
 type Props = {
   token: string;
@@ -55,9 +72,14 @@ export function NotificationsScreen({
   onOpenPhysio,
 }: Props) {
   const [inbox, setInbox] = useState<MemberNotificationPage | null>(null);
+  const [preferences, setPreferences] = useState<
+    MemberNotificationPreference[] | null
+  >(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [preferenceBusy, setPreferenceBusy] =
+    useState<MemberNotificationCategory | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -66,8 +88,12 @@ export function NotificationsScreen({
       setLoading(mode === "initial");
       setRefreshing(mode === "refresh");
       try {
-        const next = await getMemberNotifications(token);
+        const [next, prefs] = await Promise.all([
+          getMemberNotifications(token),
+          getMemberNotificationPreferences(token),
+        ]);
         setInbox(next);
+        setPreferences(prefs.items);
         onUnreadChange(next.unread_total);
         setError(null);
       } catch (loadError) {
@@ -160,6 +186,45 @@ export function NotificationsScreen({
       setError(describeError(markError));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleTogglePreference(
+    category: MemberNotificationCategory,
+    pushEnabled: boolean,
+  ) {
+    if (preferenceBusy !== null) {
+      return;
+    }
+    const previous = preferences;
+    setPreferenceBusy(category);
+    setPreferences((current) =>
+      current
+        ? current.map((item) =>
+            item.category === category ? { ...item, push_enabled: pushEnabled } : item,
+          )
+        : current,
+    );
+    try {
+      const updated = await updateMemberNotificationPreferences(token, [
+        { category, push_enabled: pushEnabled },
+      ]);
+      setPreferences(updated.items);
+      setNotice(
+        pushEnabled
+          ? `${CATEGORY_LABELS[category]}: volverás a recibir el aviso en el teléfono.`
+          : `${CATEGORY_LABELS[category]}: dejaremos de avisarte en el teléfono. El aviso seguirá en tu bandeja.`,
+      );
+      setError(null);
+    } catch (toggleError) {
+      setPreferences(previous);
+      if (toggleError instanceof ApiError && toggleError.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      setError(describeError(toggleError));
+    } finally {
+      setPreferenceBusy(null);
     }
   }
 
@@ -288,6 +353,42 @@ export function NotificationsScreen({
         </View>
       ) : null}
 
+      {preferences ? (
+        <View style={sharedStyles.card}>
+          <Text style={sharedStyles.label}>Avisos en el teléfono</Text>
+          <Text style={sharedStyles.body}>
+            Elige qué avisos quieres que suenen en tu teléfono. Si apagas una
+            categoría, el aviso se guarda igual en tu bandeja y solo deja de
+            interrumpirte.
+          </Text>
+          {preferences.map((item) => (
+            <View key={item.category} style={styles.preferenceRow}>
+              <View style={styles.preferenceCopy}>
+                <Text style={styles.preferenceTitle}>
+                  {CATEGORY_LABELS[item.category]}
+                </Text>
+                <Text style={sharedStyles.hint}>
+                  {item.push_enabled
+                    ? "Te avisamos en el teléfono."
+                    : "Solo aparece en tu bandeja."}
+                </Text>
+              </View>
+              <Switch
+                accessibilityRole="switch"
+                accessibilityLabel={`Avisos de ${CATEGORY_LABELS[item.category]} en el teléfono`}
+                value={item.push_enabled}
+                disabled={preferenceBusy !== null}
+                onValueChange={(value) =>
+                  void handleTogglePreference(item.category, value)
+                }
+                trackColor={{ false: colors.surfaceMuted, true: colors.accent }}
+                thumbColor={colors.surface}
+              />
+            </View>
+          ))}
+        </View>
+      ) : null}
+
       <Text style={sharedStyles.hint}>
         Toca un aviso para marcarlo como leído. Los de factura abren Facturas, los de
         clase abren Clases y los de fisioterapia abren Fisioterapia. Los avisos no se
@@ -356,6 +457,25 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row",
     gap: spacing.sm,
+  },
+  preferenceRow: {
+    alignItems: "center",
+    borderTopColor: colors.border,
+    borderTopWidth: 1,
+    flexDirection: "row",
+    gap: spacing.md,
+    justifyContent: "space-between",
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+  },
+  preferenceCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  preferenceTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: "700",
   },
   rowTitle: {
     color: colors.text,

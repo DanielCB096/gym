@@ -21,7 +21,9 @@ import type {
   MemberMeasurement,
   MemberMeasurementInput,
   MemberNotification,
+  MemberNotificationCategory,
   MemberNotificationPage,
+  MemberNotificationPreferences,
   MemberPhysioOverview,
   MemberProgress,
   MemberProgressPhoto,
@@ -46,7 +48,7 @@ export class ApiError extends Error {
 }
 
 type RequestOptions = {
-  method?: "GET" | "POST" | "DELETE";
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
   body?: unknown;
   form?: FormData;
   token?: string;
@@ -366,6 +368,25 @@ export function markAllMemberNotificationsRead(
     method: "POST",
     token,
   }).then((result) => result.updated);
+}
+
+export function getMemberNotificationPreferences(
+  token: string,
+): Promise<MemberNotificationPreferences> {
+  return request<MemberNotificationPreferences>("/member/notification-preferences", {
+    token,
+  });
+}
+
+export function updateMemberNotificationPreferences(
+  token: string,
+  categories: { category: MemberNotificationCategory; push_enabled: boolean }[],
+): Promise<MemberNotificationPreferences> {
+  return request<MemberNotificationPreferences>("/member/notification-preferences", {
+    method: "PATCH",
+    token,
+    body: { categories },
+  });
 }
 
 export function registerMemberPushToken(

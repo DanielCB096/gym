@@ -73,6 +73,39 @@ MAX_BODY_CHARS = 500
 MAX_DEDUPE_CHARS = 120
 MAX_MESSAGE_ID_CHARS = 320
 
+# The app groups the notice kinds into the few switches a person can tell apart.
+# Every kind belongs to exactly one category; a test asserts the mapping is
+# exhaustive, so a new kind cannot ship without deciding what silences it.
+MEMBER_NOTIFICATION_CATEGORIES = (
+    "membership",
+    "classes",
+    "training",
+    "billing",
+    "equipment",
+    "physio",
+)
+
+NOTIFICATION_CATEGORY_BY_KIND = {
+    "membership_expiring": "membership",
+    "class_waitlist_promoted": "classes",
+    "class_reserved": "classes",
+    "class_cancelled": "classes",
+    "class_rescheduled": "classes",
+    "class_reminder": "classes",
+    "workout_reviewed": "training",
+    "goal_achieved": "training",
+    "goal_cancelled_by_staff": "training",
+    "goal_updated_by_staff": "training",
+    "invoice_stamped": "billing",
+    "invoice_failed": "billing",
+    "invoice_cancelled": "billing",
+    "equipment_out_of_service": "equipment",
+    "physio_appointment_scheduled": "physio",
+    "physio_appointment_cancelled": "physio",
+    "physio_appointment_rescheduled": "physio",
+    "physio_reminder": "physio",
+}
+
 
 class MemberNotification(SQLModel, table=True):
     __tablename__ = "member_notifications"
@@ -122,6 +155,50 @@ class MemberNotification(SQLModel, table=True):
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
     read_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+
+class MemberNotificationPreference(SQLModel, table=True):
+    """One push switch of one member for one category of notice.
+
+    Only the phone is switched, never the inbox: the notice is still written and
+    still counts as unread, because the member did not ask to miss it, only to be
+    interrupted less. A missing row means enabled, so the table only stores the
+    decisions the member actually made and a new category starts on by default.
+    The row is kept (rather than deleted) when the switch goes back on, so the
+    panel can tell an explicit "on" from a member who never touched the switch.
+    """
+
+    __tablename__ = "member_notification_preferences"
+    __table_args__ = (
+        CheckConstraint(
+            "category IN ('membership', 'classes', 'training', 'billing', "
+            "'equipment', 'physio')",
+            name="ck_member_notification_preferences_category",
+        ),
+        UniqueConstraint(
+            "member_id",
+            "category",
+            name="uq_member_notification_preferences_member_category",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    member_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("members.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    category: str = Field(max_length=24)
+    push_enabled: bool = Field(
+        default=True,
+        sa_column=Column(Boolean, nullable=False, server_default=text("true")),
+    )
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
 
 
 STAFF_NOTIFICATION_KINDS = (

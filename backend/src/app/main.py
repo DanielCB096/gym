@@ -481,6 +481,13 @@ from app.modules.notifications.receipts import (
     verify_signature,
 )
 from app.modules.notifications.models import MemberPushToken
+from app.modules.notifications.preferences import (
+    MemberNotificationPreferenceItem,
+    PreferenceMemberNotFound,
+    UnknownNotificationCategory,
+    list_member_preferences,
+    update_member_preferences,
+)
 from app.modules.notifications.push import (
     InvalidPushPlatform,
     InvalidPushToken,
@@ -2515,6 +2522,25 @@ class MemberNotificationReadAllResponse(BaseModel):
     updated: int
 
 
+class MemberNotificationPreferenceResponse(BaseModel):
+    category: str
+    push_enabled: bool
+    updated_at: datetime | None
+
+
+class MemberNotificationPreferencesResponse(BaseModel):
+    items: list[MemberNotificationPreferenceResponse]
+
+
+class MemberNotificationPreferenceChange(BaseModel):
+    category: str = Field(min_length=1, max_length=24)
+    push_enabled: bool
+
+
+class MemberNotificationPreferencesUpdateRequest(BaseModel):
+    categories: list[MemberNotificationPreferenceChange] = Field(min_length=1)
+
+
 class MemberPushTokenRequest(BaseModel):
     token: str = Field(min_length=10, max_length=255)
     platform: Literal["ios", "android"]
@@ -4482,6 +4508,51 @@ def member_notifications_read_all(
     return MemberNotificationReadAllResponse(
         updated=mark_all_notifications_read(session, member.member_id)
     )
+
+
+@app.get(
+    "/member/notification-preferences",
+    response_model=MemberNotificationPreferencesResponse,
+    tags=["member self-service"],
+)
+def member_notification_preferences(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberNotificationPreferencesResponse:
+    return _member_preferences_response(
+        list_member_preferences(session, member.member_id)
+    )
+
+
+@app.patch(
+    "/member/notification-preferences",
+    response_model=MemberNotificationPreferencesResponse,
+    tags=["member self-service"],
+)
+def member_notification_preferences_update(
+    request: MemberNotificationPreferencesUpdateRequest,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberNotificationPreferencesResponse:
+    changes: dict[str, bool] = {}
+    for change in request.categories:
+        if change.category in changes:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"La categoría '{change.category}' está repetida",
+            )
+        changes[change.category] = change.push_enabled
+    try:
+        items = update_member_preferences(session, member.member_id, changes)
+    except UnknownNotificationCategory as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    except PreferenceMemberNotFound as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+        ) from error
+    return _member_preferences_response(items)
 
 
 @app.post(
@@ -10531,6 +10602,21 @@ def _member_notification_response(item: MemberNotificationItem) -> MemberNotific
         ref_id=item.ref_id,
         created_at=item.created_at,
         read_at=item.read_at,
+    )
+
+
+def _member_preferences_response(
+    items: list[MemberNotificationPreferenceItem],
+) -> MemberNotificationPreferencesResponse:
+    return MemberNotificationPreferencesResponse(
+        items=[
+            MemberNotificationPreferenceResponse(
+                category=item.category,
+                push_enabled=item.push_enabled,
+                updated_at=item.updated_at,
+            )
+            for item in items
+        ]
     )
 
 

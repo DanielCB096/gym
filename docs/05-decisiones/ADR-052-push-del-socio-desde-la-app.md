@@ -22,7 +22,7 @@ La bandeja del socio guarda cada aviso con su texto congelado, pero solo habla c
 ## Consecuencias y límites
 
 - **Sin proyecto EAS no hay token.** El token de Expo requiere `extra.eas.projectId` (o `Constants.easConfig`); mientras el club no configure su proyecto, la app pide permiso pero no registra. Es un requisito de despliegue, no un fallo.
-- **No hay preferencias por tipo ni por horario.** El socio recibe todos los avisos de su cuenta en todos sus dispositivos activos; silenciar un tipo exigiría columnas o una tabla de preferencias que el club no pidió.
+- **Las preferencias por tipo ya existen (ADR-059).** El socio puede apagar una categoría desde la app; la bandeja conserva todos los avisos y solo se cancela el push. No hay horario de silencio y el interruptor vale para todos sus dispositivos a la vez, no por teléfono.
 - **Ventana at-least-once.** El intento se confirma antes de llamar a Expo, así que un corte entre la aceptación y el `commit` puede repetir el push. No hay deduplicación en el dispositivo.
 - **Sin reintento ni backoff.** Un `failed` es definitivo y se ve en la base; no hay tarjeta de push en el panel ni botón de reintento, a diferencia del correo.
 - **El acuse del push no existe.** Se guarda el ticket de Expo (`sent`), no su recibo de entrega; saber si el teléfono lo mostró requeriría el receipt id de Expo y otra cola.

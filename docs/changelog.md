@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-31 · Avisos: preferencias del socio por tipo
+
+- **Seis categorías para 18 tipos**: `membership`, `classes`, `training`, `billing`, `equipment` y `physio` agrupan los avisos del socio con un mapa exhaustivo (`NOTIFICATION_CATEGORY_BY_KIND`) que una prueba vigila. Las categorías viven en el código; el club no las configura.
+- **Solo se apaga el teléfono, no la bandeja**: `member_notification_preferences` guarda la decisión por socio y categoría, y la ausencia de fila significa encendido. El aviso se sigue escribiendo y contando como no leído; `_enqueue_member_push_deliveries` solo omite el encolado.
+- **El silencio es inmediato**: apagar una categoría borra sus entregas `pending` y quita el `next_attempt_at` de las `failed` que tenían reintento programado; las `sent`/`simulated` y el historial se conservan.
+- **API de auto-servicio**: `GET /member/notification-preferences` devuelve las seis categorías con los valores por defecto y `PATCH` acepta una actualización parcial y devuelve el conjunto completo; categoría desconocida, repetida o lista vacía responden `422`, y sin sesión `401`.
+- **App**: la pantalla Notificaciones suma una tarjeta con un `Switch` por categoría, actualización optimista que revierte si el `PATCH` falla y copy que aclara que la bandeja conserva todo.
+- **Migración**: `20261031_0071` crea `member_notification_preferences` con FK `RESTRICT`, unicidad por `(socio, categoría)` y el `CHECK` de las seis categorías; la vista previa la crea desde el modelo.
+- **Pruebas**: 13 casos nuevos en `test_member_notification_preferences.py` —mapa exhaustivo, valores por defecto, actualización parcial, validación, supresión del push, borrado solo de pendientes, cancelación del reintento, aislamiento entre socios, reactivación y tres flujos HTTP—. Suite en **372 pruebas**: 367 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Documentación**: ADR-059, ADR-052, ADR-053, ADR-057, deuda técnica, plan de pruebas, README, README del backend, modelo de datos, módulo de avisos del socio, traspaso y este changelog.
+
 ## 2026-10-31 · Avisos: retención de los acuses de entrega
 
 - **Purga por fecha de recepción**: `staff_notification_delivery_receipts` se limpia con `purge_expired_receipts`, que borra los acuses con `received_at` anterior al corte. Las entregas y la bandeja no se tocan: el acuse es lo operativo, la entrega es el registro del envío.

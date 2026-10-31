@@ -25,7 +25,7 @@ ADR-051 dejó ese hueco anotado como límite: «no hay segundo secreto para tran
 - **Dos comparaciones por petición.** No hay identificador de clave (`key id`) en la cabecera, así que cada firma se prueba contra los dos secretos; el costo es un HMAC adicional, despreciable.
 - **El secreto anterior también debe ser fuerte.** Un valor débil en cualquiera de las dos variables debilita el canal durante la transición.
 - **El proveedor se reconfigura a mano.** El club debe cambiar el secreto en el proveedor y mantener el anterior hasta que sus reintentos se drenen; el sistema no habla con el proveedor para coordinarlo.
-- **Los límites de ADR-051 que siguen abiertos** son la falta de identificador de webhook en la firma y las preferencias por tipo de aviso; la retención de los acuses quedó resuelta por ADR-058.
+- **Los límites de ADR-051 que siguen abiertos** son la falta de identificador de webhook en la firma y las preferencias por tipo para el **correo del personal** (el push del socio ya tiene las suyas, ADR-059); la retención de los acuses quedó resuelta por ADR-058.
 
 ## Referencias
 
