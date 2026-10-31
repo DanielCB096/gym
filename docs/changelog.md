@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-31 · Fisioterapia: prueba opt-in de concurrencia de la sala (ADR-069)
+
+- Se agregó `backend/tests/test_physio_rooms_postgres.py` (2 pruebas opt-in con `TEST_POSTGRES_URL`): dos altas simultáneas en el mismo consultorio y dos movimientos simultáneos a la misma sala dejan una sola cita, y la otra transacción recibe `409` de consultorio y se revierte.
+- Contra PostgreSQL 16 en Docker las pruebas pasaron 5 de 5 veces; el mismo escenario sin el `FOR UPDATE` del consultorio dejó dos citas en 5 de 5 rondas, así que la prueba detecta la regresión. Sin migración ni cambio de API.
+- Suite backend completa: **505 pruebas, 498 aprobadas y 7 omitidas** sin `TEST_POSTGRES_URL`; se actualizaron la deuda, el plan de pruebas, la ficha de fisioterapia, TRASPASO y el README del backend.
+
 ## 2026-10-31 · Personal: planificador de la cola del push web (ADR-071)
 
 - `backend/flush_staff_push.py` drena las entregas `pending` que un proceso caído dejó sin enviar, con la misma pasada del gancho y el compare-and-set sobre `attempts`; no reintenta las `failed`, que siguen esperando a una persona. Acepta `--preview` (simula sobre `gym_preview.db`), `--database-url` y `--limit` (1 a 100; 20 por defecto); sin URL sale con código 2 y una base inalcanzable con código 1.

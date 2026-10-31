@@ -22,7 +22,7 @@ Al revisar el segundo punto se confirmó que estaba desactualizado: `_assert_slo
 
 - **No hay capacidad por consultorio.** Una sala admite una sola cita a la vez sin importar el servicio; no se puede declarar una sala con dos camillas ni compartirla entre dos sesiones cortas.
 - **No hay horario propio de la sala.** El consultorio está disponible siempre que el club lo esté; no hay ventanas de apertura, bloqueos por limpieza ni días festivos por sala.
-- **No hay serialización en SQLite.** La vista previa y las pruebas no reproducen la carrera de dos agendamientos simultáneos sobre la misma sala; igual que el bloqueo de la doble marca y el del cupo de clases, la garantía real es de PostgreSQL y todavía no hay una prueba opt-in que la ejerza para la sala.
+- **No hay serialización en SQLite.** La vista previa y las pruebas no reproducen la carrera de dos agendamientos simultáneos sobre la misma sala; igual que el bloqueo de la doble marca y el del cupo de clases, la garantía real es de PostgreSQL y la carrera de la sala se ejerce con la prueba opt-in `tests/test_physio_rooms_postgres.py`.
 - **El consultorio no avisa nada.** Mover una cita a otra sala o liberar una no notifica a nadie más que al socio por el aviso de la cita; no hay panel de ocupación de salas ni alerta cuando una sala queda libre.
 - **El reporte sigue estimando la ocupación** sobre 8 horas por fisioterapeuta y día (ADR-039), no sobre la sala; esta regla evita el doble uso, no mide utilización física.
 
@@ -31,5 +31,6 @@ Al revisar el segundo punto se confirmó que estaba desactualizado: `_assert_slo
 - `backend/src/app/modules/physio/service.py` (`_assert_room_free`, `create_physio_appointment`, `move_physio_appointment`, `_assert_slot_free`)
 - `backend/src/app/main.py` (`(PhysioSlotConflict, 409)`)
 - `backend/tests/test_physio_api.py` (`test_rooms_cannot_double_book_the_same_hour`)
+- `backend/tests/test_physio_rooms_postgres.py` (concurrencia opt-in de la sala con `TEST_POSTGRES_URL`)
 - `docs/02-modulos/fisioterapia.md`
 - `docs/05-decisiones/ADR-039-fisioterapia-cobro-por-asistencia.md`
