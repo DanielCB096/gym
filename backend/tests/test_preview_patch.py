@@ -550,3 +550,59 @@ def test_preview_upgrade_registers_the_push_retry_column() -> None:
         for row in connection.execute("PRAGMA table_info(member_push_deliveries)")
     }
     assert "next_attempt_at" in columns
+
+
+# The preview database stopped at the three kinds the first migration created.
+PRE_PUSH_ALERT_TABLE = (
+    'CREATE TABLE "staff_notifications" (\n'
+    "\tid CHAR(32) NOT NULL, \n"
+    "\tuser_id CHAR(32) NOT NULL, \n"
+    "\tkind VARCHAR(40) NOT NULL, \n"
+    "\tPRIMARY KEY (id), \n"
+    "\tCONSTRAINT ck_staff_notifications_kind CHECK (kind IN "
+    "('workout_pending_review', 'maintenance_ticket_assigned', "
+    "'kiosk_token_expiring'))\n"
+    ")"
+)
+
+
+def test_preview_upgrade_reaches_the_push_alert_from_the_oldest_kinds() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.execute(PRE_PUSH_ALERT_TABLE)
+    connection.execute(
+        "INSERT INTO staff_notifications (id, user_id, kind) "
+        "VALUES ('s1', 'u1', 'workout_pending_review')"
+    )
+    connection.commit()
+
+    preview_patch.upgrade_checks(
+        connection,
+        "staff_notifications",
+        preview_patch.CHECK_UPGRADES["staff_notifications"],
+        (),
+    )
+
+    create_sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='staff_notifications'"
+    ).fetchone()[0]
+    assert "attendance_request_overdue" in create_sql
+    assert "member_push_failed" in create_sql
+    assert (
+        connection.execute("SELECT COUNT(*) FROM staff_notifications").fetchone()[0]
+        == 1
+    )
+
+    preview_patch.upgrade_checks(
+        connection,
+        "staff_notifications",
+        preview_patch.CHECK_UPGRADES["staff_notifications"],
+        (),
+    )
+    assert (
+        connection.execute("SELECT COUNT(*) FROM staff_notifications").fetchone()[0]
+        == 1
+    )
+    connection.execute(
+        "INSERT INTO staff_notifications (id, user_id, kind) "
+        "VALUES ('s2', 'u1', 'member_push_failed')"
+    )

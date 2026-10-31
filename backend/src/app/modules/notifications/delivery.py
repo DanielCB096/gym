@@ -48,12 +48,17 @@ SUBJECT_PREFIXES = {
     "workout_pending_review": "[Rutinas] ",
     "maintenance_ticket_assigned": "[Mantenimiento] ",
     "kiosk_token_expiring": "[Kiosco] ",
+    "member_push_failed": "[Avisos] ",
 }
 DEFAULT_NOTICE_LOCATION = "Puedes revisarlo en la pestaña Personal del panel del club."
 NOTICE_LOCATIONS = {
     "workout_pending_review": "Puedes revisarlo en la pestaña Rutinas del panel del club.",
     "maintenance_ticket_assigned": "Puedes revisarlo en la pestaña Mantenimiento del panel del club.",
     "kiosk_token_expiring": "Puedes rotarlo en la página Kiosco del panel del club.",
+    "member_push_failed": (
+        "Puedes revisarlo en la tarjeta «Push del socio» de la pestaña Equipo "
+        "del panel del club."
+    ),
 }
 MAX_SUBJECT_CHARS = 180
 

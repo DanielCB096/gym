@@ -4723,6 +4723,7 @@ def member_push_deliveries(
 def send_member_push_deliveries(
     _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
 ) -> MemberPushDeliveryPassResponse:
     result = send_pending_member_push_deliveries(session)
     return MemberPushDeliveryPassResponse(
@@ -4745,6 +4746,7 @@ def retry_member_push_delivery_endpoint(
     delivery_id: UUID,
     _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
 ) -> MemberPushDeliveryResponse:
     try:
         item = retry_member_push_delivery(session, delivery_id)

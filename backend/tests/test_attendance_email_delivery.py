@@ -394,6 +394,7 @@ def test_subject_and_destination_follow_the_notice_kind(session: Session) -> Non
         "workout_pending_review": ("[Rutinas] ", "pestaña Rutinas"),
         "maintenance_ticket_assigned": ("[Mantenimiento] ", "pestaña Mantenimiento"),
         "kiosk_token_expiring": ("[Kiosco] ", "página Kiosco"),
+        "member_push_failed": ("[Avisos] ", "«Push del socio»"),
     }
 
     for kind, (prefix, location) in cases.items():

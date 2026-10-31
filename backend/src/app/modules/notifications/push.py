@@ -48,6 +48,10 @@ RETRYABLE_DELIVERY_STATUSES = ("failed",)
 # wait grows so a short outage is ridden out without drowning Expo in traffic.
 MAX_PUSH_ATTEMPTS = 3
 PUSH_RETRY_BACKOFF = (timedelta(minutes=1), timedelta(minutes=5))
+# A push that runs out of attempts is work nobody sees: the notice is in the
+# inbox but the phone never rang. The alert goes to whoever operates the queue,
+# not to the member, and it is the same permission the panel card asks for.
+FAILURE_ALERT_PERMISSION = "attendance.manage"
 EXPO_TOKEN_PREFIXES = ("ExponentPushToken[", "ExpoPushToken[")
 UNREGISTERED_ERROR = "DeviceNotRegistered"
 
@@ -456,6 +460,7 @@ def _schedule_retry(
         delivery.next_attempt_at = None
         session.add(delivery)
         session.commit()
+        _alert_exhausted_push(session, delivery, now=now)
         return
     delay = PUSH_RETRY_BACKOFF[
         min(delivery.attempts - 1, len(PUSH_RETRY_BACKOFF) - 1)
@@ -463,6 +468,58 @@ def _schedule_retry(
     delivery.next_attempt_at = now + delay
     session.add(delivery)
     session.commit()
+
+
+def _alert_exhausted_push(
+    session: Session,
+    delivery: MemberPushDelivery,
+    *,
+    now: datetime,
+) -> None:
+    """Tell the accounts that operate the queue that the push gave up.
+
+    The key names the delivery *and* the account, so the notice is written once
+    per pair: a manual retry that fails again does not repeat it, and a new
+    device row for the same notice is a separate failure with its own alert.
+    """
+
+    # Late imports: the identity and inbox services sit above this module.
+    from app.modules.identity.service import user_ids_with_permission
+    from app.modules.notifications.service import create_staff_notification
+
+    notice = session.get(MemberNotification, delivery.notification_id)
+    member = session.get(Member, delivery.member_id)
+    who = (
+        f"{member.first_name} {member.last_name}".strip()
+        if member is not None
+        else "Un socio"
+    )
+    label = _clip(notice.title if notice is not None else "un aviso", 80)
+    reason = _clip(delivery.error or "sin detalle", 160).rstrip(".")
+    body = (
+        f"No se pudo entregar el aviso «{label}» a {_clip(who, 60)} tras "
+        f"{delivery.attempts} intentos: {reason}. "
+        "Revísalo en la tarjeta «Push del socio» de la pestaña Equipo."
+    )
+    for user_id in user_ids_with_permission(
+        session, FAILURE_ALERT_PERMISSION, now=now
+    ):
+        create_staff_notification(
+            session,
+            user_id=user_id,
+            kind="member_push_failed",
+            title="Push del socio sin entregar",
+            body=body,
+            ref_id=delivery.id,
+            dedupe_key=f"member_push_failed:{delivery.id}:{user_id}",
+            now=now,
+        )
+    session.commit()
+
+
+def _clip(value: str, limit: int) -> str:
+    text = " ".join(value.split())
+    return text if len(text) <= limit else f"{text[: limit - 1].rstrip()}…"
 
 
 def _retry_due(now: datetime):
@@ -534,10 +591,22 @@ def send_pending_member_push_deliveries_from_engine(
     limit: int = DEFAULT_SEND_BATCH_LIMIT,
     now: datetime | None = None,
 ) -> MemberPushPass:
-    """Run one pass in its own session, for the post-response hook."""
+    """Run one pass in its own session, for the post-response hook.
+
+    An exhausted push writes staff notices and queues their emails; the same
+    hook drains that queue, because no later request is guaranteed to flush it.
+    """
 
     with Session(engine) as session:
-        return send_pending_member_push_deliveries(session, limit=limit, now=now)
+        result = send_pending_member_push_deliveries(session, limit=limit, now=now)
+    # Late import: the email half of the same package, which this module only
+    # needs after a push has given up.
+    from app.modules.notifications.delivery import (
+        send_pending_staff_notification_emails_from_engine,
+    )
+
+    send_pending_staff_notification_emails_from_engine(engine)
+    return result
 
 
 def mask_push_token(token: str) -> str:
@@ -705,6 +774,7 @@ __all__ = [
     "DEFAULT_SEND_BATCH_LIMIT",
     "DELIVERY_STATUSES",
     "EXPO_PUSH_URL",
+    "FAILURE_ALERT_PERMISSION",
     "InvalidPushPlatform",
     "InvalidPushToken",
     "MAX_PUSH_ATTEMPTS",

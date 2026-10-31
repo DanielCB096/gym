@@ -134,6 +134,7 @@ STAFF_NOTIFICATION_KINDS = (
     "attendance_request_approved",
     "attendance_request_rejected",
     "attendance_request_overdue",
+    "member_push_failed",
 )
 
 # Every staff notice now leaves the panel: the bell keeps the history, the email
@@ -151,7 +152,8 @@ class StaffNotification(SQLModel, table=True):
             "kind IN ('workout_pending_review', 'maintenance_ticket_assigned', "
             "'kiosk_token_expiring', 'attendance_corrected', 'attendance_voided', "
             "'attendance_request_pending', 'attendance_request_approved', "
-            "'attendance_request_rejected', 'attendance_request_overdue')",
+            "'attendance_request_rejected', 'attendance_request_overdue', "
+            "'member_push_failed')",
             name="ck_staff_notifications_kind",
         ),
         CheckConstraint(

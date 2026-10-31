@@ -21,10 +21,13 @@ from app.modules.classes import create_class_room, create_class_session, create_
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.memberships.models import Member, Membership, Plan
 from app.modules.notifications import push as push_module
+from app.modules.notifications.delivery import email_message_for_notice
 from app.modules.notifications.models import (
     MemberNotification,
     MemberPushDelivery,
     MemberPushToken,
+    StaffNotification,
+    StaffNotificationDelivery,
 )
 from app.modules.notifications.push import (
     InvalidPushPlatform,
@@ -35,7 +38,9 @@ from app.modules.notifications.push import (
     clean_push_token,
     deactivate_member_push_token,
     register_member_push_token,
+    retry_member_push_delivery,
     send_pending_member_push_deliveries,
+    send_pending_member_push_deliveries_from_engine,
 )
 from app.modules.notifications.service import create_notification
 
@@ -372,6 +377,115 @@ def test_a_retry_that_works_clears_the_schedule(
     assert delivery.status == "sent"
     assert delivery.next_attempt_at is None
     assert delivery.sent_at.replace(tzinfo=timezone.utc) == NOW + timedelta(minutes=1)
+
+
+def _staff_accounts(session: Session) -> dict[str, UUID]:
+    """Owner, reception and trainer: the first two operate the push queue."""
+
+    ensure_default_access_control(session)
+    accounts: dict[str, UUID] = {}
+    for role in ("owner", "reception", "trainer"):
+        user = register_user(
+            session,
+            email=f"{role}@example.com",
+            password=f"{role}-strong-password",
+            role_codes=(role,),
+            now=NOW,
+        )
+        accounts[role] = user.id
+    return accounts
+
+
+def test_an_exhausted_push_alerts_the_accounts_that_operate_the_queue(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        accounts = _staff_accounts(session)
+        delivery = _queue_one_push(session)
+        monkeypatch.setattr(push_module, "send_expo_push", _unreachable)
+
+        first = send_pending_member_push_deliveries(session, now=NOW)
+        second = send_pending_member_push_deliveries(
+            session, now=NOW + timedelta(minutes=1)
+        )
+        assert (first.attempted, second.attempted) == (1, 1)
+        assert session.exec(select(StaffNotification)).all() == []
+
+        third = send_pending_member_push_deliveries(
+            session, now=NOW + timedelta(minutes=6)
+        )
+        assert (third.failed, third.remaining) == (1, 0)
+        notices = session.exec(select(StaffNotification)).all()
+        assert {row.user_id for row in notices} == {
+            accounts["owner"],
+            accounts["reception"],
+        }
+        assert {row.kind for row in notices} == {"member_push_failed"}
+        assert all(row.ref_id == delivery.id for row in notices)
+        assert all("Ana Demo" in row.body for row in notices)
+        assert all("«Push del socio»" in row.body for row in notices)
+        assert all(
+            row.dedupe_key == f"member_push_failed:{delivery.id}:{row.user_id}"
+            for row in notices
+        )
+
+        emails = session.exec(select(StaffNotificationDelivery)).all()
+        assert {row.recipient for row in emails} == {
+            "owner@example.com",
+            "reception@example.com",
+        }
+        subject, body = email_message_for_notice(notices[0])
+        assert subject.startswith("[Avisos] ")
+        assert "Push del socio" in body
+
+        # A manual retry that fails again does not repeat the alert.
+        retry_member_push_delivery(
+            session, delivery.id, now=NOW + timedelta(minutes=7)
+        )
+        assert len(session.exec(select(StaffNotification)).all()) == 2
+    engine.dispose()
+
+
+def test_an_uninstalled_app_does_not_alert_the_staff(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _staff_accounts(session)
+        _queue_one_push(session)
+
+        def uninstalled(**_kwargs) -> str:
+            raise PushTokenUnregistered("La app ya no está instalada.")
+
+        monkeypatch.setattr(push_module, "send_expo_push", uninstalled)
+        result = send_pending_member_push_deliveries(session, now=NOW)
+
+        assert result.deactivated == 1
+        assert session.exec(select(StaffNotification)).all() == []
+    engine.dispose()
+
+
+def test_the_background_pass_flushes_the_alert_emails(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _staff_accounts(session)
+        _queue_one_push(session)
+    monkeypatch.setattr(push_module, "send_expo_push", _unreachable)
+
+    for moment in (NOW, NOW + timedelta(minutes=1), NOW + timedelta(minutes=6)):
+        send_pending_member_push_deliveries_from_engine(engine, now=moment)
+
+    with Session(engine) as session:
+        emails = session.exec(select(StaffNotificationDelivery)).all()
+        assert len(emails) == 2
+        assert {row.status for row in emails} == {"simulated"}
+        assert all(row.sent_at is not None for row in emails)
+    engine.dispose()
 
 
 def _build_engine():

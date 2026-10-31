@@ -24,6 +24,8 @@ from app.modules.notifications.models import (
     MemberNotification,
     MemberPushDelivery,
     MemberPushToken,
+    StaffNotification,
+    StaffNotificationDelivery,
 )
 from app.modules.notifications.push import (
     PushDeliveryFailed,
@@ -339,5 +341,91 @@ def test_push_delivery_queue_api(monkeypatch) -> None:
     with Session(engine) as session:
         assert session.exec(select(MemberNotification)).one().kind == "class_reserved"
         assert session.exec(select(MemberPushDelivery)).one().status == "sent"
+
+    engine.dispose()
+
+
+def test_an_exhausted_push_alerts_the_panel_and_the_email(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-push-alert-secret")
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    _seed(engine)
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+
+    def broken(**_kwargs) -> str:
+        raise PushDeliveryFailed("El servicio de notificaciones respondió 503.")
+
+    monkeypatch.setattr(push_module, "send_expo_push", broken)
+    try:
+        with TestClient(app) as client:
+
+            def headers(email: str, password: str) -> dict[str, str]:
+                response = client.post(
+                    "/auth/login", json={"email": email, "password": password}
+                )
+                assert response.status_code == 200, response.text
+                return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+            owner = headers("owner@example.com", "owner-correct-horse-battery")
+            trainer = headers("trainer@example.com", "trainer-correct-horse-battery")
+
+            # One first try plus two manual retries: the third failure exhausts
+            # the row and raises the alert.
+            first = client.post("/admin/notifications/push-deliveries/send", headers=owner)
+            assert first.status_code == 200, first.text
+            delivery_id = client.get(
+                "/admin/notifications/push-deliveries", headers=owner
+            ).json()["items"][0]["id"]
+            for _ in range(2):
+                failed = client.post(
+                    f"/admin/notifications/push-deliveries/{delivery_id}/retry",
+                    headers=owner,
+                )
+                assert failed.status_code == 200, failed.text
+            assert failed.json()["attempts"] == 3
+            assert failed.json()["next_attempt_at"] is None
+
+            owner_inbox = client.get(
+                "/admin/notifications", headers=owner, params={"page_size": 50}
+            )
+            assert owner_inbox.status_code == 200, owner_inbox.text
+            alerts = [
+                item
+                for item in owner_inbox.json()["items"]
+                if item["kind"] == "member_push_failed"
+            ]
+            assert len(alerts) == 1
+            assert alerts[0]["ref_id"] == delivery_id
+            assert "Ana Demo" in alerts[0]["body"]
+            assert client.get(
+                "/admin/notifications", headers=trainer, params={"page_size": 50}
+            ).json()["total"] == 0
+
+            # A fourth failing attempt is still a failed row, not a new alert.
+            again = client.post(
+                f"/admin/notifications/push-deliveries/{delivery_id}/retry",
+                headers=owner,
+            )
+            assert again.status_code == 200, again.text
+            assert client.get(
+                "/admin/notifications", headers=owner, params={"page_size": 50}
+            ).json()["total"] == 1
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+
+    with Session(engine) as session:
+        notices = session.exec(select(StaffNotification)).all()
+        assert len(notices) == 1
+        assert notices[0].kind == "member_push_failed"
+        emails = session.exec(select(StaffNotificationDelivery)).all()
+        assert len(emails) == 1
+        assert emails[0].recipient == "owner@example.com"
+        assert emails[0].status == "simulated"
 
     engine.dispose()

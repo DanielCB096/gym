@@ -15800,6 +15800,7 @@ const STAFF_NOTIFICATION_KIND_LABELS: Record<string, string> = {
   workout_pending_review: "Rutinas · revisión pendiente",
   maintenance_ticket_assigned: "Mantenimiento · ticket asignado",
   kiosk_token_expiring: "Kiosco · vencimiento del token",
+  member_push_failed: "Avisos · push sin entregar",
 };
 
 const MEMBER_NOTIFICATION_KIND_LABELS: Record<string, string> = {
