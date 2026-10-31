@@ -518,6 +518,25 @@ from app.modules.notifications.push_receipts import (
     PushReceiptsFailed,
     sync_member_push_receipts,
 )
+from app.modules.notifications.webpush import (
+    InvalidPushSubscription,
+    StaffPushDeliveryNotFound,
+    StaffPushDeliveryRetryNotAllowed,
+    StaffPushDeliveryItem,
+    StaffPushError,
+    StaffPushSubscriptionItem,
+    StaffPushSubscriptionNotFound,
+    deactivate_staff_push_subscription,
+    list_staff_push_deliveries,
+    list_staff_push_subscriptions,
+    read_staff_push_config,
+    register_staff_push_subscription,
+    retry_staff_push_delivery,
+    send_pending_staff_push_deliveries,
+    send_pending_staff_push_deliveries_from_engine,
+    staff_push_delivery_counts,
+    staff_push_subscription_item,
+)
 from app.modules.portal.classes import (
     MemberClassItem,
     MemberClassNotAllowed,
@@ -2730,6 +2749,73 @@ class MemberPushReceiptPassResponse(BaseModel):
     deferred: bool
 
 
+class StaffPushConfigResponse(BaseModel):
+    enabled: bool
+    public_key: str | None = None
+    subject: str | None = None
+
+
+class StaffPushSubscriptionRequest(BaseModel):
+    endpoint: str = Field(min_length=1, max_length=500)
+    keys: dict[str, str]
+    user_agent: str | None = Field(default=None, max_length=255)
+
+
+class StaffPushSubscriptionResponse(BaseModel):
+    id: UUID
+    device: str
+    user_agent: str | None
+    active: bool
+    created_at: datetime
+    last_seen_at: datetime | None
+    deactivated_at: datetime | None
+
+
+class StaffPushDeliveryCountsResponse(BaseModel):
+    pending: int
+    sent: int
+    simulated: int
+    failed: int
+    active_subscriptions: int
+
+
+class StaffPushDeliveryResponse(BaseModel):
+    id: UUID
+    notice_id: UUID
+    user_id: UUID
+    user_name: str
+    user_email: str
+    kind: str
+    title: str
+    device: str
+    status: str
+    attempts: int
+    error: str | None
+    created_at: datetime
+    last_attempt_at: datetime | None
+    sent_at: datetime | None
+
+
+class StaffPushDeliveryPageResponse(BaseModel):
+    enabled: bool
+    counts: StaffPushDeliveryCountsResponse
+    items: list[StaffPushDeliveryResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class StaffPushDeliveryPassResponse(BaseModel):
+    attempted: int
+    sent: int
+    simulated: int
+    failed: int
+    deactivated: int
+    remaining: int
+    enabled: bool
+
+
 class EmailDeliveryReceiptResponse(BaseModel):
     id: UUID
     delivery_id: UUID
@@ -3566,17 +3652,18 @@ def flush_attendance_emails_after_response(
     background: BackgroundTasks,
     session: SessionDependency,
 ) -> None:
-    """Queue one attendance-email pass to run after the response is sent.
+    """Queue one attendance-email pass and one staff-push pass after the response.
 
-    The task opens its own session on the request's engine: FastAPI tears the
-    request session down before it runs, and the SMTP call must never sit inside
-    the transaction that recorded the mark. The pass re-reads the club switch and
-    the queue, so a stale task only finds nothing to do.
+    Both tasks open their own session on the request's engine: FastAPI tears the
+    request session down before they run, and neither the SMTP call nor the push
+    request may sit inside the transaction that recorded the change. Each pass
+    re-reads its own queue, so a stale task only finds nothing to do.
     """
 
     bind = session.get_bind()
     if isinstance(bind, Engine):
         background.add_task(send_pending_staff_notification_emails_from_engine, bind)
+        background.add_task(send_pending_staff_push_deliveries_from_engine, bind)
 
 
 AttendanceEmailFlush = Annotated[None, Depends(flush_attendance_emails_after_response)]
@@ -4846,6 +4933,176 @@ def retry_staff_notification_delivery_endpoint(
     except (NotificationDeliveryRetryNotAllowed, AttendanceEmailDisabled) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     return _staff_notification_delivery_response(item)
+
+
+@app.get(
+    "/admin/staff/push/config",
+    response_model=StaffPushConfigResponse,
+    tags=["staff self-service"],
+    description=(
+        "Clave pública VAPID que el navegador necesita para suscribirse al push. "
+        "Sin claves configuradas el canal queda apagado."
+    ),
+)
+def staff_push_config(
+    _: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+) -> StaffPushConfigResponse:
+    config = read_staff_push_config()
+    return StaffPushConfigResponse(
+        enabled=config.enabled,
+        public_key=config.public_key,
+        subject=config.subject,
+    )
+
+
+@app.get(
+    "/admin/staff/push/subscriptions",
+    response_model=list[StaffPushSubscriptionResponse],
+    tags=["staff self-service"],
+    description="Navegadores que la cuenta activó para recibir los avisos del panel.",
+)
+def staff_push_subscriptions(
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+) -> list[StaffPushSubscriptionResponse]:
+    return [
+        _staff_push_subscription_response(item)
+        for item in list_staff_push_subscriptions(session, principal.user_id)
+    ]
+
+
+@app.post(
+    "/admin/staff/push/subscriptions",
+    response_model=StaffPushSubscriptionResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["staff self-service"],
+)
+def staff_push_subscribe(
+    request: StaffPushSubscriptionRequest,
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+) -> StaffPushSubscriptionResponse:
+    try:
+        row = register_staff_push_subscription(
+            session,
+            principal.user_id,
+            endpoint=request.endpoint,
+            p256dh=request.keys.get("p256dh", ""),
+            auth=request.keys.get("auth", ""),
+            user_agent=request.user_agent,
+        )
+    except InvalidPushSubscription as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    return _staff_push_subscription_response(staff_push_subscription_item(row))
+
+
+@app.delete(
+    "/admin/staff/push/subscriptions/{subscription_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["staff self-service"],
+)
+def staff_push_unsubscribe(
+    subscription_id: UUID,
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+) -> Response:
+    try:
+        deactivate_staff_push_subscription(
+            session, principal.user_id, subscription_id
+        )
+    except StaffPushSubscriptionNotFound as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+        ) from error
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get(
+    "/admin/staff/push/deliveries",
+    response_model=StaffPushDeliveryPageResponse,
+    tags=["staff administration"],
+    description=(
+        "Cola de push del personal: una fila por aviso y navegador, con la "
+        "dirección del dispositivo enmascarada."
+    ),
+)
+def staff_push_deliveries(
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.read"))],
+    session: SessionDependency,
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> StaffPushDeliveryPageResponse:
+    try:
+        board = list_staff_push_deliveries(
+            session, status_filter=status_filter, page=page, page_size=page_size
+        )
+    except StaffPushError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    counts = staff_push_delivery_counts(session)
+    return StaffPushDeliveryPageResponse(
+        enabled=read_staff_push_config().enabled,
+        counts=StaffPushDeliveryCountsResponse(
+            pending=counts.pending,
+            sent=counts.sent,
+            simulated=counts.simulated,
+            failed=counts.failed,
+            active_subscriptions=counts.active_subscriptions,
+        ),
+        items=[_staff_push_delivery_response(item) for item in board.items],
+        total=board.total,
+        page=board.page,
+        page_size=board.page_size,
+        pages=board.pages,
+    )
+
+
+@app.post(
+    "/admin/staff/push/deliveries/send",
+    response_model=StaffPushDeliveryPassResponse,
+    tags=["staff administration"],
+)
+def send_staff_push_deliveries(
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+    session: SessionDependency,
+) -> StaffPushDeliveryPassResponse:
+    result = send_pending_staff_push_deliveries(session)
+    return StaffPushDeliveryPassResponse(
+        attempted=result.attempted,
+        sent=result.sent,
+        simulated=result.simulated,
+        failed=result.failed,
+        deactivated=result.deactivated,
+        remaining=result.remaining,
+        enabled=read_staff_push_config().enabled,
+    )
+
+
+@app.post(
+    "/admin/staff/push/deliveries/{delivery_id}/retry",
+    response_model=StaffPushDeliveryResponse,
+    tags=["staff administration"],
+)
+def retry_staff_push_delivery_endpoint(
+    delivery_id: UUID,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+    session: SessionDependency,
+) -> StaffPushDeliveryResponse:
+    try:
+        item = retry_staff_push_delivery(session, delivery_id)
+    except StaffPushDeliveryNotFound as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+        ) from error
+    except StaffPushDeliveryRetryNotAllowed as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(error)
+        ) from error
+    return _staff_push_delivery_response(item)
 
 
 @app.get(
@@ -10849,6 +11106,41 @@ def _staff_notification_delivery_response(
         ack_status=item.ack_status,
         ack_at=item.ack_at,
         ack_detail=item.ack_detail,
+    )
+
+
+def _staff_push_subscription_response(
+    item: StaffPushSubscriptionItem,
+) -> StaffPushSubscriptionResponse:
+    return StaffPushSubscriptionResponse(
+        id=item.id,
+        device=item.device,
+        user_agent=item.user_agent,
+        active=item.active,
+        created_at=item.created_at,
+        last_seen_at=item.last_seen_at,
+        deactivated_at=item.deactivated_at,
+    )
+
+
+def _staff_push_delivery_response(
+    item: StaffPushDeliveryItem,
+) -> StaffPushDeliveryResponse:
+    return StaffPushDeliveryResponse(
+        id=item.id,
+        notice_id=item.notice_id,
+        user_id=item.user_id,
+        user_name=item.user_name,
+        user_email=item.user_email,
+        kind=item.kind,
+        title=item.title,
+        device=item.device,
+        status=item.status,
+        attempts=item.attempts,
+        error=item.error,
+        created_at=item.created_at,
+        last_attempt_at=item.last_attempt_at,
+        sent_at=item.sent_at,
     )
 
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-31 · Personal: push web de los avisos del panel
+
+- Se añadió el canal Web Push para el personal (ADR-070): `staff_push_subscriptions` guarda el navegador que cada cuenta activó —endpoint único, claves `p256dh`/`auth`, estado y fechas— y `staff_push_deliveries` una entrega por aviso y navegador, escrita junto con el aviso en la misma transacción y con la audiencia congelada. El endpoint se transfiere a la cuenta que lo registre después y un `404`/`410` del servicio de push desactiva la suscripción.
+- El backend firma con VAPID desde `VAPID_PRIVATE_KEY` (32 bytes en base64url) y deriva la pública para el navegador, así que solo se guarda la privada; `VAPID_SUBJECT` acepta `mailto:` o `https:`. Sin clave el canal se anuncia apagado y una clave mal formada solo deja un `warning`. `backend/generate_vapid_keys.py` imprime un par nuevo.
+- La pasada posterior a la respuesta envía la cola cifrada (`aes128gcm`, `ttl` de una hora) con compare-and-set sobre `attempts`; la vista previa simula. **No hay reintento automático**: solo el manual de las `failed`, y el panel puede «Enviar pendientes». Rutas: `GET /admin/staff/push/config`, `GET`/`POST /admin/staff/push/subscriptions`, `DELETE /admin/staff/push/subscriptions/{id}`, `GET /admin/staff/push/deliveries` (`attendance.read`) y `POST /admin/staff/push/deliveries/send` y `…/{id}/retry` (`attendance.manage`), reexpuestas por el BFF de Next.
+- El panel estrena el `service worker` `web/public/sw.js` y la tarjeta «Push del personal» en Equipo: «Activar en este navegador», «Mis navegadores» con el endpoint enmascarado, la cola con conteos, filtros, paginación y reintento, y el aviso que al tocarse abre `/?avisos=1` para la campana. Se documentó en ADR-070, el módulo de Personal, el modelo de datos, el plan de pruebas, la deuda técnica, el README del backend y este changelog.
+- La migración `20261031_0076_staff_push` crea las dos tablas y encadena a `20261031_0074` porque la `20261031_0075` del checkout con Conekta aún no estaba comprometida; al comprometerse debe reencadenarse sobre la 0076. La suite queda en **454 pruebas (449 pasan y 5 de concurrencia se omiten sin `TEST_POSTGRES_URL`)**; las once nuevas están en `test_staff_push_api.py`.
+- Verificado por API contra una copia desechable de la base y el backend aislado en 8010: configuración con clave pública, alta de suscripción (`201`), endpoint inválido (`422`), baja (`204`), aviso que encola una entrega, envío simulado, reintento de una simulada (`409`) y de un id inexistente (`404`), con limpieza total al terminar.
+
 ## 2026-10-31 · Fisioterapia: el consultorio como recurso reservable
 
 - Se añadió `_assert_room_free` en `physio.service`: al crear o mover una cita, si otra cita no cancelada usa el mismo consultorio del catálogo en un intervalo que se cruza, responde `409` («El consultorio ya tiene una cita que se encima con ese horario»), sin importar el fisioterapeuta.

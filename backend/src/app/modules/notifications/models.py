@@ -621,3 +621,131 @@ class MemberPushDeliveryReceipt(SQLModel, table=True):
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
+
+MAX_PUSH_ENDPOINT_CHARS = 500
+MAX_PUSH_KEY_CHARS = 200
+# Web Push speaks to the panel's browser, not to the member app: one row per
+# browser profile that opted in.
+STAFF_PUSH_DELIVERY_STATUSES = ("pending", "sent", "simulated", "failed")
+
+
+class StaffPushSubscription(SQLModel, table=True):
+    """A browser where a panel account opted in to receive pushes.
+
+    The endpoint is the capability URL the push service issued for that
+    installation; it is unique because a browser profile has exactly one live
+    subscription per push service, and registering it again from another account
+    transfers it instead of leaving the previous one receiving the new one's
+    notices. Deactivation is a flag, not a delete, so the delivery history keeps
+    pointing at the device it was sent to. The encryption keys travel with the
+    subscription (``p256dh`` and ``auth``), which is why the panel never needs to
+    send them again after registering.
+    """
+
+    __tablename__ = "staff_push_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("endpoint", name="uq_staff_push_subscriptions_endpoint"),
+        Index("ix_staff_push_subscriptions_user_active", "user_id", "active"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("app_users.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    endpoint: str = Field(max_length=MAX_PUSH_ENDPOINT_CHARS)
+    p256dh: str = Field(max_length=MAX_PUSH_KEY_CHARS)
+    auth: str = Field(max_length=MAX_PUSH_KEY_CHARS)
+    user_agent: str | None = Field(default=None, max_length=255)
+    active: bool = Field(
+        default=True,
+        sa_column=Column(Boolean, nullable=False, server_default=text("true")),
+    )
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+    last_seen_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    deactivated_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+
+
+class StaffPushDelivery(SQLModel, table=True):
+    """One push queued for one staff notice and one browser.
+
+    Written in the same transaction as the notice, one row per active
+    subscription, so a rolled-back change never leaves a push behind and a
+    deduplicated replay never queues twice. ``endpoint`` is a snapshot: the
+    subscription may be retired before the pass runs and the row must still say
+    where the attempt went. There is no automatic retry: a failed row waits for
+    the operator, because a broken push channel must not keep ringing every
+    panel account that receives the resulting alerts.
+    """
+
+    __tablename__ = "staff_push_deliveries"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'sent', 'simulated', 'failed')",
+            name="ck_staff_push_deliveries_status",
+        ),
+        CheckConstraint(
+            "attempts >= 0", name="ck_staff_push_deliveries_attempts"
+        ),
+        UniqueConstraint(
+            "notice_id",
+            "subscription_id",
+            name="uq_staff_push_deliveries_notice_subscription",
+        ),
+        Index(
+            "ix_staff_push_deliveries_status_created",
+            "status",
+            "created_at",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    notice_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("staff_notifications.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    user_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("app_users.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    subscription_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("staff_push_subscriptions.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    endpoint: str = Field(max_length=MAX_PUSH_ENDPOINT_CHARS)
+    status: str = Field(
+        default="pending",
+        sa_column=Column(String(16), nullable=False, server_default=text("'pending'")),
+    )
+    attempts: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default=text("0")),
+    )
+    error: str | None = Field(default=None, max_length=500)
+    last_attempt_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    sent_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )

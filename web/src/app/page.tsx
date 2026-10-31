@@ -267,6 +267,49 @@ type MemberPushDeliveryBoard = {
   quiet_window: { start: string; end: string; active: boolean } | null;
 };
 
+type StaffPushConfig = {
+  enabled: boolean;
+  public_key: string | null;
+  subject: string | null;
+};
+
+type StaffPushSubscription = {
+  id: string;
+  device: string;
+  user_agent: string | null;
+  active: boolean;
+  created_at: string;
+  last_seen_at: string | null;
+  deactivated_at: string | null;
+};
+
+type StaffPushDelivery = {
+  id: string;
+  notice_id: string;
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  kind: string;
+  title: string;
+  device: string;
+  status: NotificationDeliveryStatus;
+  attempts: number;
+  error: string | null;
+  created_at: string;
+  last_attempt_at: string | null;
+  sent_at: string | null;
+};
+
+type StaffPushDeliveryBoard = {
+  enabled: boolean;
+  counts: Record<NotificationDeliveryStatus, number> & { active_subscriptions: number };
+  items: StaffPushDelivery[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+};
+
 type StaffingSettingsEvent = {
   id: string;
   changed_at: string;
@@ -3102,6 +3145,16 @@ function formatDate() {
   return new Intl.DateTimeFormat("es-MX", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date());
 }
 
+// Web Push exige la clave pública VAPID como bytes sin relleno; el backend la
+// entrega en base64url y el navegador no la acepta tal cual.
+function urlBase64ToUint8Array(value: string): Uint8Array<ArrayBuffer> {
+  const padded = `${value}${"=".repeat((4 - (value.length % 4)) % 4)}`.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = window.atob(padded);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
 export default function HomePage() {
   const [activePage, setActivePage] = useState<PageName>("Resumen");
   const [manualRefresh, setManualRefresh] = useState(0);
@@ -3569,6 +3622,20 @@ export default function HomePage() {
     setNotificationsOpen(next);
     if (next) void loadNotices();
   };
+
+  // El service worker abre el panel con `?avisos=1` al tocar una notificación
+  // del push del personal; la bandeja se abre y el parámetro no se queda.
+  useEffect(() => {
+    if (authState !== "signed_in" || !currentUser) return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("avisos") !== "1") return;
+    url.searchParams.delete("avisos");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    setNotificationsOpen(true);
+    void loadNotices();
+    // Solo al iniciar sesión: abrir la bandeja no debe repetirse al recargar datos.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authState]);
 
   const markNoticeRead = async (notice: BackendNotice) => {
     if (notice.read_at) return;
@@ -5087,6 +5154,15 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
   const [pushStatus, setPushStatus] = useState<"" | NotificationDeliveryStatus>("");
   const [pushPage, setPushPage] = useState(1);
   const [pushBusy, setPushBusy] = useState<string | null>(null);
+  const [staffPushConfig, setStaffPushConfig] = useState<StaffPushConfig | null>(null);
+  const [staffPushSubscriptions, setStaffPushSubscriptions] = useState<StaffPushSubscription[] | null>(null);
+  const [staffPushSubscriptionsError, setStaffPushSubscriptionsError] = useState("");
+  const [staffPushBoard, setStaffPushBoard] = useState<StaffPushDeliveryBoard | null>(null);
+  const [staffPushError, setStaffPushError] = useState("");
+  const [staffPushStatus, setStaffPushStatus] = useState<"" | NotificationDeliveryStatus>("");
+  const [staffPushPage, setStaffPushPage] = useState(1);
+  const [staffPushBusy, setStaffPushBusy] = useState<string | null>(null);
+  const [staffPushRefresh, setStaffPushRefresh] = useState(0);
   const refreshStaffing = () => { setRequestsRefresh((value) => value + 1); onIdentityChanged(); };
   const pendingMarks = useRef(new Map<string, string>());
   const [clockNow, setClockNow] = useState(() => Date.now());
@@ -5218,6 +5294,52 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
     })();
     return () => { active = false; };
   }, [canViewAttendance, pushStatus, pushPage, requestsRefresh]);
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const [configResponse, listResponse] = await Promise.all([
+          fetch("/api/admin/staff/push/config", { cache: "no-store" }),
+          fetch("/api/admin/staff/push/subscriptions", { cache: "no-store" }),
+        ]);
+        if (!active) return;
+        if (configResponse.ok) {
+          setStaffPushConfig(await configResponse.json() as StaffPushConfig);
+        }
+        if (!listResponse.ok) {
+          setStaffPushSubscriptionsError("No se pudieron cargar tus navegadores.");
+          return;
+        }
+        setStaffPushSubscriptions(await listResponse.json() as StaffPushSubscription[]);
+        setStaffPushSubscriptionsError("");
+      } catch {
+        if (active) setStaffPushSubscriptionsError("No se pudieron cargar tus navegadores.");
+      }
+    })();
+    return () => { active = false; };
+  }, [staffPushRefresh]);
+  useEffect(() => {
+    if (!canViewAttendance) return;
+    let active = true;
+    void (async () => {
+      try {
+        const query = new URLSearchParams({ page: String(staffPushPage) });
+        if (staffPushStatus) query.set("status", staffPushStatus);
+        const response = await fetch(`/api/admin/staff/push/deliveries?${query.toString()}`, { cache: "no-store" });
+        if (!active) return;
+        if (!response.ok) {
+          setStaffPushError("No se pudo cargar la cola de push del personal.");
+          return;
+        }
+        const board = await response.json() as StaffPushDeliveryBoard;
+        setStaffPushBoard(board);
+        setStaffPushError("");
+      } catch {
+        if (active) setStaffPushError("No se pudo cargar la cola de push del personal.");
+      }
+    })();
+    return () => { active = false; };
+  }, [canViewAttendance, staffPushStatus, staffPushPage, staffPushRefresh, requestsRefresh]);
   const sendQueuedAttendanceEmails = async () => {
     setDeliveryBusy("send");
     try {
@@ -5310,6 +5432,111 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
       onToast("No se pudo conectar con el backend.");
     } finally {
       setPushBusy(null);
+    }
+  };
+  const activateStaffPush = async () => {
+    if (typeof window === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+      onToast("Este navegador no admite notificaciones push.");
+      return;
+    }
+    const config = staffPushConfig;
+    if (!config?.enabled || !config.public_key) {
+      onToast("El push del personal no está configurado: falta la clave VAPID en el backend.");
+      return;
+    }
+    if (typeof Notification === "undefined") {
+      onToast("Este navegador no admite notificaciones.");
+      return;
+    }
+    setStaffPushBusy("activate");
+    try {
+      const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+      if (permission !== "granted") {
+        onToast("El navegador no dio permiso para mostrar notificaciones.");
+        return;
+      }
+      const registration = await navigator.serviceWorker.register("/sw.js");
+      const existing = await registration.pushManager.getSubscription();
+      const subscription = existing ?? await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(config.public_key),
+      });
+      const serialized = subscription.toJSON() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
+      const response = await fetch("/api/admin/staff/push/subscriptions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoint: serialized.endpoint ?? subscription.endpoint,
+          keys: { p256dh: serialized.keys?.p256dh ?? "", auth: serialized.keys?.auth ?? "" },
+          user_agent: navigator.userAgent.slice(0, 255),
+        }),
+      });
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      if (!response.ok) {
+        onToast(payload.detail || "No se pudo registrar este navegador.");
+        return;
+      }
+      onToast("Este navegador recibirá los avisos del panel.");
+      setStaffPushRefresh((value) => value + 1);
+    } catch (error) {
+      onToast(error instanceof Error && error.message ? `No se pudo activar el push: ${error.message}` : "No se pudo activar el push en este navegador.");
+    } finally {
+      setStaffPushBusy(null);
+    }
+  };
+  const deactivateStaffPush = async (subscription: StaffPushSubscription) => {
+    setStaffPushBusy(subscription.id);
+    try {
+      const response = await fetch(`/api/admin/staff/push/subscriptions/${encodeURIComponent(subscription.id)}`, { method: "DELETE" });
+      if (!response.ok && response.status !== 404) {
+        const payload = await response.json().catch(() => ({})) as { detail?: string };
+        onToast(payload.detail || "No se pudo desactivar ese navegador.");
+        return;
+      }
+      onToast("El navegador dejará de recibir los avisos del panel.");
+      setStaffPushRefresh((value) => value + 1);
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setStaffPushBusy(null);
+    }
+  };
+  const sendQueuedStaffPushes = async () => {
+    setStaffPushBusy("send");
+    try {
+      const response = await fetch("/api/admin/staff/push/deliveries/send", { method: "POST" });
+      const payload = await response.json().catch(() => ({})) as { detail?: string; enabled?: boolean; attempted?: number; sent?: number; simulated?: number; failed?: number; deactivated?: number };
+      if (!response.ok) {
+        onToast(payload.detail || "No se pudo enviar la cola del personal.");
+        return;
+      }
+      if (payload.enabled === false) onToast("El push del personal está apagado: faltan las claves VAPID.");
+      else if ((payload.attempted ?? 0) === 0) onToast("No hay avisos pendientes de push.");
+      else onToast(`${payload.attempted} intento(s): ${payload.sent} enviado(s), ${payload.simulated} simulado(s), ${payload.failed} con error${(payload.deactivated ?? 0) > 0 ? `, ${payload.deactivated} navegador(es) retirado(s)` : ""}.`);
+      setStaffPushRefresh((value) => value + 1);
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setStaffPushBusy(null);
+    }
+  };
+  const retryStaffPush = async (delivery: StaffPushDelivery) => {
+    setStaffPushBusy(delivery.id);
+    try {
+      const response = await fetch(`/api/admin/staff/push/deliveries/${encodeURIComponent(delivery.id)}/retry`, { method: "POST" });
+      const payload = await response.json().catch(() => ({})) as Partial<StaffPushDelivery> & { detail?: string };
+      if (!response.ok) {
+        onToast(payload.detail || "No se pudo reintentar el push.");
+        return;
+      }
+      if (payload.status === "sent") onToast(`Push enviado a ${delivery.user_name}.`);
+      else if (payload.status === "simulated") onToast("El push se simuló: la vista previa no contacta al servicio de notificaciones.");
+      else onToast(`El intento volvió a fallar: ${payload.error ?? "sin detalle"}`);
+      setStaffPushRefresh((value) => value + 1);
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setStaffPushBusy(null);
     }
   };
   const saveAttendancePolicy = async () => {
@@ -5707,6 +5934,41 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
               {pushBoard !== null && pushBoard.pages > 1 && <span className="member-pagination"><span>Página {pushBoard.page} de {pushBoard.pages}</span><button type="button" aria-label="Página anterior" disabled={pushBoard.page <= 1} onClick={() => setPushPage(Math.max(1, pushBoard.page - 1))}>‹</button><button type="button" aria-label="Página siguiente" disabled={pushBoard.page >= pushBoard.pages} onClick={() => setPushPage(Math.min(pushBoard.pages, pushBoard.page + 1))}>›</button></span>}
             </div>
           </section>}
+          <section className="panel full-panel">
+            <div className="panel-header access-list-heading">
+              <div><p className="section-kicker">PUSH DEL PERSONAL</p><h2>Avisos en el navegador</h2></div>
+              <div className="staff-row-actions">
+                {canViewAttendance && <label className="table-select"><span>Estado</span><select value={staffPushStatus} onChange={(event) => { setStaffPushStatus(event.target.value as "" | NotificationDeliveryStatus); setStaffPushPage(1); }}><option value="">Todos</option><option value="pending">En cola</option><option value="sent">Enviados</option><option value="simulated">Simulados</option><option value="failed">Con error</option></select></label>}
+                <button className="button button-primary" disabled={staffPushBusy !== null || staffPushConfig?.enabled === false} onClick={() => void activateStaffPush()}><Bell size={16} />{staffPushBusy === "activate" ? "Activando…" : "Activar en este navegador"}</button>
+                {canManageAttendance && <button className="button button-secondary" disabled={staffPushBusy !== null || staffPushBoard?.enabled === false} onClick={() => void sendQueuedStaffPushes()}>{staffPushBusy === "send" ? "Enviando…" : "Enviar pendientes"}</button>}
+              </div>
+            </div>
+            <p className="panel-hint">Los avisos que ya llegan a la campana pueden sonar también en el navegador donde trabajas. Al activarlo, este navegador queda registrado con tu cuenta y recibe cada aviso nuevo aunque el panel esté en otra pestaña; si otra cuenta lo registra después, el navegador deja de recibir los avisos de la primera. En la vista previa el envío queda marcado como simulado.</p>
+            <p className="panel-hint">El push del personal no reintenta solo: si el servicio de notificaciones falla, la entrega espera a que un operador la reintente, porque un canal roto avisaría justo a quienes operan el panel. Un navegador que el servicio reporta como dado de baja se retira y deja de recibir avisos. La dirección del dispositivo se muestra enmascarada.</p>
+            <div className="table-toolbar">
+              <span className={`status-badge ${staffPushConfig === null ? "status-neutral" : staffPushConfig.enabled ? "status-good" : "status-bad"}`}><i />{staffPushConfig === null ? "Consultando…" : staffPushConfig.enabled ? "Push activo" : "Push sin configurar"}</span>
+              {staffPushBoard !== null && <span className="table-hint">{staffPushBoard.counts.active_subscriptions} navegador(es) activos · {staffPushBoard.counts.pending} en cola · {staffPushBoard.counts.sent} enviados · {staffPushBoard.counts.simulated} simulados · {staffPushBoard.counts.failed} con error</span>}
+            </div>
+            <div className="table-scroll"><table className="data-table"><thead><tr><th>MIS NAVEGADORES</th><th>ESTADO</th><th>ALTA</th><th>ÚLTIMA ACTIVIDAD</th><th /></tr></thead><tbody>
+              {staffPushSubscriptionsError ? <tr><td colSpan={5} className="empty-row">{staffPushSubscriptionsError}</td></tr>
+                : staffPushSubscriptions === null ? <tr><td colSpan={5} className="empty-row">Cargando tus navegadores…</td></tr>
+                : staffPushSubscriptions.length === 0 ? <tr><td colSpan={5} className="empty-row">Ningún navegador registrado. Usa «Activar en este navegador».</td></tr>
+                : staffPushSubscriptions.map((subscription) => <tr key={subscription.id}><td><div className="person-cell"><span className="person-avatar blue"><Bell size={15} /></span><span><strong>{subscription.device}</strong><small>{subscription.user_agent ?? "Navegador sin identificar"}</small></span></div></td><td><StatusBadge state={subscription.active ? "Activo" : "Inactivo"} /></td><td className="time-cell">{formatSessionTime(subscription.created_at)}</td><td className="time-cell">{subscription.last_seen_at ? formatSessionTime(subscription.last_seen_at) : "—"}</td><td>{subscription.active ? <button className="button button-secondary" disabled={staffPushBusy !== null} onClick={() => void deactivateStaffPush(subscription)}>{staffPushBusy === subscription.id ? "Desactivando…" : "Desactivar"}</button> : null}</td></tr>)}
+            </tbody></table></div>
+            {canViewAttendance && <>
+              <div className="table-toolbar"><span className="table-hint">Cola de entregas: una fila por aviso y navegador</span></div>
+              <div className="table-scroll"><table className="data-table"><thead><tr><th>DESTINATARIO</th><th>AVISO</th><th>DISPOSITIVO</th><th>ESTADO</th><th>INTENTOS</th><th>ÚLTIMO INTENTO</th><th>DETALLE</th><th /></tr></thead><tbody>
+                {staffPushError ? <tr><td colSpan={8} className="empty-row">{staffPushError}</td></tr>
+                  : staffPushBoard === null ? <tr><td colSpan={8} className="empty-row">Cargando la cola…</td></tr>
+                  : staffPushBoard.items.length === 0 ? <tr><td colSpan={8} className="empty-row">{staffPushStatus ? "No hay entregas en ese estado." : "Todavía no hay push del personal encolados."}</td></tr>
+                  : staffPushBoard.items.map((delivery) => <tr key={delivery.id}><td><div className="person-cell"><span className="person-avatar lavender">{delivery.user_name.slice(0, 1).toUpperCase()}</span><span><strong>{delivery.user_name}</strong><small>{delivery.user_email || "Cuenta del panel"}</small></span></div></td><td><strong>{delivery.title}</strong><small className="staff-request-current">{STAFF_NOTIFICATION_KIND_LABELS[delivery.kind] ?? delivery.kind}</small></td><td className="time-cell">{delivery.device}</td><td><StatusBadge state={NOTIFICATION_DELIVERY_LABELS[delivery.status]} /></td><td className="time-cell">{delivery.attempts}</td><td className="time-cell">{delivery.last_attempt_at ? formatSessionTime(delivery.last_attempt_at) : "—"}</td><td>{delivery.error ? <small className="request-overdue">{delivery.error}</small> : delivery.sent_at ? <span className="time-cell">{formatSessionTime(delivery.sent_at)}</span> : <span className="table-hint">en espera</span>}</td><td>{delivery.status === "failed" && canManageAttendance ? <button className="button button-secondary" disabled={staffPushBusy !== null} onClick={() => void retryStaffPush(delivery)}>{staffPushBusy === delivery.id ? "Reintentando…" : "Reintentar"}</button> : null}</td></tr>)}
+              </tbody></table></div>
+              <div className="table-bottom">
+                <span>{staffPushBoard?.total ?? 0} entregas registradas</span>
+                {staffPushBoard !== null && staffPushBoard.pages > 1 && <span className="member-pagination"><span>Página {staffPushBoard.page} de {staffPushBoard.pages}</span><button type="button" aria-label="Página anterior" disabled={staffPushBoard.page <= 1} onClick={() => setStaffPushPage(Math.max(1, staffPushBoard.page - 1))}>‹</button><button type="button" aria-label="Página siguiente" disabled={staffPushBoard.page >= staffPushBoard.pages} onClick={() => setStaffPushPage(Math.min(staffPushBoard.pages, staffPushBoard.page + 1))}>›</button></span>}
+              </div>
+            </>}
+          </section>
           <section className="panel full-panel"><div className="panel-header access-list-heading"><div><p className="section-kicker">DIRECTORIO DE PERSONAL</p><h2>Colaboradores</h2></div>{canManageStaff && <button className="button button-secondary" onClick={() => setNewEmployeeOpen(true)}><Plus size={16} />Nuevo colaborador</button>}</div><div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>PUESTO</th><th>HORARIO</th><th>ESTADO</th><th /></tr></thead><tbody>{loading ? <tr><td colSpan={5} className="empty-row">Cargando directorio…</td></tr> : error ? <tr><td colSpan={5} className="empty-row">{error}</td></tr> : employeeList.length === 0 ? <tr><td colSpan={5} className="empty-row">No hay colaboradores registrados.</td></tr> : employeeList.map((employee, index) => { const fullName = `${employee.first_name} ${employee.last_name}`; const initials = `${employee.first_name[0] ?? ""}${employee.last_name[0] ?? ""}`.toUpperCase(); const state = employee.status === "active" ? "Activo" : employee.status === "inactive" ? "Inactivo" : "Baja"; const color = ["mint", "peach", "lavender", "blue", "yellow"][index % 5]; return <tr key={employee.id}><td><div className="person-cell"><span className={`person-avatar ${color}`}>{initials}</span><span><strong>{fullName}</strong><small>{employee.email ?? employee.employee_number}</small></span></div></td><td>{employee.job_title}</td><td className="time-cell">{(() => { const shift = nextShiftFor(employee.id); return shift ? `${shiftDayLabel(shift.starts_at)} · ${shiftClock(shift.starts_at)}–${shiftClock(shift.ends_at)}` : "Sin turno"; })()}</td><td><StatusBadge state={state} /></td><td><button className="icon-button row-menu" aria-label={`Opciones de ${fullName}`}><MoreHorizontal size={17} /></button></td></tr>; })}</tbody></table></div><div className="table-bottom"><span>{employeeList.length} colaboradores registrados</span><span>Horario según los turnos del backend</span></div></section>
           {canViewAttendance && <section className="panel full-panel">
             <div className="panel-header access-list-heading"><div><p className="section-kicker">TURNOS DEL PERSONAL</p><h2>Turnos programados</h2></div>{canManageAttendance && <button className="button button-secondary" onClick={() => setNewShiftOpen(true)}><Plus size={16} />Programar turno</button>}</div>

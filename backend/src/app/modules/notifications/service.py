@@ -52,6 +52,8 @@ from app.modules.notifications.models import (
     MemberPushToken,
     StaffNotification,
     StaffNotificationDelivery,
+    StaffPushDelivery,
+    StaffPushSubscription,
     utc_now,
 )
 from app.modules.notifications.preferences import is_push_enabled
@@ -276,7 +278,42 @@ def create_staff_notification(
     stored = _append(session, notice, StaffNotification)
     if stored is notice:
         _enqueue_staff_notification_email(session, notice)
+        _enqueue_staff_notification_push(session, notice)
     return stored
+
+
+def _enqueue_staff_notification_push(
+    session: Session, notice: StaffNotification
+) -> list[StaffPushDelivery]:
+    """One row per browser the account opted in, written with the notice.
+
+    The account's inbox is the source of truth; this only makes the phone ring
+    on the device that asked for it. Browsers registered after this point do not
+    receive the notice, because the audience is the one that existed when the
+    event happened.
+    """
+
+    user = session.get(AppUser, notice.user_id)
+    if user is None or user.status != "active":
+        return []
+    subscriptions = session.exec(
+        select(StaffPushSubscription).where(
+            StaffPushSubscription.user_id == notice.user_id,
+            StaffPushSubscription.active.is_(True),
+        )
+    ).all()
+    deliveries = [
+        StaffPushDelivery(
+            notice_id=notice.id,
+            user_id=notice.user_id,
+            subscription_id=subscription.id,
+            endpoint=subscription.endpoint,
+        )
+        for subscription in subscriptions
+    ]
+    for delivery in deliveries:
+        session.add(delivery)
+    return deliveries
 
 
 def new_message_id() -> str:
