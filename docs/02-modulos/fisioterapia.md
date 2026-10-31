@@ -68,9 +68,9 @@ Tres permisos nuevos, que llevan la matriz a 36: `physio.read` (consultar catál
 3. Mover valida de nuevo el traslape del fisioterapeuta, la vigencia del paquete y la disponibilidad del consultorio destino; cancelar libera el horario y la sala. En ambos casos el socio recibe el aviso correspondiente (incremento 2).
 
 ### Flujo de cierre del día
-1. Al terminar la jornada, recepción pulsa «Cerrar el día».
+1. Al terminar la jornada, recepción puede pulsar «Cerrar el día»; si no lo hace, el cron del servidor cierra el día anterior a las `00:30` (ADR-073).
 2. Las citas que ya terminaron y nadie marcó se cierran como `no_show`.
-3. El cierre no cobra ni descuenta nada; solo deja la agenda limpia y el historial completo.
+3. El cierre no cobra ni descuenta nada; solo deja la agenda limpia y el historial completo. Una asistencia real que nadie marcó todavía se corrige dentro de la ventana de 24 horas después del fin.
 
 ### Flujo alterno: extender o anular un paquete (gerencia)
 1. El socio pide más tiempo porque estuvo enfermo, o recepción vendió un paquete por error y gerencia debe corregirlo.
@@ -190,7 +190,7 @@ Veintiuna rutas bajo `web/src/app/api/admin/physio/**` —una por recurso y acci
 
 - La agenda se consulta por día y por fisioterapeuta: índices por `starts_at` y `(therapist_employee_id, starts_at)`.
 - El saldo del paquete se resuelve por socio con índice `(member_id, valid_until)`; el volumen esperado es de decenas de citas al día.
-- El cálculo de vigencia y saldo se hace en la lectura, sin trabajos programados.
+- El cálculo de vigencia y saldo se hace en la lectura, sin trabajos programados; el único trabajo del módulo es el cierre diario por cron (ADR-073).
 - El cierre del día opera sobre una fecha concreta y un máximo acotado de citas, sin barridos globales.
 - El reporte se calcula en una pasada por las citas del periodo, con tres agrupaciones en memoria (fisioterapeuta, servicio, hora) y una consulta de ventas y devoluciones; no guarda agregados ni necesita migración.
 - El recordatorio de la cita se escribe al leer la bandeja, con una consulta acotada a las citas del socio en las próximas 24 horas.
@@ -212,7 +212,7 @@ Los cinco salen del reporte del consultorio:
 - marcar «Asistió» en una sesión suelta crea una venta de servicio en el turno abierto con la forma de pago elegida
 - marcar «No asistió» no crea venta ni descuenta crédito
 - repetir la marca no cobra ni descuenta dos veces, y la corrección dentro de la ventana revierte el movimiento
-- cerrar el día deja las citas vencidas en `no_show` sin tocar saldos
+- cerrar el día deja las citas vencidas en `no_show` sin tocar saldos, a mano o por el cron del día siguiente, y repetir la corrida no cierra nada nuevo
 - el socio ve su saldo y su próxima cita en la app, sin botones de reserva, y recibe el aviso de la cita y el recordatorio del día anterior
 - recepción no ve las acciones de ajuste del paquete y el backend responde `403` si intenta extenderlo o anularlo; gerencia sí, y el ajuste queda con su motivo y su actor
 - anular un paquete cancela sus citas futuras y avisa al socio sin mover dinero; extenderlo no altera créditos ni la venta
@@ -229,7 +229,9 @@ Los cinco salen del reporte del consultorio:
 
 **Consultorio reservable implementado el 2026-10-31 (ADR-069).** El consultorio del catálogo dejó de ser un dato descriptivo y pasó a validarse como recurso: al crear o mover una cita, el servicio rechaza con `409` si otra cita no cancelada usa la misma sala en un intervalo que se cruza, sin importar el fisioterapeuta. La comprobación lee la fila del consultorio con `with_for_update()` para serializar dos agendamientos simultáneos en PostgreSQL (no-op en SQLite) y se aplica al consultorio que se va a guardar, excluyendo la propia cita al moverla. Cancelar libera la sala; las salas de texto libre sin `room_id` quedan fuera. No hay migración ni cambio de contrato: la regla vive en `physio.service` y reutiliza el `409` que ya traducía `PhysioSlotConflict`. La prueba `test_rooms_cannot_double_book_the_same_hour` cubre el alta con choque entre dos fisioterapeutas, otra sala y otro horario permitidos, el movimiento a una sala ocupada y a otra libre, conservar la sala al mover la hora, la liberación al cancelar y la sala de texto libre.
 
-Lo que sigue sin cubrirse: la devolución del paquete y la reserva desde la app siguen fuera de alcance; el consultorio no declara capacidad ni horario propio, la concurrencia de la sala se comprueba con `tests/test_physio_rooms_postgres.py` y la del fisioterapeuta con `tests/test_physio_therapist_postgres.py`, y el reporte sigue estimando la ocupación por fisioterapeuta, no por sala.
+**Cierre programado implementado el 2026-10-31 (ADR-073).** `backend/close_physio_day.py` llama al mismo `close_physio_day` del botón «Cerrar día» desde el cron: cierra por defecto el día anterior en la zona del club, acepta `--date AAAA-MM-DD` para ponerse al día y no mueve dinero ni saldo. `ops_cron.py` lo programa como quinta entrada a las `00:30` (`--physio-close-at`) con la bitácora `physio-close.log`. Solo pasa a `no_show` lo que sigue `scheduled` y ya terminó; la corrección a `attended` sigue disponible dentro de la ventana de 24 horas. Sin migración ni cambio de contrato.
+
+Lo que sigue sin cubrirse: la devolución del paquete y la reserva desde la app siguen fuera de alcance; el consultorio no declara capacidad ni horario propio, la concurrencia de la sala se comprueba con `tests/test_physio_rooms_postgres.py` y la del fisioterapeuta con `tests/test_physio_therapist_postgres.py`, el cierre programado depende del cron del host y no avisa si se detiene, y el reporte sigue estimando la ocupación por fisioterapeuta, no por sala.
 
 ### Incrementos previstos
 

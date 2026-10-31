@@ -1,10 +1,10 @@
 """Install the cron entries that keep the operations data fresh.
 
 The application has no scheduler: the maintenance scripts run from the host's
-cron (ADR-058, ADR-062, ADR-071). This script renders the four entries as one
-block delimited by markers, so reinstalling after moving the app, changing the
-database password or adjusting the schedule replaces the old block instead of
-duplicating lines, and unrelated crontab entries are left untouched.
+cron (ADR-058, ADR-062, ADR-071, ADR-073). This script renders the five entries
+as one block delimited by markers, so reinstalling after moving the app,
+changing the database password or adjusting the schedule replaces the old block
+instead of duplicating lines, and unrelated crontab entries are left untouched.
 
     DATABASE_URL=postgresql+psycopg://... .venv/bin/python ops_cron.py --print
     DATABASE_URL=postgresql+psycopg://... .venv/bin/python ops_cron.py --install
@@ -29,6 +29,7 @@ BEGIN_MARKER = "# BEGIN gimnasio-ops"
 END_MARKER = "# END gimnasio-ops"
 
 DEFAULT_DAILY_AT = "03:15"
+DEFAULT_PHYSIO_CLOSE_AT = "00:30"
 DEFAULT_RECEIPTS_EVERY = 30
 DEFAULT_STAFF_PUSH_EVERY = 15
 DEFAULT_PUSH_LIMIT = 200
@@ -45,6 +46,7 @@ _SCRIPTS = (
     "purge_email_receipts.py",
     "sync_push_receipts.py",
     "flush_staff_push.py",
+    "close_physio_day.py",
 )
 
 
@@ -59,6 +61,7 @@ class OpsCronConfig:
     database_url: str
     log_dir: Path
     daily_at: str = DEFAULT_DAILY_AT
+    physio_close_at: str = DEFAULT_PHYSIO_CLOSE_AT
     receipts_every: int = DEFAULT_RECEIPTS_EVERY
     staff_push_every: int = DEFAULT_STAFF_PUSH_EVERY
     push_limit: int = DEFAULT_PUSH_LIMIT
@@ -97,7 +100,7 @@ def add_minutes(hour: int, minute: int, offset: int) -> tuple[int, int]:
 
 
 def build_block(config: OpsCronConfig) -> str:
-    """Render the marked crontab block for the four maintenance jobs."""
+    """Render the marked crontab block for the five maintenance jobs."""
 
     database_url = config.database_url.strip()
     if not database_url:
@@ -109,6 +112,7 @@ def build_block(config: OpsCronConfig) -> str:
 
     hour, minute = parse_daily_at(config.daily_at)
     second_hour, second_minute = add_minutes(hour, minute, PURGE_STAGGER_MINUTES)
+    close_hour, close_minute = parse_daily_at(config.physio_close_at)
     receipts = receipts_schedule(config.receipts_every)
     staff_push = staff_push_schedule(config.staff_push_every)
 
@@ -125,8 +129,13 @@ def build_block(config: OpsCronConfig) -> str:
         (
             "# Generado por backend/ops_cron.py: acuses cada "
             f"{config.receipts_every} min, push del personal cada "
-            f"{config.staff_push_every} min y purgas diarias a las "
+            f"{config.staff_push_every} min, cierre de fisioterapia a las "
+            f"{close_hour:02d}:{close_minute:02d} y purgas diarias a las "
             f"{hour:02d}:{minute:02d} y {second_hour:02d}:{second_minute:02d}."
+        ),
+        (
+            f"{close_minute} {close_hour} * * * "
+            f"{command('close_physio_day.py', '', 'physio-close.log')}"
         ),
         f"{minute} {hour} * * * {command('purge_access_data.py', '', 'purge-access.log')}",
         (
@@ -235,6 +244,7 @@ def _config_from_args(args: argparse.Namespace) -> OpsCronConfig:
         database_url=database_url,
         log_dir=Path(args.log_dir) if args.log_dir else app_dir / "logs",
         daily_at=args.daily_at,
+        physio_close_at=args.physio_close_at,
         receipts_every=args.receipts_every,
         staff_push_every=args.staff_push_every,
         push_limit=args.limit,
@@ -245,8 +255,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Genera o instala el bloque de cron de las tareas de operación: "
-            "purga de accesos, purga de acuses de correo, consulta de acuses "
-            "del push y envío de la cola del push web del personal."
+            "cierre del día de fisioterapia, purga de accesos, purga de acuses "
+            "de correo, consulta de acuses del push y envío de la cola del "
+            "push web del personal."
         )
     )
     action = parser.add_mutually_exclusive_group()
@@ -290,6 +301,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--daily-at",
         default=DEFAULT_DAILY_AT,
         help=f"hora local de la primera purga (por defecto {DEFAULT_DAILY_AT})",
+    )
+    parser.add_argument(
+        "--physio-close-at",
+        default=DEFAULT_PHYSIO_CLOSE_AT,
+        help=(
+            "hora local del cierre del día de fisioterapia "
+            f"(por defecto {DEFAULT_PHYSIO_CLOSE_AT})"
+        ),
     )
     parser.add_argument(
         "--receipts-every",
@@ -353,8 +372,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(
         f"Bloque instalado en el crontab: acuses cada {config.receipts_every} min, "
-        f"push del personal cada {config.staff_push_every} min y purgas diarias "
-        f"desde las {config.daily_at}. Revisa con: crontab -l"
+        f"push del personal cada {config.staff_push_every} min, cierre de "
+        f"fisioterapia a las {config.physio_close_at} y purgas diarias desde "
+        f"las {config.daily_at}. Revisa con: crontab -l"
     )
     return 0
 

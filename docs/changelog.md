@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-31 · Fisioterapia: cierre programado del día (ADR-073)
+
+- `backend/close_physio_day.py` aplica por cron el mismo cierre del botón «Cerrar día» (`close_physio_day` en `physio.service`): marca `no_show` solo las citas `scheduled` que ya terminaron, no cobra ni descuenta créditos y deja `marked_by` nulo. Cierra un día por corrida (el anterior por defecto en la zona del club, `--date AAAA-MM-DD` para otro), acepta `--preview` sobre `gym_preview.db` y `--database-url`, y sale con código 2 sin URL y con 1 si la base no responde.
+- `ops_cron.py` pasó a cinco entradas: el cierre corre a las `00:30` por defecto (`--physio-close-at`, `HH:MM`) con bitácora `physio-close.log`, y `--install` exige también el script nuevo. La corrección de asistencia conserva su ventana de 24 horas. Se actualizaron ADR-039, ADR-063, la ficha de fisioterapia, la guía de despliegue, la deuda, el plan de pruebas, TRASPASO y el README del backend; sin migración ni cambio de contrato.
+- Suite backend completa: **517 pruebas, 509 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL` (`test_close_physio_day.py` suma 8 y la cobertura del cron pasa a 32).
+
 ## 2026-10-31 · Fisioterapia: bloqueo del fisioterapeuta al agendar (ADR-072)
 
 - `_assert_slot_free` bloquea la fila del empleado con `SELECT ... FOR UPDATE` antes de comparar intervalos, así que dos recepcionistas que agendan horas parcialmente encimadas del mismo fisioterapeuta se serializan en PostgreSQL, con o sin consultorio de catálogo; el alta y el movimiento pasan por la misma comprobación. Sin migración ni cambio de contrato.
