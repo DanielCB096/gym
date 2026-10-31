@@ -204,6 +204,61 @@ Cubierto por `tests/test_member_notifications_api.py` (2), `tests/test_staff_not
 
 El **push del personal** (ADR-070) usa Web Push, no Expo: el navegador del panel pide la clave pública con `GET /admin/staff/push/config` —derivada de `VAPID_PRIVATE_KEY`, así que solo se guarda la privada— y se registra con `POST /admin/staff/push/subscriptions`; cada aviso del personal encola una entrega por navegador activo en `staff_push_deliveries`, escrita junto con el aviso. La pasada de respuesta envía cifrada (`aes128gcm`, `ttl` de una hora) con `VAPID_SUBJECT` (`mailto:` o `https:`; por defecto `mailto:avisos@centro-fit.local`); sin clave el canal se anuncia apagado y una clave mal formada solo deja un `warning`. Genera un par con `python generate_vapid_keys.py` y guarda únicamente la línea `VAPID_PRIVATE_KEY`. `GET /admin/staff/push/deliveries` (`attendance.read`) lista la cola con el dispositivo enmascarado y `POST /admin/staff/push/deliveries/send` y `…/{id}/retry` (`attendance.manage`) envían o reintentan a mano: no hay reintento automático, y un `404`/`410` del servicio de push desactiva la suscripción. La vista previa simula la entrega. Cubierto por `tests/test_staff_push_api.py` (11).
 
+## Prueba E2E local de Conekta sandbox
+
+Este entorno desechable permite probar el checkout y recibir un webhook real de sandbox sin publicar el resto de la API. Requiere Docker Desktop y una cuenta Conekta con acceso al modo de pruebas. Crear la cuenta y aceptar sus condiciones debe hacerlo el responsable del gimnasio; no compartas credenciales por chat.
+
+1. En la raíz del repositorio, crea `.env` a partir de `.env.example` solo si aún no existe:
+
+   ```powershell
+   if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+   New-Item -ItemType Directory -Force backend\.secrets
+   ```
+
+2. Desde el modo de pruebas de Conekta, copia la API key sandbox a `CONEKTA_SANDBOX_API_KEY` en `.env`; descarga la llave pública RSA del webhook sandbox y guárdala en `backend/.secrets/conekta-webhook-public.pem`. Configura `CONEKTA_WEBHOOK_PUBLIC_KEY_FILE_HOST=backend/.secrets/conekta-webhook-public.pem`. No pegues la llave en la terminal ni en Git. Las URL de éxito/fracaso del ejemplo son HTTPS y no activan ni confirman el pago.
+3. Inicia el backend y su PostgreSQL aislado:
+
+   ```powershell
+   docker compose -f compose.conekta-sandbox.yml up --build -d api
+   docker compose -f compose.conekta-sandbox.yml ps
+   ```
+
+   El esquema se migra automáticamente y la API solo se publica en `127.0.0.1:8000`. Este Compose no inyecta las otras credenciales de `.env` (por ejemplo PAC, SMTP o almacenamiento).
+4. En una segunda terminal inicia el túnel temporal gratuito:
+
+   ```powershell
+   docker compose -f compose.conekta-sandbox.yml --profile tunnel up cloudflared
+   ```
+
+   Copia el host `https://…trycloudflare.com` que imprime Cloudflare. El túnel llega a un relay que solo admite `POST /webhooks/conekta/membership`; no expone `/docs`, administración ni el resto de la API. En el panel Conekta sandbox registra `https://…trycloudflare.com/webhooks/conekta/membership` y selecciona los eventos de pago `order.paid`, `charge.paid` y `charge.created` disponibles. Asegúrate de que la llave pública en el archivo corresponde a esa configuración.
+5. En una tercera terminal crea una orden de prueba de $10 MXN:
+
+   ```powershell
+   docker compose -f compose.conekta-sandbox.yml exec api python scripts/create_conekta_sandbox_checkout.py --amount-cents 1000
+   ```
+
+   Abre `checkout_url` y completa el flujo únicamente con un método de prueba publicado por Conekta. La creación del checkout no carga una tarjeta ni hace un cargo real. Si la llamada de creación falla, el script imprime `payment_attempt_id`; reintenta sustituyendo el ejemplo por ese UUID:
+
+   ```powershell
+   $attemptId = "pega-aqui-el-UUID"
+   docker compose -f compose.conekta-sandbox.yml exec api python scripts/create_conekta_sandbox_checkout.py --resume-attempt $attemptId
+   ```
+6. Después de volver del checkout, consulta el resultado con el ID impreso:
+
+   ```powershell
+   $attemptId = "pega-aqui-el-UUID"
+   docker compose -f compose.conekta-sandbox.yml exec api python scripts/create_conekta_sandbox_checkout.py --status $attemptId
+   ```
+
+   El resultado esperado de un pago aprobado es `payment_attempt_status=succeeded`, `membership_status=active` y `confirmed_payment=yes`. Un rechazo debe dejar `failed`, `pending_payment` y `confirmed_payment=no`.
+7. Detén el túnel con `Ctrl+C` y apaga el stack:
+
+   ```powershell
+   docker compose -f compose.conekta-sandbox.yml down
+   ```
+
+   Para borrar también **la base desechable de sandbox y sus datos de prueba**, añade `-v`. El host temporal de Cloudflare cambia al iniciar un túnel nuevo. Este procedimiento no es para producción.
+
 ## Vista previa local
 
 Para explorar el flujo actual en Swagger sin PostgreSQL ni credenciales de pasarela, desde PowerShell en `backend/`:
@@ -216,7 +271,7 @@ $env:VAPID_SUBJECT = "mailto:avisos@centro-fit.local"
 python -m uvicorn app.main:app --app-dir src --reload --host 127.0.0.1 --port 8000
 ```
 
-Abre `http://127.0.0.1:8000/docs`. Sin `VAPID_PRIVATE_KEY` el push del personal queda apagado y la tarjeta lo anuncia; con clave, la vista previa registra `simulated` en cada entrega y nunca contacta a un servicio de push real. En esta vista previa la base es SQLite y la pasarela se simula; el endpoint de webhook no verifica firmas reales. No uses `PREVIEW_MODE` en producción. El esquema SQLite se crea automáticamente solo en este modo. En producción, aplica las migraciones Alembic.
+Abre `http://127.0.0.1:8000/docs`. Sin `VAPID_PRIVATE_KEY` el push del personal queda apagado y la tarjeta lo anuncia; con clave, la vista previa registra `simulated` en cada entrega y nunca contacta a un servicio de push real. En esta vista previa la base es SQLite y la pasarela se simula; `/preview/webhooks/{payment_attempt_id}` es solo una ruta de demostración y no valida firmas de proveedor. `/webhooks/conekta/membership` sí valida firmas, pero sigue restringido a eventos de sandbox. No uses `PREVIEW_MODE` en producción. El esquema SQLite se crea automáticamente solo en este modo. En producción, aplica las migraciones Alembic.
 
 ### Vista previa de control de acceso
 
@@ -266,6 +321,10 @@ El panel web usa el backend para login, Personal/roles, Socios, Accesos, Kiosco 
 `GET /admin/plans` (permiso `members.read`) lista los planes activos (`id`, `name`, `duration_days`, `price_cents`, `currency`, `daily_entry_limit`) para poblar el selector de asignación y la tarjeta de límite diario. `PATCH /admin/plans/{plan_id}` (permiso `settings.manage`) fija o retira el límite diario de entradas del plan (`daily_entry_limit` entero `>= 1` o `null`); ver «Kiosco de recepción».
 
 `POST /admin/members/{member_id}/membership/payments` (permiso `members.manage`) registra el **cobro manual de membresía** con `payment_method` `cash`/`card`/`transfer`, `idempotency_key` obligatoria, `plan_id` opcional, `note` opcional y `auto_renew` opcional. Exige un turno de caja abierto (`409`) y vincula el pago a ese turno; para un socio sin membresía crea la membresía y activa al socio `pending`; para una membresía `active` (incluso vencida) extiende `ends_at` desde `max(ahora, vencimiento)` y conserva el plan actual si se omite `plan_id`. Crea un `PaymentAttempt` exitoso sin proveedor, un `Payment` con periodo/turno/cobrador/nota y un evento `payment_confirmed` o `renewed` en una sola transacción. Repetir la misma clave y datos devuelve el pago original con `idempotent_replay: true`; reutilizarla con otros datos responde `409`. Una membresía `frozen`, `suspended` o `pending_payment` no se puede cobrar (`409`), un plan inexistente o sin precio responde `404` y un método inválido `422`. La tarjeta se registra como **declarada** (sin autorización de terminal), por lo que no sustituye a la pasarela.
+
+`POST /member/membership/checkout` (Bearer del socio, `plan_id` y encabezado `Idempotency-Key`) crea una orden de pago único alojada en Conekta con tarjeta, solo en sandbox. Usa el importe y moneda del plan, crea una membresía `pending_payment` y un `PaymentAttempt` `pending`, y persiste `provider_order_id` y `checkout_url` en la migración `20261031_0075`. Repetir la misma clave devuelve la URL ya creada; si la llamada a Conekta falla, se puede reintentar la misma clave y el mismo intento. Requiere `CONEKTA_MODE=sandbox`, `CONEKTA_SANDBOX_API_KEY` del modo de pruebas del panel y `CONEKTA_SUCCESS_URL`/`CONEKTA_FAILURE_URL` HTTPS. No configurar una llave productiva.
+
+`POST /webhooks/conekta/membership` recibe el webhook firmado en `Digest`. Requiere `CONEKTA_MODE=sandbox` y `CONEKTA_WEBHOOK_PUBLIC_KEY` (PEM RSA pública del webhook sandbox). Verifica los bytes originales, el modo sandbox, la referencia de orden y el importe/moneda antes de procesar `order.paid`, `charge.paid` o un rechazo reconocido. El registro idempotente del evento, el intento y la activación del socio se confirman juntos. Los eventos pendientes o no aplicables se ignoran; una discrepancia se guarda como evento fallido para revisión y responde `409`, sin pago ni activación. Cuerpos mayores a 1 MiB responden `413`; una firma inválida responde `401`. No se habilita modo productivo.
 
 `POST /admin/members/{member_id}/membership` (permiso `members.manage`) asigna o cambia el plan de un socio y deja la membresía `active` **sin registrar ningún cobro**; es una cortesía auditada que el panel pide confirmar. Recibe `plan_id`, `auto_renew` y `note` opcional; crea la membresía si el socio no tiene ninguna vigente o actualiza la existente, reiniciando el periodo desde hoy (`ends_at = hoy + duration_days`). Registra un evento de membresía (`manual_activation` o `plan_changed`) con `no_charge: true` para dejar constancia de que no hubo pago. Devuelve `404` si el socio o el plan no existen (o el plan está inactivo) y `409`/`422` según el caso.
 

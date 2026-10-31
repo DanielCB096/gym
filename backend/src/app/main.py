@@ -415,8 +415,32 @@ from app.modules.identity.service import (
     set_user_status,
 )
 from app.modules.memberships import models as membership_models
+from app.modules.memberships.conekta_checkout import (
+    ConektaCheckoutConfigurationError,
+    ConektaCheckoutSettings,
+    ConektaHostedCheckout,
+    ConektaCheckoutUnavailable,
+)
+from app.modules.memberships.conekta import (
+    ConektaWebhookConfigurationError,
+    ConektaWebhookSignatureError,
+    conekta_webhook_public_key_from_env,
+    verify_conekta_webhook_signature,
+)
+from app.modules.memberships.conekta_webhooks import (
+    ConektaWebhookPayloadError,
+    parse_conekta_webhook,
+)
 from app.modules.memberships.gateway import ChargeOutcome, ChargeStatus, VerifiedWebhook
-from app.modules.memberships.models import Member, MemberConsent, Membership, PaymentMethod, Plan, utc_now
+from app.modules.memberships.models import (
+    Member,
+    MemberConsent,
+    Membership,
+    PaymentAttempt,
+    PaymentMethod,
+    Plan,
+    utc_now,
+)
 from app.modules.memberships.service import (
     BillingError,
     CancellationReasonRequired,
@@ -439,10 +463,12 @@ from app.modules.memberships.service import (
     list_member_overview,
     member_directory_summary,
     process_verified_webhook,
+    record_rejected_webhook,
     register_member,
     resume_membership,
     retry_failed_charge,
     start_first_charge,
+    start_hosted_membership_checkout,
     update_member,
     update_plan_daily_entry_limit,
 )
@@ -2423,6 +2449,18 @@ class MemberPaymentPageResponse(BaseModel):
     total_paid_cents: int
 
 
+class MemberHostedCheckoutRequest(BaseModel):
+    plan_id: UUID
+
+
+class MemberHostedCheckoutResponse(BaseModel):
+    membership_id: UUID
+    payment_attempt_id: UUID
+    status: str
+    checkout_url: str | None
+    idempotent_replay: bool
+
+
 class MemberAccountResponse(BaseModel):
     charges_cents: int
     credits_cents: int
@@ -3646,6 +3684,7 @@ def get_session():
 
 SessionDependency = Annotated[Session, Depends(get_session)]
 bearer_scheme = HTTPBearer(auto_error=False)
+MAX_CONEKTA_WEBHOOK_BYTES = 1_048_576
 
 
 def flush_attendance_emails_after_response(
@@ -3786,8 +3825,8 @@ app = FastAPI(
     title="Gym Manager API",
     version="0.1.0",
     description=(
-        "API preview for the membership and first-payment slice. "
-        "Payment outcomes are simulated and no real gateway is contacted."
+        "Gym management API. The hosted membership checkout is restricted to "
+        "Conekta sandbox; membership activation requires a verified provider webhook."
     ),
     lifespan=lifespan,
 )
@@ -3800,13 +3839,27 @@ if CORS_ORIGINS:
         allow_origins=list(CORS_ORIGINS),
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["Authorization", "Content-Type", "X-Kiosk-Token"],
+        allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Kiosk-Token"],
     )
 
 
 @app.get("/health", tags=["system"])
 def health() -> dict[str, str | bool]:
     return {"status": "ok", "preview_mode": PREVIEW_MODE}
+
+
+async def _read_conekta_webhook_body(request: Request) -> bytes:
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_CONEKTA_WEBHOOK_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="El webhook de Conekta excede el tamaño permitido.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @app.post("/auth/login", response_model=LoginResponse, tags=["authentication"])
@@ -4378,6 +4431,153 @@ def member_payments(
         pages=history.pages,
         total_paid_cents=history.total_paid_cents,
     )
+
+
+@app.post(
+    "/member/membership/checkout",
+    response_model=MemberHostedCheckoutResponse,
+    tags=["member self-service"],
+)
+def create_member_hosted_checkout(
+    request: MemberHostedCheckoutRequest,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+    idempotency_key: Annotated[
+        str, Header(min_length=1, max_length=128, alias="Idempotency-Key")
+    ],
+) -> MemberHostedCheckoutResponse:
+    try:
+        settings = ConektaCheckoutSettings.from_env()
+    except ConektaCheckoutConfigurationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+    try:
+        result = start_hosted_membership_checkout(
+            session,
+            ConektaHostedCheckout(settings),
+            member_id=member.member_id,
+            plan_id=request.plan_id,
+            idempotency_key=idempotency_key,
+            success_url=settings.success_url,
+            failure_url=settings.failure_url,
+        )
+    except BillingError as error:
+        raise _billing_http_error(error) from error
+    except ConektaCheckoutUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(error),
+        ) from error
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+    return MemberHostedCheckoutResponse(
+        membership_id=result.membership_id,
+        payment_attempt_id=result.payment_attempt_id,
+        status=result.status,
+        checkout_url=result.checkout_url,
+        idempotent_replay=result.idempotent_replay,
+    )
+
+
+@app.post(
+    "/webhooks/conekta/membership",
+    tags=["webhooks"],
+    description=(
+        "Webhook de checkout de membresía. Solo acepta eventos firmados de sandbox; "
+        "verifica la orden, el importe y la moneda antes de registrar el pago."
+    ),
+)
+async def conekta_membership_webhook(
+    request: Request,
+    session: SessionDependency,
+    digest: Annotated[str | None, Header(alias="Digest")] = None,
+) -> dict[str, str]:
+    try:
+        public_key_pem = conekta_webhook_public_key_from_env()
+    except ConektaWebhookConfigurationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+
+    payload = await _read_conekta_webhook_body(request)
+    try:
+        verify_conekta_webhook_signature(payload, digest, public_key_pem)
+    except ConektaWebhookConfigurationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+    except ConektaWebhookSignatureError as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Firma de webhook Conekta inválida.",
+        ) from error
+
+    try:
+        event = parse_conekta_webhook(payload)
+    except ConektaWebhookPayloadError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+
+    if event.outcome is None or event.provider_order_id is None:
+        return {"status": "ignored"}
+
+    attempt = session.exec(
+        select(PaymentAttempt).where(
+            PaymentAttempt.provider == "conekta",
+            PaymentAttempt.provider_order_id == event.provider_order_id,
+        )
+    ).first()
+    if attempt is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No existe un intento de pago para la orden de Conekta.",
+        )
+    webhook = VerifiedWebhook(
+        provider="conekta",
+        provider_event_id=event.provider_event_id,
+        event_type=event.event_type,
+        payload_sha256=event.payload_sha256,
+        payment_attempt_id=attempt.id,
+        outcome=event.outcome,
+    )
+    if attempt.method != "card":
+        mismatch_code = "rejected_method_mismatch"
+    elif attempt.amount_cents != event.amount_cents:
+        mismatch_code = "rejected_amount_mismatch"
+    elif attempt.currency != event.currency:
+        mismatch_code = "rejected_currency_mismatch"
+    else:
+        mismatch_code = ""
+    if mismatch_code:
+        try:
+            record_rejected_webhook(session, webhook, error_code=mismatch_code)
+        except BillingError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(error),
+            ) from error
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="La orden de Conekta no coincide con el método, importe o moneda del intento.",
+        )
+
+    try:
+        result = process_verified_webhook(session, webhook)
+    except BillingError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    return {"status": "duplicate" if result.idempotent_replay else "processed"}
 
 
 @app.get(

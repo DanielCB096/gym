@@ -32,8 +32,29 @@ class VerifiedWebhook:
     outcome: ChargeOutcome
 
 
+@dataclass(frozen=True)
+class HostedCheckout:
+    provider_order_id: str
+    checkout_url: str
+
+
 class PaymentGateway(Protocol):
     def charge(self, attempt: PaymentAttempt, payment_method: PaymentMethod) -> ChargeOutcome:
+        ...
+
+
+class HostedCheckoutGateway(Protocol):
+    def create_checkout(
+        self,
+        attempt: PaymentAttempt,
+        *,
+        member_name: str,
+        member_email: str | None,
+        member_phone: str | None,
+        plan_name: str,
+        success_url: str,
+        failure_url: str,
+    ) -> HostedCheckout:
         ...
 
 

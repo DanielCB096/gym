@@ -10,7 +10,7 @@ Sistema integral para un único gimnasio en México. Gestiona memberships, acces
 
 ## 2. Antes de escribir código
 
-1. Leer `docs/README.md` y `docs/00-contexto/glosario.md`.
+1. Leer `docs/README.md`, `docs/guia-para-agentes.md` y `docs/00-contexto/glosario.md`.
 2. Leer el documento del módulo que se va a tocar.
 3. Revisar el proceso transversal si aplica.
 4. Revisar ADR antes de proponer tecnología o flujo nuevo.

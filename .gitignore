@@ -25,6 +25,8 @@ postgres_data/
 redis_data/
 
 # Secrets and certificates
+.secrets/
+backend/.secrets/
 *.pem
 *.crt
 *.key

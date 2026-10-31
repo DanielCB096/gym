@@ -13,6 +13,8 @@ from app.modules.memberships.gateway import (
     ChargeOutcome,
     ChargeStatus,
     GatewayOutcomeUnknown,
+    HostedCheckout,
+    HostedCheckoutGateway,
     PaymentGateway,
     VerifiedWebhook,
 )
@@ -122,6 +124,15 @@ class MembershipChargeResult:
     payment_attempt_id: UUID
     status: str
     payment_id: UUID | None
+    idempotent_replay: bool = False
+
+
+@dataclass(frozen=True)
+class HostedMembershipCheckoutResult:
+    membership_id: UUID
+    payment_attempt_id: UUID
+    status: str
+    checkout_url: str | None
     idempotent_replay: bool = False
 
 
@@ -1185,6 +1196,211 @@ def start_first_charge(
     return _execute_attempt(session, gateway, attempt.id)
 
 
+def start_hosted_membership_checkout(
+    session: Session,
+    gateway: HostedCheckoutGateway,
+    *,
+    member_id: UUID,
+    plan_id: UUID,
+    idempotency_key: str,
+    success_url: str,
+    failure_url: str,
+) -> HostedMembershipCheckoutResult:
+    if not idempotency_key.strip():
+        raise ValueError("idempotency_key must not be empty")
+    request_fingerprint = _fingerprint(
+        {
+            "operation": "hosted_membership_checkout",
+            "member_id": str(member_id),
+            "plan_id": str(plan_id),
+        }
+    )
+    existing = session.exec(
+        select(PaymentAttempt).where(PaymentAttempt.idempotency_key == idempotency_key)
+    ).first()
+    if existing is not None:
+        _ensure_same_hosted_checkout(existing, request_fingerprint)
+        return _hosted_checkout_result(
+            session,
+            gateway,
+            existing,
+            success_url=success_url,
+            failure_url=failure_url,
+            idempotent_replay=True,
+        )
+
+    member = session.get(Member, member_id)
+    if member is None or member.status == "inactive":
+        raise MemberNotFound("Member is missing or inactive")
+    consent = session.exec(
+        select(MemberConsent).where(
+            MemberConsent.member_id == member_id,
+            MemberConsent.consent_type == "privacy_notice",
+            MemberConsent.revoked_at.is_(None),
+        )
+    ).first()
+    if consent is None:
+        raise ConsentRequired("An active privacy notice consent is required")
+    plan = session.get(Plan, plan_id)
+    if plan is None or not plan.is_active or plan.price_cents <= 0:
+        raise PlanUnavailable("Plan is missing, inactive, or does not require a charge")
+    existing_membership = session.exec(
+        select(Membership).where(
+            Membership.member_id == member_id,
+            Membership.status.in_(NON_TERMINAL_MEMBERSHIP_STATUSES),
+        )
+    ).first()
+    if existing_membership is not None:
+        raise MembershipAlreadyExists("Member already has a non-terminal membership")
+
+    start = utc_now()
+    membership = Membership(
+        member_id=member.id,
+        plan_id=plan.id,
+        status="pending_payment",
+        starts_at=start,
+        ends_at=start + timedelta(days=plan.duration_days),
+        auto_renew=False,
+    )
+    attempt = PaymentAttempt(
+        membership_id=membership.id,
+        method="card",
+        provider="conekta",
+        idempotency_key=idempotency_key,
+        request_fingerprint=request_fingerprint,
+        attempt_number=1,
+        amount_cents=plan.price_cents,
+        currency=plan.currency,
+        status="pending",
+        due_at=start,
+    )
+    session.add(membership)
+    session.add(attempt)
+    session.add(
+        MembershipEvent(
+            membership_id=membership.id,
+            event_type="created_pending_payment",
+            to_status="pending_payment",
+            actor_type="member",
+            event_metadata={"payment_provider": "conekta", "checkout_type": "hosted"},
+        )
+    )
+    session.add(_attempt_event(attempt, None, "pending", "checkout_created", "api"))
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = session.exec(
+            select(PaymentAttempt).where(PaymentAttempt.idempotency_key == idempotency_key)
+        ).first()
+        if existing is None:
+            duplicate_membership = session.exec(
+                select(Membership).where(
+                    Membership.member_id == member_id,
+                    Membership.status.in_(NON_TERMINAL_MEMBERSHIP_STATUSES),
+                )
+            ).first()
+            if duplicate_membership is not None:
+                raise MembershipAlreadyExists(
+                    "Member already has a non-terminal membership"
+                )
+            raise
+        _ensure_same_hosted_checkout(existing, request_fingerprint)
+        return _hosted_checkout_result(
+            session,
+            gateway,
+            existing,
+            success_url=success_url,
+            failure_url=failure_url,
+            idempotent_replay=True,
+        )
+
+    return _hosted_checkout_result(
+        session,
+        gateway,
+        attempt,
+        success_url=success_url,
+        failure_url=failure_url,
+    )
+
+
+def _ensure_same_hosted_checkout(
+    attempt: PaymentAttempt,
+    request_fingerprint: str,
+) -> None:
+    if attempt.provider != "conekta" or attempt.request_fingerprint != request_fingerprint:
+        raise IdempotencyConflict(
+            "Idempotency key was already used for a different payment request"
+        )
+
+
+def _hosted_checkout_result(
+    session: Session,
+    gateway: HostedCheckoutGateway,
+    attempt: PaymentAttempt,
+    *,
+    success_url: str,
+    failure_url: str,
+    idempotent_replay: bool = False,
+) -> HostedMembershipCheckoutResult:
+    if attempt.status != "pending":
+        return HostedMembershipCheckoutResult(
+            membership_id=attempt.membership_id,
+            payment_attempt_id=attempt.id,
+            status=attempt.status,
+            checkout_url=None,
+            idempotent_replay=idempotent_replay,
+        )
+    if attempt.checkout_url is not None:
+        if attempt.provider_order_id is None:
+            raise BillingError("Hosted checkout URL has no provider order reference")
+        return HostedMembershipCheckoutResult(
+            membership_id=attempt.membership_id,
+            payment_attempt_id=attempt.id,
+            status=attempt.status,
+            checkout_url=attempt.checkout_url,
+            idempotent_replay=idempotent_replay,
+        )
+    if attempt.provider_order_id is not None:
+        raise BillingError("Hosted checkout order has no saved checkout URL")
+
+    membership = session.get(Membership, attempt.membership_id)
+    member = session.get(Member, membership.member_id) if membership is not None else None
+    plan = session.get(Plan, membership.plan_id) if membership is not None else None
+    if membership is None or member is None or plan is None:
+        raise BillingError("Hosted checkout is missing its member, membership, or plan")
+    checkout: HostedCheckout = gateway.create_checkout(
+        attempt,
+        member_name=f"{member.first_name} {member.last_name}".strip(),
+        member_email=member.email,
+        member_phone=member.phone,
+        plan_name=plan.name,
+        success_url=success_url,
+        failure_url=failure_url,
+    )
+    attempt.provider_order_id = checkout.provider_order_id
+    attempt.checkout_url = checkout.checkout_url
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        saved = session.get(PaymentAttempt, attempt.id)
+        if (
+            saved is None
+            or saved.provider_order_id != checkout.provider_order_id
+            or saved.checkout_url != checkout.checkout_url
+        ):
+            raise
+        attempt = saved
+    return HostedMembershipCheckoutResult(
+        membership_id=attempt.membership_id,
+        payment_attempt_id=attempt.id,
+        status=attempt.status,
+        checkout_url=attempt.checkout_url,
+        idempotent_replay=idempotent_replay,
+    )
+
+
 def retry_failed_charge(
     session: Session,
     gateway: PaymentGateway,
@@ -1275,6 +1491,8 @@ def process_verified_webhook(
             if attempt is None:
                 raise PaymentAttemptNotFound("Webhook payment attempt was not found")
             return _result(session, attempt, idempotent_replay=True)
+        if event.status == "failed" and (event.error_code or "").startswith("rejected_"):
+            raise WebhookConflict("Webhook event was previously rejected for a payment discrepancy")
 
     attempt = session.get(PaymentAttempt, webhook.payment_attempt_id)
     if attempt is None:
@@ -1323,6 +1541,58 @@ def process_verified_webhook(
     event.processed_at = utc_now()
     session.commit()
     return result
+
+
+def record_rejected_webhook(
+    session: Session,
+    webhook: VerifiedWebhook,
+    *,
+    error_code: str,
+) -> None:
+    event = session.exec(
+        select(ProviderWebhookEvent)
+        .where(
+            ProviderWebhookEvent.provider == webhook.provider,
+            ProviderWebhookEvent.provider_event_id == webhook.provider_event_id,
+        )
+        .with_for_update()
+    ).first()
+    if event is not None:
+        if event.payload_sha256 != webhook.payload_sha256:
+            raise WebhookConflict("Webhook event ID was reused with a different payload")
+        if event.status in {"processed", "failed"}:
+            return
+        event.payment_attempt_id = webhook.payment_attempt_id
+        event.status = "failed"
+        event.error_code = error_code
+        event.processed_at = utc_now()
+    else:
+        session.add(
+            ProviderWebhookEvent(
+                provider=webhook.provider,
+                provider_event_id=webhook.provider_event_id,
+                event_type=webhook.event_type,
+                payload_sha256=webhook.payload_sha256,
+                payment_attempt_id=webhook.payment_attempt_id,
+                status="failed",
+                error_code=error_code,
+                processed_at=utc_now(),
+            )
+        )
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = session.exec(
+            select(ProviderWebhookEvent).where(
+                ProviderWebhookEvent.provider == webhook.provider,
+                ProviderWebhookEvent.provider_event_id == webhook.provider_event_id,
+            )
+        ).first()
+        if existing is None:
+            raise
+        if existing.payload_sha256 != webhook.payload_sha256:
+            raise WebhookConflict("Webhook event ID was reused with a different payload")
 
 
 def _execute_attempt(

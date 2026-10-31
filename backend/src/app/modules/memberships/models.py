@@ -246,12 +246,14 @@ class PaymentAttempt(SQLModel, table=True):
         CheckConstraint("attempt_number > 0", name="ck_payment_attempts_number_positive"),
         CheckConstraint("amount_cents > 0", name="ck_payment_attempts_amount_positive"),
         CheckConstraint(
-            "method <> 'card' OR payment_method_id IS NOT NULL OR provider IS NULL",
+            "method <> 'card' OR payment_method_id IS NOT NULL OR provider IS NULL "
+            "OR provider = 'conekta'",
             name="ck_payment_attempts_card_method_required",
         ),
         UniqueConstraint("idempotency_key", name="uq_payment_attempts_idempotency_key"),
         UniqueConstraint("membership_id", "due_at", "attempt_number", name="uq_payment_attempts_cycle_number"),
         UniqueConstraint("provider", "provider_reference", name="uq_payment_attempts_provider_reference"),
+        UniqueConstraint("provider", "provider_order_id", name="uq_payment_attempts_provider_order"),
         Index("ix_payment_attempts_status_due", "status", "due_at"),
         Index("ix_payment_attempts_membership_due", "membership_id", "due_at"),
     )
@@ -267,6 +269,8 @@ class PaymentAttempt(SQLModel, table=True):
     method: str = Field(max_length=16)
     provider: str | None = Field(default=None, max_length=40)
     provider_reference: str | None = Field(default=None, max_length=160)
+    provider_order_id: str | None = Field(default=None, max_length=160)
+    checkout_url: str | None = Field(default=None, max_length=2048)
     idempotency_key: str = Field(max_length=128)
     request_fingerprint: str = Field(max_length=64)
     attempt_number: int

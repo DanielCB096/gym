@@ -1,3 +1,6 @@
+import importlib
+import importlib.util
+import pkgutil
 from collections.abc import Iterator
 from sqlite3 import Connection
 from uuid import UUID
@@ -7,8 +10,17 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel
 
+import app.modules
 from app.modules.identity import models as identity_models
 from app.modules.memberships import models
+
+
+for package in pkgutil.iter_modules(app.modules.__path__):
+    if not package.ispkg:
+        continue
+    module_name = f"app.modules.{package.name}.models"
+    if importlib.util.find_spec(module_name) is not None:
+        importlib.import_module(module_name)
 
 
 @pytest.fixture

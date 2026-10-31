@@ -1,0 +1,72 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: gym_conekta_sandbox
+      POSTGRES_USER: gym_sandbox
+      POSTGRES_PASSWORD: local-only-sandbox
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gym_sandbox -d gym_conekta_sandbox"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - conekta_sandbox_db:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      APP_ENV: development
+      APP_TIMEZONE: ${APP_TIMEZONE:-America/Mexico_City}
+      DATABASE_URL: postgresql+psycopg://gym_sandbox:local-only-sandbox@db:5432/gym_conekta_sandbox
+      PREVIEW_MODE: "false"
+      CONEKTA_MODE: sandbox
+      CONEKTA_SANDBOX_API_KEY: ${CONEKTA_SANDBOX_API_KEY:-}
+      CONEKTA_SUCCESS_URL: ${CONEKTA_SUCCESS_URL:-https://example.com/sandbox-payment/return}
+      CONEKTA_FAILURE_URL: ${CONEKTA_FAILURE_URL:-https://example.com/sandbox-payment/failure}
+      CONEKTA_WEBHOOK_PUBLIC_KEY_FILE: /run/secrets/conekta_webhook_public_key
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    secrets:
+      - conekta_webhook_public_key
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 60s
+
+  webhook-relay:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "scripts/conekta_webhook_relay.py"]
+    environment:
+      WEBHOOK_RELAY_TARGET: http://api:8000/webhooks/conekta/membership
+    depends_on:
+      api:
+        condition: service_healthy
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: ["tunnel", "--no-autoupdate", "--url", "http://webhook-relay:8765"]
+    depends_on:
+      - webhook-relay
+    profiles:
+      - tunnel
+
+volumes:
+  conekta_sandbox_db:
+
+secrets:
+  conekta_webhook_public_key:
+    file: ${CONEKTA_WEBHOOK_PUBLIC_KEY_FILE_HOST:-backend/.secrets/conekta-webhook-public.pem}

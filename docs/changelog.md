@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-31 · Pagos: primer checkout sandbox de membresía (ADR-066)
+
+- Se integró el checkout alojado de Conekta para el primer pago de una membresía en sandbox: el importe viene del plan, se conserva la orden y su URL, y el webhook verifica la firma RSA-SHA256, el importe y la moneda antes de activar la membresía de forma idempotente. Producción y cargos reales siguen fuera de alcance.
+- La migración `20261031_0075` se encadena después de `20261031_0076` para conservar una sola cabeza Alembic. Se agregaron la prueba de checkout, webhook, relay HTTP y el procedimiento local de sandbox.
+- Se reforzaron además las regresiones de recepción de compras, rechazo de asistencia premium sin forma de pago y errores de cron; la cobertura SMTP quedó aislada y sin conexiones externas.
+- Suite backend completa: **493 pruebas, 488 aprobadas y 5 omitidas** sin `TEST_POSTGRES_URL`.
+
 ## 2026-10-31 · Personal: push web de los avisos del panel
 
 - Se añadió el canal Web Push para el personal (ADR-070): `staff_push_subscriptions` guarda el navegador que cada cuenta activó —endpoint único, claves `p256dh`/`auth`, estado y fechas— y `staff_push_deliveries` una entrega por aviso y navegador, escrita junto con el aviso en la misma transacción y con la audiencia congelada. El endpoint se transfiere a la cuenta que lo registre después y un `404`/`410` del servicio de push desactiva la suscripción.
@@ -8,6 +15,12 @@
 - El panel estrena el `service worker` `web/public/sw.js` y la tarjeta «Push del personal» en Equipo: «Activar en este navegador», «Mis navegadores» con el endpoint enmascarado, la cola con conteos, filtros, paginación y reintento, y el aviso que al tocarse abre `/?avisos=1` para la campana. Se documentó en ADR-070, el módulo de Personal, el modelo de datos, el plan de pruebas, la deuda técnica, el README del backend y este changelog.
 - La migración `20261031_0076_staff_push` crea las dos tablas y encadena a `20261031_0074` porque la `20261031_0075` del checkout con Conekta aún no estaba comprometida; al comprometerse debe reencadenarse sobre la 0076. La suite queda en **454 pruebas (449 pasan y 5 de concurrencia se omiten sin `TEST_POSTGRES_URL`)**; las once nuevas están en `test_staff_push_api.py`.
 - Verificado por API contra una copia desechable de la base y el backend aislado en 8010: configuración con clave pública, alta de suscripción (`201`), endpoint inválido (`422`), baja (`204`), aviso que encola una entrega, envío simulado, reintento de una simulada (`409`) y de un id inexistente (`404`), con limpieza total al terminar.
+
+## 2026-10-31 · Pruebas: cobertura directa del transporte SMTP
+
+- Se añadieron cinco pruebas aisladas para vista previa, configuración ausente, STARTTLS con autenticación y adjuntos, SSL implícito y errores del transporte; no hacen conexiones externas.
+- La prueba de tamaño máximo del relay valida un `Content-Length` sobredimensionado sin subir el cuerpo completo, evitando el reset de conexión de Windows al rechazarlo tempranamente.
+- La suite del backend queda en **475 pruebas aprobadas y 5 omitidas** sin `TEST_POSTGRES_URL`.
 
 ## 2026-10-31 · Fisioterapia: el consultorio como recurso reservable
 
@@ -30,12 +43,57 @@
 - Las cuatro pantallas muestran el aviso «Desde tu aviso» y resaltan el renglón con el color de acento, con texto de reserva cuando el ítem ya no está cargado. Los tipos de entrenamiento, equipo y membresía abren su sección sin resaltar.
 - Sin cambios de backend ni migración; `npx tsc --noEmit` limpio y cuatro rutas verificadas en la vista previa (clase, cita en historial, factura y meta). Documentado en ADR-067.
 
+## 2026-10-31 · Pagos: procesamiento de webhook Conekta en sandbox
+
+- Se añadió `POST /webhooks/conekta/membership`, con límite de cuerpo de 1 MiB, verificación RSA-SHA256 de `Digest` antes de parsear, modo sandbox (`livemode=false`) y llave pública configurada por `CONEKTA_WEBHOOK_PUBLIC_KEY`.
+- Se correlacionan `order.paid`, `charge.paid` y rechazos reconocidos con el intento mediante `provider_order_id`; se valida método, importe y moneda. El flujo existente registra el pago, activa la membresía y deduplica el evento en una transacción.
+- Eventos pendientes/no aplicables no activan acceso; las discrepancias firmadas se persisten como eventos `failed` con código `rejected_*` y responden `409` para revisión. Una firma inválida responde `401`.
+- Se añadieron pruebas simuladas de firma, pago repetido, discrepancia, estado rechazado y eventos de sandbox. La prueba E2E con Conekta sandbox sigue pendiente; no hubo llamadas externas ni cargos.
+- Se preparó el entorno E2E local y desechable: Compose con PostgreSQL aislado, backend en localhost, un relay temporal que solo expone la ruta firmada y un script para crear/retomar/consultar una orden sandbox. La cuenta, llaves y alta del webhook en Conekta requieren la intervención del responsable; no deben compartirse en el chat.
+- Se verificó el build de las imágenes y un arranque local con una llave RSA efímera: migraciones hasta `20261031_0075`, llave montada, `/health` con `200` y API enlazada solo a `127.0.0.1:8000`; el volumen y los contenedores temporales se eliminaron al finalizar.
+- Se actualizaron backend README, traspaso, ADR-066, módulo, proceso, integración, modelo de datos, plan de pruebas e índice.
+
+## 2026-10-31 · Pagos: checkout alojado de membresía en sandbox
+
+- Se añadió `POST /member/membership/checkout`, protegido por sesión del socio. Toma `plan_id`, requiere `Idempotency-Key`, obtiene importe y moneda del plan y crea una orden Conekta `HostedPayment` para tarjeta únicamente.
+- Se persisten la referencia de orden y la URL de checkout en `payment_attempts` (`provider_order_id`, `checkout_url`; migración `20261031_0075`). La clave interna de intento se envía también como clave idempotente a Conekta; los reintentos conservan el mismo intento. CORS permite el encabezado `Idempotency-Key`.
+- La ruta requiere `CONEKTA_MODE=sandbox`, `CONEKTA_SANDBOX_API_KEY` tomada del modo de pruebas del panel y URL HTTPS de éxito y fallo; rechaza modo productivo. No se crea un `Payment` ni se activa la membresía: falta la ruta que valide y procese el webhook.
+- Se añadieron pruebas simuladas para petición HTTP, huella idempotente, conciliación de importe/moneda/URL, error del proveedor y repetición del intento. Verificados `alembic heads`, `compileall`, `git diff --check`, **26 pruebas dirigidas** y suite backend completa (**454 pasaron, 5 omitidas**).
+- Documentación actualizada: ADR-066, integración de pagos, módulo de membresías, proceso de primer pago y modelo de datos.
+
+## 2026-10-31 · Pagos: verificación criptográfica de webhook Conekta
+
+- Se añadió un verificador aislado para validar la firma RSA-SHA256 de Conekta en el encabezado `Digest`, usando los bytes exactos del cuerpo y una llave pública PEM. Rechaza firmas faltantes o inválidas, llaves mal formadas y llaves que no sean RSA.
+- Se incorporó `cryptography` como dependencia directa y pruebas que firman payloads con claves efímeras para verificar éxito, cuerpo alterado y entradas inválidas.
+- En ese incremento el verificador se dejó aislado. La entrada posterior del changelog documenta la creación de órdenes en sandbox; sigue pendiente el endpoint de webhook y ningún pago de Conekta activa una membresía todavía.
+- Documentado en la [guía de pasarela](04-integraciones/pasarela-de-pago.md) y ADR-066.
+
+## 2026-10-31 · Pagos: decisión del primer incremento en línea
+
+- Se definió Conekta como proveedor para la primera etapa de pagos en línea y un checkout alojado de pago único ligado a una orden e intento interno.
+- La membresía solo podrá activarse tras validar firma, referencia, monto, moneda y estado en un webhook; la redirección y los estados pendientes no autorizan acceso.
+- Se excluyen del primer incremento las renovaciones automáticas, el guardado de tarjetas y los cargos productivos. El diseño requiere pruebas sandbox y validación comercial y técnica antes de producción.
+- Se documentó la decisión en [ADR-066](05-decisiones/ADR-066-primer-pago-en-linea.md) y se alinearon la integración, el módulo y el proceso de alta. No se añadió código de pagos ni se ejecutaron cobros.
+
+## 2026-10-31 · Documentación: procesos operativos, ARCO, nómina y manuales
+
+- Se completaron los procesos de [apertura y cierre](03-procesos/apertura-y-cierre-del-gimnasio.md), [mantenimiento preventivo](03-procesos/mantenimiento-preventivo.md), [reporte y resolución de fallas de equipo](03-procesos/reporte-y-resolucion-de-falla-de-equipo.md), [respaldo y recuperación](03-procesos/respaldo-y-recuperacion.md) y [atención de derechos ARCO](03-procesos/atencion-de-derechos-arco.md); el índice ya no marca estos documentos como pendientes.
+- Se documentó el [cierre de nómina](03-procesos/cierre-de-nomina.md) como guía de control operativo con revisión profesional obligatoria; se señala claramente que la aplicación aún no calcula ni procesa nómina.
+- Se añadieron los manuales de usuario para [entrenador](06-operacion/manual-usuario-entrenador.md), [gerente](06-operacion/manual-usuario-gerente.md) y [mantenimiento](06-operacion/manual-usuario-mantenimiento.md), junto con la [guía para agentes](guia-para-agentes.md), enlazada también desde `CLAUDE.md`.
+- Se corrigió [seguridad-y-privacidad.md](01-arquitectura/seguridad-y-privacidad.md) para no afirmar que existe autoservicio ARCO: el procedimiento es manual y requiere validación legal antes de operar con titulares reales.
+- Los procedimientos distinguen la funcionalidad implementada de la operación pendiente y no sustituyen la revisión profesional fiscal, legal o de seguridad.
+
 ## 2026-10-31 · Avisos: cada socio elige su horario de silencio
 
 - **Una franja por socio**: la tabla `member_notification_settings` (migración `20261031_0074_member_notification_settings.py`) guarda `quiet_start`/`quiet_end` como `TIME`, una fila por socio con FK `RESTRICT` y un `CHECK` que exige las dos horas juntas y distintas. Sin fila no hay horario propio; quitar el horario borra la fila. Las horas se leen en `APP_TIMEZONE`, como la ventana del club (ADR-061), y pueden cruzar medianoche.
 - **La pasada descarta por fila, no cancela**: `send_pending_member_push_deliveries` une cada entrega con la ventana de su socio (`outerjoin`) y filtra en SQL con `_outside_personal_window`, así que un socio silenciado no ocupa un lugar del lote; las `pending` y los reintentos vencidos esperan a la primera pasada después de la franja. El envío manual (`override_quiet_hours=True`), el reintento manual y la vista previa no la aplican. Las dos ventanas se apilan.
 - **API y app**: `GET /member/notification-preferences` publica `quiet_hours` (`start`, `end`, `active`, `updated_at`) y `club_quiet_hours`; el `PATCH` acepta categorías **o** `{"quiet_hours": {"start": "22:00", "end": "07:00"}}` (o `null` para quitarlo), nunca ambos, y responde `422` con media franja, horas iguales, formato inválido o cuerpo vacío. `NotificationsScreen` estrena la tarjeta «Tu horario de silencio», con los campos «Desde»/«Hasta», el estado actual, la ventana del club como contexto y «Quitar horario».
 - **Pruebas y vista previa**: catorce pruebas nuevas —ocho en `test_member_notification_preferences.py` (21 casos) y seis en `test_member_push_quiet_hours.py` (19 casos)—; la suite queda en **441 pruebas (436 pasan y 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`)**. En la vista previa, con Lucía, se guardó una franja, se comprobó el estado «en silencio» y el rechazo de dos horas iguales, y se quitó el horario dejando la tabla limpia y la sesión temporal revocada. Documentado en ADR-065.
+
+## 2026-10-31 · Documentación: guía para agentes
+
+- Se añadió [guia-para-agentes.md](guia-para-agentes.md) con el flujo de inicio, coordinación para cambios concurrentes, criterios de uso de skills opcionales y verificaciones al terminar.
+- Se enlazó la guía desde el índice en [README.md](README.md) y se agregó a la lectura inicial de [CLAUDE.md](../CLAUDE.md).
 
 ## 2026-10-31 · Avisos: un acuse de push con error avisa al personal
 

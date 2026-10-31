@@ -127,15 +127,17 @@ La migración inicial materializa únicamente el flujo prioritario de socios, pl
 | `memberships` | vigencia y estado del plan asignado | FKs restrictivas a socio/plan, periodo válido, estado controlado y máximo de una membresía no terminal por socio |
 | `member_consents` | aceptación y revocación de documentos | historial con versión y fecha; no almacena datos médicos |
 | `payment_methods` | referencia tokenizada del proveedor | token del proveedor cifrado, nunca PAN/CVV; un solo método predeterminado activo por socio |
-| `payment_attempts` | cada intento de cobro e idempotencia | clave idempotente y huella de solicitud, número de intento positivo, estados controlados; un cobro manual con tarjeta declarada puede no tener `payment_method_id` ni proveedor |
+| `payment_attempts` | cada intento de cobro e idempotencia | clave idempotente y huella de solicitud, número de intento positivo, estados controlados; `provider_order_id` y `checkout_url` guardan la orden alojada de sandbox sin mezclarla con la referencia del cargo; el cobro manual con tarjeta declarada no tiene `payment_method_id` ni proveedor |
 | `payments` | cobros confirmados | un pago por intento exitoso, monto y moneda como snapshot; desde el cobro manual guarda periodo, turno de caja, cobrador y nota (los campos de periodo/turno son nulos en cobros de pasarela antiguos) |
 | `payment_attempt_events` | historial de transiciones | eventos históricos vinculados al intento |
-| `provider_webhook_events` | deduplicación y seguimiento de webhooks | evento único por proveedor, digest del payload y estado de procesamiento |
+| `provider_webhook_events` | deduplicación y seguimiento de webhooks | evento único por proveedor, SHA-256 del payload y estado de procesamiento; un evento firmado con discrepancia queda `failed` con código `rejected_*` y vínculo al intento para revisión |
 | `membership_events` | auditoría de cambios de membresía | estado anterior/nuevo, actor, fecha y metadatos sin secretos |
 
 La migración está en `backend/alembic/versions/20261015_0001_memberships_billing.py`. La activación inicial de la membresía y la creación del pago confirmado deben ejecutarse en una sola transacción después de confirmar el pago; la respuesta HTTP de la pasarela por sí sola no es confirmación durable.
 
 El cobro manual en mostrador (`20261021_0023_membership_manual_payments.py`) reutiliza `payment_attempts` y `payments` en vez de crear un libro paralelo: el intento queda `succeeded` con `provider = NULL` y el pago guarda `period_starts_at`, `period_ends_at`, `cash_session_id`, `collected_by` y `note`. El turno de caja no duplica el pago: al leer el corte suma los `payments` vinculados por `cash_session_id`, y solo el método `cash` entra al efectivo esperado.
+
+El checkout alojado de membresía (`20261031_0075_hosted_membership_checkout.py`) almacena `provider_order_id` y `checkout_url` en el intento para reintentar idempotentemente la creación de una orden de Conekta. La restricción de tarjeta permite que un intento `provider = "conekta"` no tenga un método guardado porque el checkout alojado recibe los datos directamente; el importe y la moneda se conservan en el intento. `POST /webhooks/conekta/membership` verifica el webhook sandbox, asocia el evento a la orden, y delega la activación y la creación del pago a una única transacción idempotente. Una discrepancia queda auditada en `provider_webhook_events` como `failed` con `error_code` `rejected_*`; no crea `payments` ni activa la membresía.
 
 ## Esquema físico: facturación CFDI 4.0
 

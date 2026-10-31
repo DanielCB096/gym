@@ -709,6 +709,26 @@ def test_suppliers_and_purchase_orders_flow() -> None:
             assert product_after["stock"] == 8
             assert product_after["cost_cents"] == 45000
 
+            duplicate_receive = client.post(
+                f"/admin/purchase-orders/{order_id}/receive",
+                headers=manager,
+                json={
+                    "items": [
+                        {"item_id": item_id, "quantity": 1},
+                        {"item_id": item_id, "quantity": 1},
+                    ]
+                },
+            )
+            assert duplicate_receive.status_code == 422
+            unchanged_order = client.get(
+                f"/admin/purchase-orders/{order_id}", headers=manager
+            ).json()
+            assert unchanged_order["lines"][0]["received_quantity"] == 6
+            unchanged_product = client.get(
+                "/admin/products", headers=manager, params={"search": "proteina"}
+            ).json()["items"][0]
+            assert unchanged_product["stock"] == 8
+
             # Over-receive and foreign lines are refused.
             assert (
                 client.post(

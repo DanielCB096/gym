@@ -21,12 +21,19 @@ G --> H[Enviar confirmación]
 3. Se firma consentimiento de privacidad.
 4. Se asigna plan y promociones aplicables.
 5. Se ejecuta cargo inicial con token de pasarela.
-6. Se activa la membresía y se registra en historial.
+6. La membresía se activa y se registra en el historial solo después de confirmar el pago.
+
+### Cuando el pago se inicia en línea
+
+El socio autenticado puede iniciar `POST /member/membership/checkout` con `plan_id` y `Idempotency-Key`. El backend crea un checkout alojado de Conekta para tarjeta en sandbox, tomando precio y moneda del plan, y devuelve `checkout_url`. Reutilizar la misma clave devuelve el mismo checkout o reintenta la misma orden; no crea un segundo intento. Se requiere `CONEKTA_MODE=sandbox` y configurar credenciales y URL de retorno HTTPS por entorno.
+
+La creación del checkout y el retorno a la app no confirman el pago. Conekta notifica el resultado en `POST /webhooks/conekta/membership`; el backend verifica la firma `Digest`, `livemode=false`, el ID de orden, importe, moneda y estado antes de procesarlo idempotentemente. Solo eventos pagados verificados crean `Payment` y activan la membresía. Un rechazo mantiene el intento fallido y una discrepancia queda registrada para revisión sin activar el acceso. El endpoint requiere `CONEKTA_WEBHOOK_PUBLIC_KEY` de sandbox. No se permite producción ni se habilitan SPEI/efectivo en el checkout actual.
 
 ## Reglas clave
 - la membresía no se activa si falta consentimiento
 - el primer pago es idempotente
 - el registro queda auditable
+- la confirmación en línea depende del webhook verificado, no de la redirección del checkout
 
 ## KPIs
 - tiempo de alta
@@ -39,5 +46,8 @@ G --> H[Enviar confirmación]
 - El **primer cobro manual** ya se ejecuta desde la ficha del socio: `POST /admin/members/{id}/membership/payments` exige un turno de caja abierto, registra el pago (`cash`/`card`/`transfer` como declarado), activa al socio y crea la membresía con su periodo. Es idempotente por `idempotency_key` y deja `PaymentAttempt`, `Payment`, evento de membresía y vínculo al turno. La migración es `20261021_0023`.
 - La renovación usa el mismo endpoint: si el socio ya tiene una membresía `active`, extiende desde `max(ahora, ends_at)` y conserva el plan actual si no se envía otro. También se pueden editar los datos del socio (`PATCH /admin/members/{id}`) y congelar, reanudar o cancelar la membresía con motivo.
 - La **activación sin cobro** (`POST /admin/members/{id}/membership`) sigue disponible como cortesía auditada (`no_charge: true`), con confirmación en el panel. No sustituye al cobro normal.
-- La pasarela real y el cobro recurrente automático siguen pendientes: el flujo de tokenización, reintentos automáticos y webhooks existe en backend, pero no se conecta a un proveedor real. El cobro manual se registra como declarado; la tarjeta no se autoriza contra una terminal.
-- Cuando la pasarela esté conectada, el alta con tarjeta podrá volver al camino `pending_payment` → cobro confirmado → `active`, mientras el cobro manual seguirá disponible para efectivo y transferencia.
+- El cobro manual se registra como declarado; la tarjeta no se autoriza contra una terminal.
+- El checkout alojado y su webhook de confirmación están implementados solo para sandbox; el pago crea `Payment` y activa la membresía únicamente después de verificar firma, orden, importe, moneda y estado. Falta validar el flujo E2E con Conekta sandbox.
+- El webhook Conekta ya está conectado en sandbox: verifica firma, modo, orden, importe y moneda; los eventos pagados procesan el pago idempotentemente y los rechazos no activan la membresía. La validación E2E con Conekta sandbox sigue pendiente.
+- ADR-066 mantiene como condición de producción la verificación de webhooks, la conciliación y la aprobación del negocio. La renovación automática y guardar métodos de pago no forman parte del primer incremento.
+- El cobro manual seguirá disponible para efectivo, tarjeta declarada y transferencia aunque se integre el checkout en línea.

@@ -1,8 +1,14 @@
 # Traspaso para retomar el trabajo
 
-Actualizado: 2026-10-31 · Rama: `main` · ADR-070 en `316ede7`, ADR-069 en `b6ea88f`, ADR-068 en `036f553`, ADR-067 en `b2b454a`, ADR-065 en `6cb1632`, ADR-064 en `7ee0bdd`, ADR-063 en `96e967f`, ADR-062 en `d9594e4`, ADR-061 en `dd482d7`, ADR-059 en `984c901`, ADR-058 en `f4280ae`, ADR-057 en `39391dc`, ADR-056 en `e4c4399`, ADR-055 en `d7c21ac`, ADR-054 en `94c3a6a` y ADR-050 a ADR-053 en `8a0daa8`.
+Actualizado: 2026-10-31 · Rama: `main` · ADR-068 en `036f553`, ADR-067 en `b2b454a`, ADR-065 en `6cb1632`, ADR-064 en `7ee0bdd`, ADR-063 en `96e967f`, ADR-062 en `d9594e4`, ADR-061 en `dd482d7`, ADR-059 en `984c901`, ADR-058 en `f4280ae`, ADR-057 en `39391dc`, ADR-056 en `e4c4399`, ADR-055 en `d7c21ac`, ADR-054 en `94c3a6a` y ADR-050 a ADR-053 en `8a0daa8`.
 
 Esta nota es el punto de entrada para otra persona o IA. El estado detallado vive en [README.md](README.md#estado-del-proyecto) y el histórico en [changelog.md](changelog.md); aquí solo se resume qué está hecho, qué sigue y qué no debe tocarse sin pedirlo.
+
+## Pagos de membresía (ADR-066)
+
+Ya existe `POST /member/membership/checkout`: socio autenticado, orden `HostedPayment` de tarjeta, importe derivado del plan e idempotencia interna y del proveedor. Funciona solo con `CONEKTA_MODE=sandbox` y `CONEKTA_SANDBOX_API_KEY`; la migración `20261031_0075` persiste el ID de orden y la URL. La orden deja el intento y la membresía en `pending_payment`.
+
+El endpoint público `POST /webhooks/conekta/membership` verifica RSA-SHA256 sobre el cuerpo original (`Digest`), exige una llave pública RSA por `CONEKTA_WEBHOOK_PUBLIC_KEY` o `CONEKTA_WEBHOOK_PUBLIC_KEY_FILE` y solo admite eventos cuyo `livemode` sea `false`. Correlaciona por `provider_order_id`, compara importe/moneda y usa `process_verified_webhook` para registrar el evento, crear el pago y activar la membresía en una transacción idempotente. Las discrepancias quedan registradas como evento fallido y nunca activan el acceso. El stack Docker/PostgreSQL se construyó e inició localmente: migraciones hasta `20261031_0075`, secreto efímero montado y API saludable en `127.0.0.1`; el stack desechable se limpió después. Para la prueba E2E siguen pendientes la cuenta sandbox del gimnasio, sus llaves, registrar la URL temporal del túnel y probar con una tarjeta oficial de prueba. El procedimiento está en `backend/README.md`. No confiar en redirecciones de checkout ni hacer cargos reales; producción, recurrencia y métodos diferidos siguen fuera de alcance.
 
 ## Dónde quedó el trabajo
 
@@ -45,7 +51,7 @@ En este orden, salvo que se pida otra cosa:
 1. **Conectar los canales reales.** El acuse ya tiene contrato y cola, pero falta el adaptador del proveedor de correo (y el SMTP real): el webhook existe y se prueba firmado, pero nadie lo llama todavía. Del lado push, la app registra el token y una build interna de EAS verificó en un teléfono físico el toque y el arranque en frío, con un aviso local y con un push real de FCM (`sent` desde el backend); los recibos de Expo ya se consultan con una pasada propia (ADR-062), el cron que la programa (con las dos purgas) ya se instala desde el repositorio con `backend/ops_cron.py` (ADR-063) y un acuse con error ya avisa a quien opera la cola (ADR-064), pero falta verificar el cron en un servidor Linux real.
 2. **Cerrar los límites del canal nuevo**: la ventana de tiempo (ADR-056), la rotación del secreto con gracia (ADR-057), la retención de los acuses con su purga (ADR-058), las preferencias por tipo (ADR-059), la navegación al tocar el aviso (ADR-060) y el horario de silencio de club del push (ADR-061) ya existen, y el horario de silencio **por socio** se sumó en ADR-065, así que quedan el historial de cambios de preferencia, la preferencia por dispositivo, un horario por categoría y la navegación al detalle de cada aviso —hoy solo a la pantalla que lo contiene—. En ADR-061 queda abierta además una ventana del club editable sin reinicio, y en ADR-065 que el panel pueda ver o corregir el horario de un socio. El aviso al personal cuando un push se agota ya existe (ADR-055) y sus límites —que la alerta espera a la pasada y que no se cierra sola— están listados en `docs/deuda-tecnica.md`; el aviso por un acuse con error (ADR-064) tiene los mismos límites de latencia y de alerta que no se cierra sola.
 
-El resto de la lista pendiente (pago en línea, reportes programados, mensajería entrenador-socio, nómina, conexión bancaria, etc.) está en la sección «Estado del proyecto» del [README](README.md#estado-del-proyecto).
+El resto de la lista pendiente (validación de extremo a extremo con sandbox, reportes programados, mensajería entrenador-socio, nómina, conexión bancaria, etc.) está en la sección «Estado del proyecto» del [README](README.md#estado-del-proyecto).
 
 ## Decisiones del usuario que no se deben revertir sin pedirlo
 
@@ -53,7 +59,7 @@ El resto de la lista pendiente (pago en línea, reportes programados, mensajerí
 - **Accesos**: pospuestos («deja accesos para luego»); no reintroducir trabajo de kiosco o lector salvo que lo pida.
 - **Bloqueo por deuda**: se queda como está, sin implementar.
 - **Aforo**: se conserva la estimación actual; no registrar salidas reales.
-- **Pagos con pasarela, SAT/Finkok**: no tocar salvo petición explícita. El timbrado sigue siendo simulado y sin validez fiscal.
+- **Pagos con pasarela**: continuar el alcance autorizado de ADR-066; no habilitar producción, renovaciones automáticas ni cargos reales sin validación expresa. **SAT/Finkok**: no tocar salvo petición explícita; el timbrado sigue siendo simulado y sin validez fiscal.
 - **Cierre del aviso del token del kiosco**: pospuesto con «continuemos con otra cosa de momento»; no empujarlo.
 
 ## Cómo levantar y verificar

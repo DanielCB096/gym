@@ -267,3 +267,74 @@ def test_cli_reports_a_crontab_that_cannot_be_read(
 
     assert code == 1
     assert "sin crontab" in capsys.readouterr().err
+
+
+def test_cli_install_reports_missing_crontab_without_claiming_success(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    for script in ops_cron._SCRIPTS:
+        (tmp_path / script).write_text("", encoding="utf-8")
+
+    def missing_crontab(*_args: object, **_kwargs: object):
+        raise FileNotFoundError("crontab")
+
+    monkeypatch.setattr(ops_cron.subprocess, "run", missing_crontab)
+
+    code = ops_cron.main(
+        [
+            "--install",
+            "--app-dir",
+            str(tmp_path),
+            "--database-url",
+            DATABASE_URL,
+            "--log-dir",
+            str(tmp_path / "logs"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "No se encontró el comando crontab" in captured.err
+    assert "instala cron" in captured.err
+    assert "Bloque instalado" not in captured.out
+
+
+def test_cli_install_reports_crontab_write_failure_without_success(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    for script in ops_cron._SCRIPTS:
+        (tmp_path / script).write_text("", encoding="utf-8")
+
+    def fail_write(arguments: list[str], *, stdin: str | None = None):
+        if arguments == ["-l"]:
+            return ops_cron.subprocess.CompletedProcess(
+                ["crontab", "-l"], 0, "MAILTO=ops@example.test\n", ""
+            )
+        assert arguments == ["-"]
+        assert stdin is not None
+        return ops_cron.subprocess.CompletedProcess(
+            ["crontab", "-"], 1, "", "permiso denegado"
+        )
+
+    monkeypatch.setattr(ops_cron, "_run_crontab", fail_write)
+
+    code = ops_cron.main(
+        [
+            "--install",
+            "--app-dir",
+            str(tmp_path),
+            "--database-url",
+            DATABASE_URL,
+            "--log-dir",
+            str(tmp_path / "logs"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "No se pudo escribir el crontab: permiso denegado" in captured.err
+    assert "Bloque instalado" not in captured.out

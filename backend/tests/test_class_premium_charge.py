@@ -96,6 +96,14 @@ def test_premium_class_charges_on_attendance_and_refunds_on_cancel() -> None:
             no_method = _attend(client, manager, reservation_id)
             assert no_method.status_code == 409, no_method.text
             assert "forma de pago" in no_method.json()["detail"]
+            unchanged = client.get(
+                f"/admin/classes/sessions/{session_id}/reservations", headers=manager
+            ).json()["reservations"][0]
+            assert unchanged["status"] == "reserved"
+            assert unchanged["charge_status"] is None
+            assert unchanged["charge_sale_id"] is None
+            assert client.get("/admin/sales", headers=manager).json()["total"] == 0
+            assert client.get("/admin/sales/returns", headers=manager).json()["total"] == 0
 
             attended = _attend(client, manager, reservation_id, payment_method="cash")
             assert attended.status_code == 200, attended.text
