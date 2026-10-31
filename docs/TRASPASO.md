@@ -58,7 +58,7 @@ El resto de la lista pendiente (pago en línea, reportes programados, mensajerí
 
 - Commits en español con alcance, p. ej. `feat(asistencia): …`; un incremento validado por commit.
 - **Nunca** versionar `gym_preview.db`, sus `.bak`, `.env`, credenciales, tokens de kiosco ni códigos OTP del socio.
-- Cada incremento deja evidencia en: ADR nuevo en `docs/05-decisiones/` (el siguiente sería ADR-064), `docs/README.md` (índice, fase y pendientes), el documento del módulo, `docs/01-arquitectura/modelo-de-datos.md` si cambia el esquema, `docs/07-pruebas/plan-de-pruebas.md` con el recuento de la suite, `docs/changelog.md` y, si aplica, `docs/deuda-tecnica.md`.
+- Cada incremento deja evidencia en: ADR nuevo en `docs/05-decisiones/` (el siguiente sería ADR-065), `docs/README.md` (índice, fase y pendientes), el documento del módulo, `docs/01-arquitectura/modelo-de-datos.md` si cambia el esquema, `docs/07-pruebas/plan-de-pruebas.md` con el recuento de la suite, `docs/changelog.md` y, si aplica, `docs/deuda-tecnica.md`.
 - La suite que cita la documentación debe coincidir con la ejecución real; si cambia el número, actualizarlo en README, plan de pruebas, changelog y deuda técnica.
 
 ## Trampas conocidas
