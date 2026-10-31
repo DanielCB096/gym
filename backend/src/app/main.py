@@ -484,10 +484,18 @@ from app.modules.notifications.models import MemberPushToken
 from app.modules.notifications.push import (
     InvalidPushPlatform,
     InvalidPushToken,
+    MemberPushDeliveryItem,
+    PushDeliveryNotFound,
+    PushDeliveryRetryNotAllowed,
+    PushError,
     PushMemberNotFound,
     deactivate_member_push_token,
     deactivate_member_push_tokens,
+    list_member_push_deliveries,
+    member_push_delivery_counts,
     register_member_push_token,
+    retry_member_push_delivery,
+    send_pending_member_push_deliveries,
     send_pending_member_push_deliveries_from_engine,
 )
 from app.modules.portal.classes import (
@@ -2595,6 +2603,49 @@ class StaffNotificationDeliveryPassResponse(BaseModel):
     remaining: int
 
 
+class MemberPushDeliveryCountsResponse(BaseModel):
+    pending: int
+    sent: int
+    simulated: int
+    failed: int
+    active_tokens: int
+
+
+class MemberPushDeliveryResponse(BaseModel):
+    id: UUID
+    notification_id: UUID
+    member_id: UUID
+    member_name: str
+    member_email: str | None
+    kind: str
+    title: str
+    device: str
+    status: str
+    attempts: int
+    error: str | None
+    created_at: datetime
+    last_attempt_at: datetime | None
+    sent_at: datetime | None
+
+
+class MemberPushDeliveryPageResponse(BaseModel):
+    counts: MemberPushDeliveryCountsResponse
+    items: list[MemberPushDeliveryResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class MemberPushDeliveryPassResponse(BaseModel):
+    attempted: int
+    sent: int
+    simulated: int
+    failed: int
+    deactivated: int
+    remaining: int
+
+
 class EmailDeliveryReceiptResponse(BaseModel):
     id: UUID
     delivery_id: UUID
@@ -4617,6 +4668,90 @@ def retry_staff_notification_delivery_endpoint(
     except (NotificationDeliveryRetryNotAllowed, AttendanceEmailDisabled) as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     return _staff_notification_delivery_response(item)
+
+
+@app.get(
+    "/admin/notifications/push-deliveries",
+    response_model=MemberPushDeliveryPageResponse,
+    tags=["staff administration"],
+    description=(
+        "Cola de push del socio: una fila por aviso y dispositivo, con el token "
+        "enmascarado. Se lee con el mismo permiso que la cola de correos del personal."
+    ),
+)
+def member_push_deliveries(
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.read"))],
+    session: SessionDependency,
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> MemberPushDeliveryPageResponse:
+    try:
+        inbox = list_member_push_deliveries(
+            session, status_filter=status_filter, page=page, page_size=page_size
+        )
+    except PushError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    counts = member_push_delivery_counts(session)
+    return MemberPushDeliveryPageResponse(
+        counts=MemberPushDeliveryCountsResponse(
+            pending=counts.pending,
+            sent=counts.sent,
+            simulated=counts.simulated,
+            failed=counts.failed,
+            active_tokens=counts.active_tokens,
+        ),
+        items=[_member_push_delivery_response(item) for item in inbox.items],
+        total=inbox.total,
+        page=inbox.page,
+        page_size=inbox.page_size,
+        pages=inbox.pages,
+    )
+
+
+@app.post(
+    "/admin/notifications/push-deliveries/send",
+    response_model=MemberPushDeliveryPassResponse,
+    tags=["staff administration"],
+)
+def send_member_push_deliveries(
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+    session: SessionDependency,
+) -> MemberPushDeliveryPassResponse:
+    result = send_pending_member_push_deliveries(session)
+    return MemberPushDeliveryPassResponse(
+        attempted=result.attempted,
+        sent=result.sent,
+        simulated=result.simulated,
+        failed=result.failed,
+        deactivated=result.deactivated,
+        remaining=result.remaining,
+    )
+
+
+@app.post(
+    "/admin/notifications/push-deliveries/{delivery_id}/retry",
+    response_model=MemberPushDeliveryResponse,
+    tags=["staff administration"],
+)
+def retry_member_push_delivery_endpoint(
+    delivery_id: UUID,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+    session: SessionDependency,
+) -> MemberPushDeliveryResponse:
+    try:
+        item = retry_member_push_delivery(session, delivery_id)
+    except PushDeliveryNotFound as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+        ) from error
+    except PushDeliveryRetryNotAllowed as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(error)
+        ) from error
+    return _member_push_delivery_response(item)
 
 
 @app.post(
@@ -10430,6 +10565,27 @@ def _staff_notification_delivery_response(
         ack_status=item.ack_status,
         ack_at=item.ack_at,
         ack_detail=item.ack_detail,
+    )
+
+
+def _member_push_delivery_response(
+    item: MemberPushDeliveryItem,
+) -> MemberPushDeliveryResponse:
+    return MemberPushDeliveryResponse(
+        id=item.id,
+        notification_id=item.notification_id,
+        member_id=item.member_id,
+        member_name=item.member_name,
+        member_email=item.member_email,
+        kind=item.kind,
+        title=item.title,
+        device=item.device,
+        status=item.status,
+        attempts=item.attempts,
+        error=item.error,
+        created_at=item.created_at,
+        last_attempt_at=item.last_attempt_at,
+        sent_at=item.sent_at,
     )
 
 

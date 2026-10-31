@@ -38,8 +38,12 @@ from app.modules.notifications.models import (
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 DEFAULT_SEND_BATCH_LIMIT = 20
 MAX_SEND_BATCH_LIMIT = 100
+DEFAULT_DELIVERY_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
 DEFAULT_TIMEOUT_SECONDS = 15.0
 DELIVERY_STATUSES = ("pending", "sent", "simulated", "failed")
+# Only a failed attempt is retried by hand; pending rows wait for the next pass.
+RETRYABLE_DELIVERY_STATUSES = ("failed",)
 EXPO_TOKEN_PREFIXES = ("ExponentPushToken[", "ExpoPushToken[")
 UNREGISTERED_ERROR = "DeviceNotRegistered"
 
@@ -57,6 +61,14 @@ class InvalidPushPlatform(PushError):
 
 
 class PushMemberNotFound(PushError):
+    pass
+
+
+class PushDeliveryNotFound(PushError):
+    pass
+
+
+class PushDeliveryRetryNotAllowed(PushError):
     pass
 
 
@@ -78,6 +90,44 @@ class MemberPushPass:
     failed: int
     deactivated: int
     remaining: int
+
+
+@dataclass(frozen=True)
+class MemberPushDeliveryItem:
+    """One queued push as the panel shows it, with the token masked."""
+
+    id: UUID
+    notification_id: UUID
+    member_id: UUID
+    member_name: str
+    member_email: str | None
+    kind: str
+    title: str
+    device: str
+    status: str
+    attempts: int
+    error: str | None
+    created_at: datetime
+    last_attempt_at: datetime | None
+    sent_at: datetime | None
+
+
+@dataclass(frozen=True)
+class MemberPushDeliveryPage:
+    items: list[MemberPushDeliveryItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+@dataclass(frozen=True)
+class MemberPushDeliveryCounts:
+    pending: int
+    sent: int
+    simulated: int
+    failed: int
+    active_tokens: int
 
 
 def clean_push_token(raw: str) -> str:
@@ -274,6 +324,7 @@ def _claim(
     session: Session,
     delivery: MemberPushDelivery,
     *,
+    from_status: str,
     now: datetime,
 ) -> bool:
     """Count the attempt and commit it before the request leaves.
@@ -286,7 +337,7 @@ def _claim(
         update(MemberPushDelivery)
         .where(
             MemberPushDelivery.id == delivery.id,
-            MemberPushDelivery.status == "pending",
+            MemberPushDelivery.status == from_status,
             MemberPushDelivery.attempts == delivery.attempts,
         )
         .values(
@@ -392,7 +443,7 @@ def send_pending_member_push_deliveries(
     )
     attempted = sent = simulated = failed = deactivated = 0
     for delivery in rows:
-        if not _claim(session, delivery, now=occurred):
+        if not _claim(session, delivery, from_status="pending", now=occurred):
             continue
         if _deliver(session, delivery, now=occurred):
             deactivated += 1
@@ -425,6 +476,154 @@ def send_pending_member_push_deliveries_from_engine(
         return send_pending_member_push_deliveries(session, limit=limit, now=now)
 
 
+def mask_push_token(token: str) -> str:
+    """Keep the last four characters; the panel never needs the whole token."""
+
+    inner = token
+    if "[" in token and token.endswith("]"):
+        inner = token[token.index("[") + 1 : -1]
+    return f"…{inner[-4:]}" if len(inner) > 4 else "…"
+
+
+def retry_member_push_delivery(
+    session: Session,
+    delivery_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> MemberPushDeliveryItem:
+    """Attempt one failed push again, keeping its attempt history."""
+
+    occurred = _as_utc(now or utc_now())
+    delivery = session.get(MemberPushDelivery, delivery_id)
+    if delivery is None:
+        raise PushDeliveryNotFound("No se encontró la entrega del push.")
+    if delivery.status not in RETRYABLE_DELIVERY_STATUSES:
+        raise PushDeliveryRetryNotAllowed(
+            "Solo se puede reintentar un push que falló."
+        )
+    if not _claim(session, delivery, from_status="failed", now=occurred):
+        raise PushDeliveryRetryNotAllowed(
+            "Otro intento tomó esta entrega; vuelve a consultar la cola."
+        )
+    _deliver(session, delivery, now=occurred)
+    return _delivery_item(session, delivery)
+
+
+def member_push_delivery_counts(session: Session) -> MemberPushDeliveryCounts:
+    rows = session.exec(
+        select(MemberPushDelivery.status, func.count())
+        .group_by(MemberPushDelivery.status)
+    ).all()
+    by_status = {status: int(total) for status, total in rows}
+    active_tokens = int(
+        session.exec(
+            select(func.count(MemberPushToken.id)).where(
+                MemberPushToken.active.is_(True)
+            )
+        ).one()
+        or 0
+    )
+    return MemberPushDeliveryCounts(
+        pending=by_status.get("pending", 0),
+        sent=by_status.get("sent", 0),
+        simulated=by_status.get("simulated", 0),
+        failed=by_status.get("failed", 0),
+        active_tokens=active_tokens,
+    )
+
+
+def list_member_push_deliveries(
+    session: Session,
+    *,
+    status_filter: str | None = None,
+    page: int = 1,
+    page_size: int = DEFAULT_DELIVERY_PAGE_SIZE,
+) -> MemberPushDeliveryPage:
+    """Newest attempts first, optionally filtered by status."""
+
+    if status_filter is not None and status_filter not in DELIVERY_STATUSES:
+        raise PushError("El estado de la entrega no es válido.")
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), MAX_PAGE_SIZE)
+    condition = (
+        MemberPushDelivery.status == status_filter
+        if status_filter is not None
+        else None
+    )
+    total_query = select(func.count(MemberPushDelivery.id))
+    rows_query = (
+        select(MemberPushDelivery, MemberNotification, Member)
+        .join(
+            MemberNotification,
+            MemberNotification.id == MemberPushDelivery.notification_id,
+        )
+        .join(Member, Member.id == MemberPushDelivery.member_id)
+    )
+    if condition is not None:
+        total_query = total_query.where(condition)
+        rows_query = rows_query.where(condition)
+    total = int(session.exec(total_query).one() or 0)
+    rows = session.exec(
+        rows_query.order_by(
+            MemberPushDelivery.created_at.desc(),
+            MemberPushDelivery.id.desc(),
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    pages = (total + page_size - 1) // page_size if total > 0 else 0
+    return MemberPushDeliveryPage(
+        items=[
+            _delivery_item(session, delivery, notice=notice, member=member)
+            for delivery, notice, member in rows
+        ],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=pages,
+    )
+
+
+def _delivery_item(
+    session: Session,
+    delivery: MemberPushDelivery,
+    *,
+    notice: MemberNotification | None = None,
+    member: Member | None = None,
+) -> MemberPushDeliveryItem:
+    if notice is None:
+        notice = session.get(MemberNotification, delivery.notification_id)
+    if member is None:
+        member = session.get(Member, delivery.member_id)
+    name = (
+        f"{member.first_name} {member.last_name}".strip()
+        if member is not None
+        else "Socio"
+    )
+    return MemberPushDeliveryItem(
+        id=delivery.id,
+        notification_id=delivery.notification_id,
+        member_id=delivery.member_id,
+        member_name=name,
+        member_email=member.email if member is not None else None,
+        kind=notice.kind if notice is not None else "class_reserved",
+        title=notice.title if notice is not None else "Aviso al socio",
+        device=mask_push_token(delivery.token),
+        status=delivery.status,
+        attempts=delivery.attempts,
+        error=delivery.error,
+        created_at=_as_utc(delivery.created_at),
+        last_attempt_at=(
+            _as_utc(delivery.last_attempt_at)
+            if delivery.last_attempt_at is not None
+            else None
+        ),
+        sent_at=(
+            _as_utc(delivery.sent_at) if delivery.sent_at is not None else None
+        ),
+    )
+
+
 def _as_utc(moment: datetime) -> datetime:
     if moment.tzinfo is None or moment.utcoffset() is None:
         return moment.replace(tzinfo=timezone.utc)
@@ -432,20 +631,31 @@ def _as_utc(moment: datetime) -> datetime:
 
 
 __all__ = [
+    "DEFAULT_DELIVERY_PAGE_SIZE",
     "DEFAULT_SEND_BATCH_LIMIT",
     "DELIVERY_STATUSES",
     "EXPO_PUSH_URL",
     "InvalidPushPlatform",
     "InvalidPushToken",
+    "MemberPushDeliveryCounts",
+    "MemberPushDeliveryItem",
+    "MemberPushDeliveryPage",
     "MemberPushPass",
     "PushDeliveryFailed",
+    "PushDeliveryNotFound",
+    "PushDeliveryRetryNotAllowed",
     "PushError",
     "PushMemberNotFound",
     "PushTokenUnregistered",
+    "RETRYABLE_DELIVERY_STATUSES",
     "clean_push_token",
     "deactivate_member_push_token",
     "deactivate_member_push_tokens",
+    "list_member_push_deliveries",
+    "mask_push_token",
+    "member_push_delivery_counts",
     "register_member_push_token",
+    "retry_member_push_delivery",
     "send_expo_push",
     "send_pending_member_push_deliveries",
     "send_pending_member_push_deliveries_from_engine",

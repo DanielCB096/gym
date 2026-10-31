@@ -235,6 +235,32 @@ type NotificationDeliveryBoard = {
   pages: number;
 };
 
+type MemberPushDelivery = {
+  id: string;
+  notification_id: string;
+  member_id: string;
+  member_name: string;
+  member_email: string | null;
+  kind: string;
+  title: string;
+  device: string;
+  status: NotificationDeliveryStatus;
+  attempts: number;
+  error: string | null;
+  created_at: string;
+  last_attempt_at: string | null;
+  sent_at: string | null;
+};
+
+type MemberPushDeliveryBoard = {
+  counts: Record<NotificationDeliveryStatus, number> & { active_tokens: number };
+  items: MemberPushDelivery[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+};
+
 type StaffingSettingsEvent = {
   id: string;
   changed_at: string;
@@ -4999,6 +5025,11 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
   const [deliveryStatus, setDeliveryStatus] = useState<"" | NotificationDeliveryStatus>("");
   const [deliveryPage, setDeliveryPage] = useState(1);
   const [deliveryBusy, setDeliveryBusy] = useState<string | null>(null);
+  const [pushBoard, setPushBoard] = useState<MemberPushDeliveryBoard | null>(null);
+  const [pushError, setPushError] = useState("");
+  const [pushStatus, setPushStatus] = useState<"" | NotificationDeliveryStatus>("");
+  const [pushPage, setPushPage] = useState(1);
+  const [pushBusy, setPushBusy] = useState<string | null>(null);
   const refreshStaffing = () => { setRequestsRefresh((value) => value + 1); onIdentityChanged(); };
   const pendingMarks = useRef(new Map<string, string>());
   const [clockNow, setClockNow] = useState(() => Date.now());
@@ -5108,6 +5139,28 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
     })();
     return () => { active = false; };
   }, [canViewAttendance, deliveryStatus, deliveryPage, requestsRefresh]);
+  useEffect(() => {
+    if (!canViewAttendance) return;
+    let active = true;
+    void (async () => {
+      try {
+        const query = new URLSearchParams({ page: String(pushPage) });
+        if (pushStatus) query.set("status", pushStatus);
+        const response = await fetch(`/api/admin/notifications/push-deliveries?${query.toString()}`, { cache: "no-store" });
+        if (!active) return;
+        if (!response.ok) {
+          setPushError("No se pudo cargar la cola de push.");
+          return;
+        }
+        const board = await response.json() as MemberPushDeliveryBoard;
+        setPushBoard(board);
+        setPushError("");
+      } catch {
+        if (active) setPushError("No se pudo cargar la cola de push.");
+      }
+    })();
+    return () => { active = false; };
+  }, [canViewAttendance, pushStatus, pushPage, requestsRefresh]);
   const sendQueuedAttendanceEmails = async () => {
     setDeliveryBusy("send");
     try {
@@ -5144,6 +5197,43 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
       onToast("No se pudo conectar con el backend.");
     } finally {
       setDeliveryBusy(null);
+    }
+  };
+  const sendQueuedMemberPushes = async () => {
+    setPushBusy("send");
+    try {
+      const response = await fetch("/api/admin/notifications/push-deliveries/send", { method: "POST" });
+      const payload = await response.json().catch(() => ({})) as { detail?: string; attempted?: number; sent?: number; simulated?: number; failed?: number; deactivated?: number };
+      if (!response.ok) {
+        onToast(payload.detail || "No se pudo enviar la cola de push.");
+        return;
+      }
+      if ((payload.attempted ?? 0) === 0) onToast("No hay push pendientes.");
+      else onToast(`${payload.attempted} intento(s): ${payload.sent} enviado(s), ${payload.simulated} simulado(s), ${payload.failed} con error${(payload.deactivated ?? 0) > 0 ? `, ${payload.deactivated} token(s) retirado(s)` : ""}.`);
+      setRequestsRefresh((value) => value + 1);
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setPushBusy(null);
+    }
+  };
+  const retryMemberPush = async (delivery: MemberPushDelivery) => {
+    setPushBusy(delivery.id);
+    try {
+      const response = await fetch(`/api/admin/notifications/push-deliveries/${delivery.id}/retry`, { method: "POST" });
+      const payload = await response.json().catch(() => ({})) as Partial<MemberPushDelivery> & { detail?: string };
+      if (!response.ok) {
+        onToast(payload.detail || "No se pudo reintentar el push.");
+        return;
+      }
+      if (payload.status === "sent") onToast(`Push enviado a ${delivery.member_name}.`);
+      else if (payload.status === "simulated") onToast("El push se simuló: la vista previa no contacta al servicio de notificaciones.");
+      else onToast(`El intento volvió a fallar: ${payload.error ?? "sin detalle"}`);
+      setRequestsRefresh((value) => value + 1);
+    } catch {
+      onToast("No se pudo conectar con el backend.");
+    } finally {
+      setPushBusy(null);
     }
   };
   const saveAttendancePolicy = async () => {
@@ -5512,6 +5602,31 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
             <div className="table-bottom">
               <span>{deliveryBoard?.total ?? 0} entregas registradas</span>
               {deliveryBoard !== null && deliveryBoard.pages > 1 && <span className="member-pagination"><span>Página {deliveryBoard.page} de {deliveryBoard.pages}</span><button type="button" aria-label="Página anterior" disabled={deliveryBoard.page <= 1} onClick={() => setDeliveryPage(Math.max(1, deliveryBoard.page - 1))}>‹</button><button type="button" aria-label="Página siguiente" disabled={deliveryBoard.page >= deliveryBoard.pages} onClick={() => setDeliveryPage(Math.min(deliveryBoard.pages, deliveryBoard.page + 1))}>›</button></span>}
+            </div>
+          </section>}
+          {canViewAttendance && <section className="panel full-panel">
+            <div className="panel-header access-list-heading">
+              <div><p className="section-kicker">PUSH DEL SOCIO</p><h2>Cola de notificaciones a la app</h2></div>
+              <div className="staff-row-actions">
+                <label className="table-select"><span>Estado</span><select value={pushStatus} onChange={(event) => { setPushStatus(event.target.value as "" | NotificationDeliveryStatus); setPushPage(1); }}><option value="">Todos</option><option value="pending">En cola</option><option value="sent">Enviados</option><option value="simulated">Simulados</option><option value="failed">Con error</option></select></label>
+                {canManageAttendance && <button className="button button-primary" disabled={pushBusy !== null} onClick={() => void sendQueuedMemberPushes()}><Bell size={16} />{pushBusy === "send" ? "Enviando…" : "Enviar pendientes"}</button>}
+              </div>
+            </div>
+            <p className="panel-hint">Cada aviso al socio encola un push por dispositivo activo y sale después de que el backend responde, nunca dentro de la transacción que registra el cambio. Un dispositivo que Expo reporta como desinstalado se retira y deja de recibir avisos. En la vista previa el envío queda marcado como simulado.</p>
+            <p className="panel-hint">El token se muestra enmascarado: el panel nunca necesita la dirección completa del dispositivo. Reintentar un push fallido conserva el historial de intentos y no duplica el aviso.</p>
+            <div className="table-toolbar">
+              <span className={`status-badge ${pushBoard === null ? "status-neutral" : "status-good"}`}><i />{pushBoard === null ? "Consultando…" : `${pushBoard.counts.active_tokens} dispositivo(s) activos`}</span>
+              <span className="table-hint">{pushBoard === null ? "" : `${pushBoard.counts.pending} en cola · ${pushBoard.counts.sent} enviados · ${pushBoard.counts.simulated} simulados · ${pushBoard.counts.failed} con error`}</span>
+            </div>
+            <div className="table-scroll"><table className="data-table"><thead><tr><th>SOCIO</th><th>AVISO</th><th>DISPOSITIVO</th><th>ESTADO</th><th>INTENTOS</th><th>ÚLTIMO INTENTO</th><th>DETALLE</th><th /></tr></thead><tbody>
+              {pushError ? <tr><td colSpan={8} className="empty-row">{pushError}</td></tr>
+                : pushBoard === null ? <tr><td colSpan={8} className="empty-row">Cargando la cola…</td></tr>
+                : pushBoard.items.length === 0 ? <tr><td colSpan={8} className="empty-row">{pushStatus ? "No hay entregas en ese estado." : "Todavía no hay push encolados."}</td></tr>
+                : pushBoard.items.map((delivery) => <tr key={delivery.id}><td><div className="person-cell"><span className="person-avatar mint">{delivery.member_name.slice(0, 1).toUpperCase()}</span><span><strong>{delivery.member_name}</strong><small>{delivery.member_email ?? "Sin correo"}</small></span></div></td><td><strong>{delivery.title}</strong><small className="staff-request-current">{MEMBER_NOTIFICATION_KIND_LABELS[delivery.kind] ?? delivery.kind}</small></td><td className="time-cell">{delivery.device}</td><td><StatusBadge state={NOTIFICATION_DELIVERY_LABELS[delivery.status]} /></td><td className="time-cell">{delivery.attempts}</td><td className="time-cell">{delivery.last_attempt_at ? formatSessionTime(delivery.last_attempt_at) : "—"}</td><td>{delivery.error ? <small className="request-overdue">{delivery.error}</small> : delivery.sent_at ? <span className="time-cell">{formatSessionTime(delivery.sent_at)}</span> : <span className="table-hint">en espera</span>}</td><td>{delivery.status === "failed" && canManageAttendance ? <button className="button button-secondary" disabled={pushBusy !== null} onClick={() => void retryMemberPush(delivery)}>{pushBusy === delivery.id ? "Reintentando…" : "Reintentar"}</button> : null}</td></tr>)}
+            </tbody></table></div>
+            <div className="table-bottom">
+              <span>{pushBoard?.total ?? 0} entregas registradas</span>
+              {pushBoard !== null && pushBoard.pages > 1 && <span className="member-pagination"><span>Página {pushBoard.page} de {pushBoard.pages}</span><button type="button" aria-label="Página anterior" disabled={pushBoard.page <= 1} onClick={() => setPushPage(Math.max(1, pushBoard.page - 1))}>‹</button><button type="button" aria-label="Página siguiente" disabled={pushBoard.page >= pushBoard.pages} onClick={() => setPushPage(Math.min(pushBoard.pages, pushBoard.page + 1))}>›</button></span>}
             </div>
           </section>}
           <section className="panel full-panel"><div className="panel-header access-list-heading"><div><p className="section-kicker">DIRECTORIO DE PERSONAL</p><h2>Colaboradores</h2></div>{canManageStaff && <button className="button button-secondary" onClick={() => setNewEmployeeOpen(true)}><Plus size={16} />Nuevo colaborador</button>}</div><div className="table-scroll"><table className="data-table"><thead><tr><th>COLABORADOR</th><th>PUESTO</th><th>HORARIO</th><th>ESTADO</th><th /></tr></thead><tbody>{loading ? <tr><td colSpan={5} className="empty-row">Cargando directorio…</td></tr> : error ? <tr><td colSpan={5} className="empty-row">{error}</td></tr> : employeeList.length === 0 ? <tr><td colSpan={5} className="empty-row">No hay colaboradores registrados.</td></tr> : employeeList.map((employee, index) => { const fullName = `${employee.first_name} ${employee.last_name}`; const initials = `${employee.first_name[0] ?? ""}${employee.last_name[0] ?? ""}`.toUpperCase(); const state = employee.status === "active" ? "Activo" : employee.status === "inactive" ? "Inactivo" : "Baja"; const color = ["mint", "peach", "lavender", "blue", "yellow"][index % 5]; return <tr key={employee.id}><td><div className="person-cell"><span className={`person-avatar ${color}`}>{initials}</span><span><strong>{fullName}</strong><small>{employee.email ?? employee.employee_number}</small></span></div></td><td>{employee.job_title}</td><td className="time-cell">{(() => { const shift = nextShiftFor(employee.id); return shift ? `${shiftDayLabel(shift.starts_at)} · ${shiftClock(shift.starts_at)}–${shiftClock(shift.ends_at)}` : "Sin turno"; })()}</td><td><StatusBadge state={state} /></td><td><button className="icon-button row-menu" aria-label={`Opciones de ${fullName}`}><MoreHorizontal size={17} /></button></td></tr>; })}</tbody></table></div><div className="table-bottom"><span>{employeeList.length} colaboradores registrados</span><span>Horario según los turnos del backend</span></div></section>
@@ -15683,6 +15798,27 @@ const STAFF_NOTIFICATION_KIND_LABELS: Record<string, string> = {
   workout_pending_review: "Rutinas · revisión pendiente",
   maintenance_ticket_assigned: "Mantenimiento · ticket asignado",
   kiosk_token_expiring: "Kiosco · vencimiento del token",
+};
+
+const MEMBER_NOTIFICATION_KIND_LABELS: Record<string, string> = {
+  workout_reviewed: "Rutina · revisión",
+  goal_achieved: "Meta · lograda",
+  goal_cancelled_by_staff: "Meta · cancelada",
+  goal_updated_by_staff: "Meta · actualizada",
+  class_waitlist_promoted: "Clases · lista de espera",
+  membership_expiring: "Membresía · por vencer",
+  equipment_out_of_service: "Equipos · fuera de servicio",
+  invoice_stamped: "Factura · timbrada",
+  invoice_failed: "Factura · con error",
+  invoice_cancelled: "Factura · cancelada",
+  class_reminder: "Clases · recordatorio",
+  class_reserved: "Clases · reserva",
+  class_cancelled: "Clases · cancelada",
+  class_rescheduled: "Clases · reprogramada",
+  physio_appointment_scheduled: "Fisioterapia · cita",
+  physio_appointment_cancelled: "Fisioterapia · cita cancelada",
+  physio_appointment_rescheduled: "Fisioterapia · cita reprogramada",
+  physio_reminder: "Fisioterapia · recordatorio",
 };
 
 function attendanceMarkLabel(mark: "check_in" | "check_out"): string {
