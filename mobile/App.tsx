@@ -30,7 +30,12 @@ import {
   unregisterPushForSession,
   type PushTap,
 } from "./src/push";
-import { notificationDestination } from "./src/notificationRouting";
+import {
+  notificationDestination,
+  notificationFocus,
+  type NotificationDestination,
+  type NotificationFocus,
+} from "./src/notificationRouting";
 import { colors } from "./src/theme";
 import type { MemberLoginResult, MemberProfile } from "./src/types";
 
@@ -62,6 +67,7 @@ export default function App() {
   const [homeError, setHomeError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [focus, setFocus] = useState<NotificationFocus | null>(null);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(null);
   const tokenRef = useRef<string | null>(null);
   const pendingPushRef = useRef<PushTap | null>(null);
@@ -118,6 +124,7 @@ export default function App() {
 
   function openPushTap(tap: PushTap, activeToken: string): Stage {
     const destination = notificationDestination(tap.kind ?? "");
+    setFocus(notificationFocus(tap.kind ?? "", tap.refId));
     if (destination !== "notifications" && tap.notificationId) {
       void markMemberNotificationRead(activeToken, tap.notificationId)
         .then(() => refreshUnreadNotifications(activeToken))
@@ -183,6 +190,7 @@ export default function App() {
         pendingPushRef.current = null;
         await clearToken();
         setToken(null);
+        setFocus(null);
         setStage("email");
         setLoginNotice("Tu sesión expiró. Vuelve a entrar.");
         return;
@@ -209,6 +217,7 @@ export default function App() {
         await clearToken();
         setToken(null);
         setProfile(null);
+        setFocus(null);
         setStage("email");
         setLoginNotice("Tu sesión expiró. Vuelve a entrar.");
       } else {
@@ -233,6 +242,7 @@ export default function App() {
     setLoginError(null);
     setLoginNotice(null);
     setUnreadNotifications(0);
+    setFocus(null);
     setStage("email");
     if (activeToken) {
       await unregisterPushForSession(activeToken);
@@ -249,45 +259,70 @@ export default function App() {
     setPreviewCode(null);
   }
 
+  function openSection(next: Stage) {
+    setFocus(null);
+    setStage(next);
+  }
+
+  function handleBackHome() {
+    openSection("home");
+  }
+
+  function focusRefFor(destination: NotificationDestination): string | null {
+    return focus && focus.destination === destination ? focus.refId : null;
+  }
+
+  function handleOpenDestination(kind: string, refId: string | null) {
+    const destination = notificationDestination(kind);
+    if (destination === "notifications") {
+      return;
+    }
+    setFocus(notificationFocus(kind, refId));
+    setStage(destination);
+  }
+
   function handleOpenClasses() {
-    setStage("classes");
+    openSection("classes");
   }
 
   function handleOpenPhysio() {
-    setStage("physio");
+    openSection("physio");
   }
 
   function handleOpenAccessCode() {
-    setStage("accessCode");
+    openSection("accessCode");
   }
 
   function handleOpenRoutines() {
-    setStage("routines");
+    openSection("routines");
   }
 
   function handleOpenRoutine(assignmentId: string) {
+    setFocus(null);
     setSelectedAssignmentId(assignmentId);
     setStage("routineDetail");
   }
 
   function handleOpenProgressPhotos() {
+    setFocus(null);
     setStage("progressPhotos");
   }
 
   function handleOpenPayments() {
-    setStage("payments");
+    openSection("payments");
   }
 
   function handleOpenInvoices() {
-    setStage("invoices");
+    openSection("invoices");
   }
 
   function handleOpenInvoiceRequest() {
+    setFocus(null);
     setStage("invoiceRequest");
   }
 
   function handleOpenNotifications() {
-    setStage("notifications");
+    openSection("notifications");
   }
 
   async function handleSessionExpired() {
@@ -299,6 +334,7 @@ export default function App() {
     setFallbackName(null);
     setHomeError(null);
     setUnreadNotifications(0);
+    setFocus(null);
     setLoginNotice("Tu sesión expiró. Vuelve a entrar.");
     setStage("email");
   }
@@ -350,28 +386,31 @@ export default function App() {
         {stage === "accessCode" && token ? (
           <AccessCodeScreen
             token={token}
-            onBack={() => setStage("home")}
+            onBack={handleBackHome}
             onSessionExpired={() => void handleSessionExpired()}
           />
         ) : null}
         {stage === "classes" && token ? (
           <ClassesScreen
             token={token}
-            onBack={() => setStage("home")}
+            focusRefId={focusRefFor("classes")}
+            onBack={handleBackHome}
             onSessionExpired={() => void handleSessionExpired()}
           />
         ) : null}
         {stage === "physio" && token ? (
           <PhysioScreen
             token={token}
-            onBack={() => setStage("home")}
+            focusRefId={focusRefFor("physio")}
+            onBack={handleBackHome}
             onSessionExpired={() => void handleSessionExpired()}
           />
         ) : null}
         {stage === "routines" && token ? (
           <RoutinesScreen
             token={token}
-            onBack={() => setStage("home")}
+            focusRefId={focusRefFor("routines")}
+            onBack={handleBackHome}
             onOpenRoutine={handleOpenRoutine}
             onOpenPhotos={handleOpenProgressPhotos}
             onSessionExpired={() => void handleSessionExpired()}
@@ -395,14 +434,15 @@ export default function App() {
         {stage === "payments" && token ? (
           <PaymentsScreen
             token={token}
-            onBack={() => setStage("home")}
+            onBack={handleBackHome}
             onSessionExpired={() => void handleSessionExpired()}
           />
         ) : null}
         {stage === "invoices" && token ? (
           <InvoicesScreen
             token={token}
-            onBack={() => setStage("home")}
+            focusRefId={focusRefFor("invoices")}
+            onBack={handleBackHome}
             onRequestInvoice={handleOpenInvoiceRequest}
             onSessionExpired={() => void handleSessionExpired()}
           />
@@ -417,14 +457,10 @@ export default function App() {
         {stage === "notifications" && token ? (
           <NotificationsScreen
             token={token}
-            onBack={() => setStage("home")}
+            onBack={handleBackHome}
             onSessionExpired={() => void handleSessionExpired()}
             onUnreadChange={setUnreadNotifications}
-            onOpenInvoices={() => setStage("invoices")}
-            onOpenClasses={() => setStage("classes")}
-            onOpenPhysio={() => setStage("physio")}
-            onOpenRoutines={() => setStage("routines")}
-            onOpenHome={() => setStage("home")}
+            onOpenDestination={handleOpenDestination}
           />
         ) : null}
       </SafeAreaView>

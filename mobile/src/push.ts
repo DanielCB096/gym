@@ -13,6 +13,7 @@ type PushRegistration = {
 export type PushTap = {
   notificationId: string | null;
   kind: string | null;
+  refId: string | null;
 };
 
 // One installation registers once per session; the backend transfers a device
@@ -74,10 +75,12 @@ function tapFromResponse(response: NotificationResponse): PushTap | null {
   const kind = typeof data.kind === "string" ? data.kind : null;
   const rawId = data.notification_id;
   const notificationId = typeof rawId === "string" ? rawId : null;
+  const rawRef = data.ref_id;
+  const refId = typeof rawRef === "string" ? rawRef : null;
   if (!kind && !notificationId) {
     return null;
   }
-  return { kind, notificationId };
+  return { kind, notificationId, refId };
 }
 
 // Native only: the web preview has no notification responses. The tap that

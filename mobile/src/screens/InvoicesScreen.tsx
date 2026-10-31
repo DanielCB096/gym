@@ -26,6 +26,7 @@ import type { MemberInvoice, MemberInvoicePage } from "../types";
 
 type Props = {
   token: string;
+  focusRefId: string | null;
   onBack: () => void;
   onRequestInvoice: () => void;
   onSessionExpired: () => void;
@@ -35,6 +36,7 @@ type DocumentKind = "pdf" | "xml";
 
 export function InvoicesScreen({
   token,
+  focusRefId,
   onBack,
   onRequestInvoice,
   onSessionExpired,
@@ -70,6 +72,11 @@ export function InvoicesScreen({
   useEffect(() => {
     void load("initial");
   }, [load]);
+
+  const focusedInvoice =
+    focusRefId && invoices
+      ? (invoices.items.find((invoice) => invoice.id === focusRefId) ?? null)
+      : null;
 
   async function openDocument(invoice: MemberInvoice, kind: DocumentKind) {
     const path = kind === "pdf" ? invoice.pdf_path : invoice.xml_path;
@@ -140,6 +147,21 @@ export function InvoicesScreen({
         </View>
       ) : null}
 
+      {focusRefId && invoices ? (
+        <View
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          style={styles.focusBanner}
+        >
+          <Text style={styles.focusLabel}>Desde tu aviso</Text>
+          <Text style={styles.focusText}>
+            {focusedInvoice
+              ? `Resaltamos la factura ${focusedInvoice.folio_label} aquí abajo.`
+              : "Ese comprobante no está en esta página. Desliza hacia abajo para actualizar y busca su folio en tu bandeja."}
+          </Text>
+        </View>
+      ) : null}
+
       {loading && !invoices ? (
         <View style={styles.loading}>
           <ActivityIndicator color={colors.accent} />
@@ -167,7 +189,13 @@ export function InvoicesScreen({
             {invoices.items.map((invoice) => {
               const issued = invoice.issued_at ?? invoice.created_at;
               return (
-                <View key={invoice.id} style={sharedStyles.card}>
+                <View
+                  key={invoice.id}
+                  style={[
+                    sharedStyles.card,
+                    invoice.id === focusRefId && styles.focusedCard,
+                  ]}
+                >
                   <View style={styles.rowHeading}>
                     <Text style={styles.folio}>{invoice.folio_label}</Text>
                     <View
@@ -307,6 +335,30 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(248, 113, 113, 0.12)",
     borderRadius: radius.md,
     padding: spacing.md,
+  },
+  focusBanner: {
+    backgroundColor: "rgba(96, 165, 250, 0.12)",
+    borderColor: colors.info,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.xs,
+    padding: spacing.md,
+  },
+  focusLabel: {
+    color: colors.info,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+  },
+  focusText: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  focusedCard: {
+    borderColor: colors.accent,
+    borderWidth: 2,
   },
   loading: {
     alignItems: "center",

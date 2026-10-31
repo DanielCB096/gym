@@ -22,11 +22,17 @@ import type { MemberPhysioAppointment, MemberPhysioOverview } from "../types";
 
 type Props = {
   token: string;
+  focusRefId: string | null;
   onBack: () => void;
   onSessionExpired: () => void;
 };
 
-export function PhysioScreen({ token, onBack, onSessionExpired }: Props) {
+export function PhysioScreen({
+  token,
+  focusRefId,
+  onBack,
+  onSessionExpired,
+}: Props) {
   const [overview, setOverview] = useState<MemberPhysioOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -59,6 +65,13 @@ export function PhysioScreen({ token, onBack, onSessionExpired }: Props) {
   }, [load]);
 
   const next = overview?.next_appointment ?? null;
+  const focusedAppointment =
+    focusRefId && overview
+      ? next?.id === focusRefId
+        ? next
+        : (overview.history.find((appointment) => appointment.id === focusRefId) ??
+          null)
+      : null;
 
   return (
     <ScrollView
@@ -99,6 +112,21 @@ export function PhysioScreen({ token, onBack, onSessionExpired }: Props) {
         </View>
       ) : null}
 
+      {focusRefId && overview ? (
+        <View
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          style={styles.focusBanner}
+        >
+          <Text style={styles.focusLabel}>Desde tu aviso</Text>
+          <Text style={styles.focusText}>
+            {focusedAppointment
+              ? `Resaltamos tu cita de ${focusedAppointment.service_name} del ${formatDateTime(focusedAppointment.starts_at)}.`
+              : "Esa cita ya no aparece en tu fisioterapia."}
+          </Text>
+        </View>
+      ) : null}
+
       {loading && !overview ? (
         <View style={styles.loading}>
           <ActivityIndicator color={colors.accent} />
@@ -108,7 +136,13 @@ export function PhysioScreen({ token, onBack, onSessionExpired }: Props) {
 
       {overview ? (
         <>
-          <View style={[sharedStyles.card, styles.nextCard]}>
+          <View
+            style={[
+              sharedStyles.card,
+              styles.nextCard,
+              next?.id === focusRefId && styles.focusedCard,
+            ]}
+          >
             <Text style={sharedStyles.label}>Próxima cita</Text>
             {next ? (
               <AppointmentBody appointment={next} />
@@ -172,7 +206,13 @@ export function PhysioScreen({ token, onBack, onSessionExpired }: Props) {
               </Text>
             ) : (
               overview.history.map((appointment) => (
-                <View key={appointment.id} style={styles.row}>
+                <View
+                  key={appointment.id}
+                  style={[
+                    styles.row,
+                    appointment.id === focusRefId && styles.focusedRow,
+                  ]}
+                >
                   <View style={styles.rowHeading}>
                     <Text style={styles.rowTitle}>{appointment.service_name}</Text>
                     <View style={styles.pill}>
@@ -246,6 +286,35 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(248, 113, 113, 0.12)",
     borderRadius: radius.md,
     padding: spacing.md,
+  },
+  focusBanner: {
+    backgroundColor: "rgba(96, 165, 250, 0.12)",
+    borderColor: colors.info,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.xs,
+    padding: spacing.md,
+  },
+  focusLabel: {
+    color: colors.info,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+  },
+  focusText: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  focusedCard: {
+    borderColor: colors.accent,
+    borderWidth: 2,
+  },
+  focusedRow: {
+    borderLeftColor: colors.accent,
+    borderLeftWidth: 3,
+    paddingLeft: spacing.sm,
   },
   loading: {
     alignItems: "center",

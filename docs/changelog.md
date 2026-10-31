@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-31 · Avisos: el aviso resalta el ítem en su pantalla
+
+- `notificationRouting.ts` estrena `notificationRefTarget` y `notificationFocus`: traducen el `kind` y el `ref_id` de un aviso al renglón que la pantalla de destino lista —factura, reserva o sesión de clase, cita de fisioterapia o meta—. `PushTap` lee ahora `ref_id` del payload y la bandeja entrega el mismo par al manejador de destino.
+- `App.tsx` guarda el foco en memoria y lo pasa como `focusRefId` a Facturas, Clases, Fisioterapia y Rutinas; lo limpia al entrar por el inicio, volver atrás, abrir una rutina, solicitar una factura, cerrar sesión o expirar.
+- Las cuatro pantallas muestran el aviso «Desde tu aviso» y resaltan el renglón con el color de acento, con texto de reserva cuando el ítem ya no está cargado. Los tipos de entrenamiento, equipo y membresía abren su sección sin resaltar.
+- Sin cambios de backend ni migración; `npx tsc --noEmit` limpio y cuatro rutas verificadas en la vista previa (clase, cita en historial, factura y meta). Documentado en ADR-067.
+
 ## 2026-10-31 · Avisos: cada socio elige su horario de silencio
 
 - **Una franja por socio**: la tabla `member_notification_settings` (migración `20261031_0074_member_notification_settings.py`) guarda `quiet_start`/`quiet_end` como `TIME`, una fila por socio con FK `RESTRICT` y un `CHECK` que exige las dos horas juntas y distintas. Sin fila no hay horario propio; quitar el horario borra la fila. Las horas se leen en `APP_TIMEZONE`, como la ventana del club (ADR-061), y pueden cruzar medianoche.

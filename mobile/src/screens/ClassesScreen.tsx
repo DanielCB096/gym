@@ -27,11 +27,17 @@ import type { MemberClass, MemberClassPage } from "../types";
 
 type Props = {
   token: string;
+  focusRefId: string | null;
   onBack: () => void;
   onSessionExpired: () => void;
 };
 
-export function ClassesScreen({ token, onBack, onSessionExpired }: Props) {
+export function ClassesScreen({
+  token,
+  focusRefId,
+  onBack,
+  onSessionExpired,
+}: Props) {
   const [page, setPage] = useState<MemberClassPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -95,6 +101,21 @@ export function ClassesScreen({ token, onBack, onSessionExpired }: Props) {
       return;
     }
     void runAction(item, () => cancelMemberReservation(token, reservation.id));
+  }
+
+  const focusedClass =
+    focusRefId && page
+      ? (page.items.find(
+          (item) =>
+            item.id === focusRefId || item.reservation?.id === focusRefId,
+        ) ?? null)
+      : null;
+
+  function isFocused(item: MemberClass): boolean {
+    return (
+      focusRefId !== null &&
+      (item.id === focusRefId || item.reservation?.id === focusRefId)
+    );
   }
 
   function renderAction(item: MemberClass) {
@@ -197,6 +218,21 @@ export function ClassesScreen({ token, onBack, onSessionExpired }: Props) {
         </View>
       ) : null}
 
+      {focusRefId && page ? (
+        <View
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          style={styles.focusBanner}
+        >
+          <Text style={styles.focusLabel}>Desde tu aviso</Text>
+          <Text style={styles.focusText}>
+            {focusedClass
+              ? `Resaltamos ${focusedClass.title} del ${formatDateTime(focusedClass.starts_at)} aquí abajo.`
+              : "La clase de tu aviso ya no aparece en la cartelera de los próximos días. Desliza hacia abajo para actualizar."}
+          </Text>
+        </View>
+      ) : null}
+
       {loading && !page ? (
         <View style={styles.loading}>
           <ActivityIndicator color={colors.accent} />
@@ -214,7 +250,14 @@ export function ClassesScreen({ token, onBack, onSessionExpired }: Props) {
       ) : null}
 
       {page?.items.map((item) => (
-        <View key={item.id} style={[sharedStyles.card, styles.classCard]}>
+        <View
+          key={item.id}
+          style={[
+            sharedStyles.card,
+            styles.classCard,
+            isFocused(item) && styles.focusedCard,
+          ]}
+        >
           <View style={styles.classHeader}>
             <View style={styles.classHeading}>
               <Text style={styles.classDate}>{formatDateTime(item.starts_at)}</Text>
@@ -309,6 +352,30 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(248, 113, 113, 0.12)",
     borderRadius: radius.md,
     padding: spacing.md,
+  },
+  focusBanner: {
+    backgroundColor: "rgba(96, 165, 250, 0.12)",
+    borderColor: colors.info,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.xs,
+    padding: spacing.md,
+  },
+  focusLabel: {
+    color: colors.info,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+  },
+  focusText: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  focusedCard: {
+    borderColor: colors.accent,
+    borderWidth: 2,
   },
   loading: {
     alignItems: "center",

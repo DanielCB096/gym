@@ -62,11 +62,7 @@ type Props = {
   onBack: () => void;
   onSessionExpired: () => void;
   onUnreadChange: (count: number) => void;
-  onOpenInvoices: () => void;
-  onOpenClasses: () => void;
-  onOpenPhysio: () => void;
-  onOpenRoutines: () => void;
-  onOpenHome: () => void;
+  onOpenDestination: (kind: string, refId: string | null) => void;
 };
 
 export function NotificationsScreen({
@@ -74,11 +70,7 @@ export function NotificationsScreen({
   onBack,
   onSessionExpired,
   onUnreadChange,
-  onOpenInvoices,
-  onOpenClasses,
-  onOpenPhysio,
-  onOpenRoutines,
-  onOpenHome,
+  onOpenDestination,
 }: Props) {
   const [inbox, setInbox] = useState<MemberNotificationPage | null>(null);
   const [preferences, setPreferences] = useState<
@@ -167,25 +159,7 @@ export function NotificationsScreen({
         setBusy(false);
       }
     }
-    switch (notificationDestination(item.kind)) {
-      case "invoices":
-        onOpenInvoices();
-        break;
-      case "classes":
-        onOpenClasses();
-        break;
-      case "physio":
-        onOpenPhysio();
-        break;
-      case "routines":
-        onOpenRoutines();
-        break;
-      case "home":
-        onOpenHome();
-        break;
-      case "notifications":
-        break;
-    }
+    onOpenDestination(item.kind, item.ref_id);
   }
 
   async function handleMarkAll() {
@@ -609,8 +583,9 @@ export function NotificationsScreen({
       <Text style={sharedStyles.hint}>
         Toca un aviso para marcarlo como leído. Los de factura abren Facturas; los de
         clase, Clases; los de fisioterapia, Fisioterapia; los de rutina y equipo,
-        Rutinas; y los de membresía, el inicio. Los avisos no se borran: quedan en tu
-        historial. Desliza hacia abajo para actualizar.
+        Rutinas; y los de membresía, el inicio. Si el aviso apunta a una factura, una
+        clase, una cita o una meta, esa pantalla la resalta. Los avisos no se borran:
+        quedan en tu historial. Desliza hacia abajo para actualizar.
       </Text>
     </ScrollView>
   );

@@ -33,6 +33,7 @@ import type { MemberProgress, MemberRoutineList } from "../types";
 
 type Props = {
   token: string;
+  focusRefId: string | null;
   onBack: () => void;
   onOpenRoutine: (assignmentId: string) => void;
   onOpenPhotos: () => void;
@@ -97,6 +98,7 @@ function parseMeasurement(
 
 export function RoutinesScreen({
   token,
+  focusRefId,
   onBack,
   onOpenRoutine,
   onOpenPhotos,
@@ -155,6 +157,11 @@ export function RoutinesScreen({
   useEffect(() => {
     void load("initial");
   }, [load]);
+
+  const focusedGoal =
+    focusRefId && progress
+      ? (progress.goals.find((goal) => goal.id === focusRefId) ?? null)
+      : null;
 
   const submitMeasurement = async () => {
     const parsedWeight = parseMeasurement(weight, "El peso", 500);
@@ -313,6 +320,21 @@ export function RoutinesScreen({
       {error ? (
         <View style={styles.errorBanner}>
           <Text style={sharedStyles.error}>{error}</Text>
+        </View>
+      ) : null}
+
+      {focusRefId && progress ? (
+        <View
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          style={styles.focusBanner}
+        >
+          <Text style={styles.focusLabel}>Desde tu aviso</Text>
+          <Text style={styles.focusText}>
+            {focusedGoal
+              ? `Resaltamos tu meta de ${goalMetricLabel(focusedGoal.metric).toLowerCase()} aquí abajo.`
+              : "La meta de tu aviso ya no aparece en tus metas."}
+          </Text>
         </View>
       ) : null}
 
@@ -577,7 +599,13 @@ export function RoutinesScreen({
             </Text>
           ) : (
             progress.goals.map((goal) => (
-              <View key={goal.id} style={styles.goalRow}>
+              <View
+                key={goal.id}
+                style={[
+                  styles.goalRow,
+                  goal.id === focusRefId && styles.focusedGoal,
+                ]}
+              >
                 <View style={styles.goalHeading}>
                   <Text style={styles.goalTitle}>{goalMetricLabel(goal.metric)}</Text>
                   <View style={styles.pill}>
@@ -749,6 +777,31 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(248, 113, 113, 0.12)",
     borderRadius: radius.md,
     padding: spacing.md,
+  },
+  focusBanner: {
+    backgroundColor: "rgba(96, 165, 250, 0.12)",
+    borderColor: colors.info,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.xs,
+    padding: spacing.md,
+  },
+  focusLabel: {
+    color: colors.info,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+  },
+  focusText: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  focusedGoal: {
+    borderLeftColor: colors.accent,
+    borderLeftWidth: 3,
+    paddingLeft: spacing.sm,
   },
   loading: {
     alignItems: "center",
