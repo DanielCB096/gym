@@ -1,6 +1,6 @@
 # Traspaso para retomar el trabajo
 
-Actualizado: 2026-10-31 · Rama: `main` · ADR-065 en `pendiente`, ADR-064 en `7ee0bdd`, ADR-063 en `96e967f`, ADR-062 en `d9594e4`, ADR-061 en `dd482d7`, ADR-059 en `984c901`, ADR-058 en `f4280ae`, ADR-057 en `39391dc`, ADR-056 en `e4c4399`, ADR-055 en `d7c21ac`, ADR-054 en `94c3a6a` y ADR-050 a ADR-053 en `8a0daa8`.
+Actualizado: 2026-10-31 · Rama: `main` · ADR-065 en `6cb1632`, ADR-064 en `7ee0bdd`, ADR-063 en `96e967f`, ADR-062 en `d9594e4`, ADR-061 en `dd482d7`, ADR-059 en `984c901`, ADR-058 en `f4280ae`, ADR-057 en `39391dc`, ADR-056 en `e4c4399`, ADR-055 en `d7c21ac`, ADR-054 en `94c3a6a` y ADR-050 a ADR-053 en `8a0daa8`.
 
 Esta nota es el punto de entrada para otra persona o IA. El estado detallado vive en [README.md](README.md#estado-del-proyecto) y el histórico en [changelog.md](changelog.md); aquí solo se resume qué está hecho, qué sigue y qué no debe tocarse sin pedirlo.
 
@@ -28,7 +28,7 @@ Sobre eso, el corte de acuse y push añadió dos canales nuevos:
 - La suite del backend quedó en **441 pruebas** (436 pasan; las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`). La migración más reciente es `20261031_0074_member_notification_settings` (crea la tabla del horario por socio).
 - `npx tsc --noEmit` quedó limpio en el panel y en la app móvil. En la vista previa se agotó un push sintético: las cuatro cuentas con `attendance.manage` recibieron su alerta y su correo `simulated`, la campana mostró «Notificaciones, 1 por atender» y «Correos del personal» las filas «Push del socio sin entregar» / «Avisos · push sin entregar» / «Simulado»; la tarjeta «PUSH DEL SOCIO» mostró 3 intentos y «Sin reintentos». Después se recorrieron las seis rutas del mapa de navegación con avisos temporales del socio y la insignia del inicio bajó 5 → 4 → 3 → 1. Los avisos, entregas y tokens sintéticos se borraron al terminar.
 - **ADR-065 en la vista previa**: con la app web de Expo y el backend en `PREVIEW_MODE`, Lucía abrió Notificaciones y la tarjeta «Tu horario de silencio» mostró «Sin horario propio…»; guardar 14:00–15:00 dejó «Ahora mismo está en silencio: tu teléfono no sonará hasta las 15:00.», dos horas iguales se rechazaron con el mensaje en la tarjeta sin cambiar la franja, y «Quitar horario» la dejó sin fila. La tarjeta también anunció la ventana del club cuando existía. La sesión temporal se revocó y el token se descartó; `npx tsc --noEmit` pasó en la app móvil.
-- **ADR-050 a ADR-053 van en `8a0daa8`; ADR-054 en `94c3a6a`; ADR-055 en `d7c21ac`; ADR-056 en `e4c4399`; ADR-057 en `39391dc`; ADR-058 en `f4280ae`; ADR-059 en `984c901`; ADR-060 en `1d28526`; ADR-061 en `dd482d7`; ADR-062 en `d9594e4`; ADR-063 en `96e967f`; ADR-064 en `7ee0bdd` y ADR-065 en `pendiente`**, empujados a `origin/main` junto con el código, las pruebas y la documentación.
+- **ADR-050 a ADR-053 van en `8a0daa8`; ADR-054 en `94c3a6a`; ADR-055 en `d7c21ac`; ADR-056 en `e4c4399`; ADR-057 en `39391dc`; ADR-058 en `f4280ae`; ADR-059 en `984c901`; ADR-060 en `1d28526`; ADR-061 en `dd482d7`; ADR-062 en `d9594e4`; ADR-063 en `96e967f`; ADR-064 en `7ee0bdd` y ADR-065 en `6cb1632`**, empujados a `origin/main` junto con el código, las pruebas y la documentación.
 
 ## Siguiente corte sugerido
 
