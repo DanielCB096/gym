@@ -125,6 +125,8 @@ El backend envía al servicio de Expo (`https://exp.host/--/api/v2/push/send`), 
 4. Sube la clave de servicio a EAS: panel del proyecto → **Credentials → Android → FCM V1 service account key → Add key**, o `npx eas-cli credentials` (Android → Google Service Account → Upload new key). EAS la guarda y no entra al repositorio.
 5. Rebuild `preview` e instala. Al iniciar sesión la app pide permiso de avisos y registra el token de Expo; un aviso generado por el backend (por ejemplo, reservar una clase) debe llegar al teléfono con la app cerrada.
 
+Verificado el 2026-10-31 con el build `9b8a522b`: el token se registró al iniciar sesión y un aviso real de reserva llegó con la app cerrada; al tocarlo abrió Clases. La vista previa simula el push, así que el envío real se hizo con una instancia temporal del backend en `PREVIEW_MODE=false` y `DATABASE_URL=sqlite:///./gym_preview.db`.
+
 ## Flujo de acceso
 
 1. `POST /member/auth/request-code` con `{ "email": "..." }` responde `202` siempre (correo desconocido o inactivo incluido) y, solo en vista previa, devuelve `preview_code`.

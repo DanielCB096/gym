@@ -26,7 +26,7 @@ ADR-052 dejó el payload del push como informativo: lleva `notification_id`, `ki
 ## Consecuencias y límites
 
 - **El mapa es de código, no de configuración.** Un tipo nuevo sin entrada en `notificationRouting.ts` abre la bandeja; cambiarlo exige publicar una versión de la app, no tocar el backend.
-- **Se verificó con una build interna y un aviso local.** La vista previa web no recibe respuestas de notificación y sin FCM no hay push real, así que el toque se probó con una build `preview` de EAS que, con `EXPO_PUBLIC_PUSH_TEST=true`, programa el mismo payload desde `expo-notifications`. En un teléfono Android físico, cerrar la app y tocar el aviso abrió la pantalla de su tipo sin pasar por Inicio.
+- **Se verificó en un teléfono físico, con aviso local y con push real.** La vista previa web no recibe respuestas de notificación. Primero se usó una build `preview` de EAS que, con `EXPO_PUBLIC_PUSH_TEST=true`, programa el mismo payload desde `expo-notifications`; después se configuró FCM y el backend entregó un aviso real de reserva de clase. En ambos casos, cerrar la app y tocar el aviso abrió la pantalla de su tipo sin pasar por Inicio.
 - **El push es at-least-once.** Dos entregas del mismo aviso pueden abrir la misma pantalla dos veces; es inofensivo porque la navegación y el marcado de lectura son idempotentes.
 - **La lectura es best-effort.** Si marcar leído falla por red, el aviso queda sin leer y la insignia se corrige al abrir la bandeja; la navegación no espera la respuesta del servidor.
 - **No hay enlaces profundos a datos.** No se puede abrir una factura, una clase o una cita concreta desde el push, solo la pantalla que las contiene; hacerlo exigiría rutas con estado y un identificador de origen estable.
