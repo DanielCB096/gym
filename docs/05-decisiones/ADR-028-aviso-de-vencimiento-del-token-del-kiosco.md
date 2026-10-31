@@ -39,3 +39,7 @@ El club no tiene programador ni correo transaccional para el personal. Lo que s�
 - `backend/preview_patch.py` (reconstrucción del `CHECK` de `staff_notifications`)
 - `backend/src/app/main.py` (`GET /admin/notifications`, `GET /admin/notifications/unread-count`)
 - `backend/tests/test_kiosk_access_api.py` (`test_kiosk_token_expiry_is_announced_to_settings_managers`)
+
+## Actualización posterior
+
+- **Actualización de ADR-076 (2026-10-31).** La advertencia ya no depende de que alguien abra la campana: `materialise_deferred_notices` la escribe también desde el cron de avisos diferidos cada 60 minutos. `warn_expiring_kiosk_tokens` comprueba la clave de deduplicación antes de insertar y cuenta solo las filas que escribe, así que una pasada de lectura y otra del cron en la misma fase no duplican ni inflan el resultado. La audiencia (`settings.manage`), la fase y la fecha del club en la clave no cambian; sigue sin push ni correo.

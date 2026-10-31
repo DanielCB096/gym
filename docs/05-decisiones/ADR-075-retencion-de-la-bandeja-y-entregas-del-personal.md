@@ -33,8 +33,10 @@ La operación ya tiene el patrón: un script por tabla o familia de tablas, vent
 - **Depende del cron del host.** Sin `ops_cron.py` instalado, la retención es una capacidad del script y no una tarea que ocurra sola; la bitácora `purge-inbox.log` es la única señal de fallo.
 - **El push del socio y su acuse tienen otra purga.** Esta no toca `member_push_deliveries` ni sus acuses (ADR-074); su orden en el cron es lo que permite que el aviso del socio quede libre en la misma noche.
 
+- **Actualización de ADR-076 (2026-10-31).** La advertencia del token del kiosco que esta purga conserva ahora también la escribe el cron de avisos diferidos cada 60 minutos; sigue sin podarse nunca, porque mientras el dispositivo conserve el token vencido volvería a escribirse. El resto de reglas de esta decisión no cambia.
+
 ## Referencias
 
-- ADR-016 y ADR-017 (bandejas del socio y del personal), ADR-028 (aviso del token del kiosco), ADR-040 (retención del kiosco), ADR-058 (acuses del correo), ADR-070 y ADR-071 (push web del personal), ADR-074 (retención del push del socio), ADR-063 (cron de operación).
+- ADR-016 y ADR-017 (bandejas del socio y del personal), ADR-028 (aviso del token del kiosco), ADR-040 (retención del kiosco), ADR-058 (acuses del correo), ADR-070 y ADR-071 (push web del personal), ADR-074 (retención del push del socio), ADR-076 (cron de avisos diferidos), ADR-063 (cron de operación).
 - Implementación: `app/modules/notifications/inbox_retention.py`, `backend/purge_inbox_data.py`, `backend/ops_cron.py`.
-- Pruebas: `backend/tests/test_inbox_retention.py` (26 casos) y `backend/tests/test_ops_cron.py` (32).
+- Pruebas: `backend/tests/test_inbox_retention.py` (26 casos) y `backend/tests/test_ops_cron.py` (35).

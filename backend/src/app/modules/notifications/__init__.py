@@ -9,6 +9,7 @@ from app.modules.notifications.models import (
     StaffNotification,
 )
 from app.modules.notifications.service import (
+    DeferredNoticesResult,
     MemberNotificationItem,
     MemberNotificationPage,
     NotificationError,
@@ -23,6 +24,7 @@ from app.modules.notifications.service import (
     mark_all_staff_notifications_read,
     mark_notification_read,
     mark_staff_notification_read,
+    materialise_deferred_notices,
     notify_class_cancelled,
     notify_class_reserved,
     notify_class_rescheduled,
@@ -51,6 +53,7 @@ __all__ = [
     "MAX_TITLE_CHARS",
     "NOTIFICATION_KINDS",
     "STAFF_NOTIFICATION_KINDS",
+    "DeferredNoticesResult",
     "MemberNotification",
     "MemberNotificationItem",
     "MemberNotificationPage",
@@ -67,6 +70,7 @@ __all__ = [
     "mark_all_staff_notifications_read",
     "mark_notification_read",
     "mark_staff_notification_read",
+    "materialise_deferred_notices",
     "notify_class_cancelled",
     "notify_class_reserved",
     "notify_class_rescheduled",

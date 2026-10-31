@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-31 · Avisos: programador de avisos diferidos (ADR-076)
+
+- `materialise_deferred_notices(session, *, now=None)` reúne las tres fuentes diferidas del socio —membresía a ≤ 7/3/1 días, clase a ≤ 24/2 h y cita de fisioterapia a ≤ 24 h—, el escalamiento de la solicitud de asistencia vencida y la advertencia del token del kiosco, y devuelve `DeferredNoticesResult` con los socios revisados y las filas escritas por origen. Reutiliza los productores y sus claves de deduplicación, consulta solo a los socios con una fuente en ventana y ahora cuenta solo lo que inserta: `warn_expiring_kiosk_tokens` comprueba la clave antes de escribir, así que pasar por la lectura y por el cron a la vez no duplica ni infla el log.
+- Se corrigió `MEMBERSHIP_EXPIRY_WINDOWS` a orden ascendente `(1, 3, 7)`: el aviso de una membresía a un día llevaba la clave `:7` porque `next()` elegía siempre la ventana más ancha ya alcanzada.
+- `backend/emit_deferred_notices.py` ejecuta la pasada por cron y `ops_cron.py` pasó a ocho entradas: la octava corre cada 60 minutos (`0 * * * *`, `--notices-every`) con bitácora `deferred-notices.log`, y `--install` exige el script. La lectura de las bandejas sigue materializando los avisos, así que el panel y la vista previa funcionan sin cron; los recordatorios siguen sin push ni correo. Sin migración. Se actualizaron la ficha de avisos, las de clases, fisioterapia y personal, la guía de despliegue, la deuda, el plan de pruebas, ADR-016, ADR-028, ADR-035, ADR-039, ADR-045, ADR-063, TRASPASO y el README del backend.
+- Suite backend completa: **570 pruebas, 562 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL` (`test_deferred_notices_scheduler.py` suma 7 y el cron pasa a 35).
+
+## 2026-10-31 · Documentación: actualizar foco del roadmap
+
+- Se actualizó el estado de la app móvil: el checkout de primera membresía está disponible solo en sandbox; la validación E2E sigue pendiente. Se quitó el pago en línea del siguiente foco y se aclaró que la aprobación de metas requiere una decisión funcional.
+
 ## 2026-10-31 · Avisos: retención de la bandeja y de las entregas del personal (ADR-075)
 
 - `backend/purge_inbox_data.py` y `app/modules/notifications/inbox_retention.py` podan la bandeja y las colas del personal en una corrida: borran los avisos del socio **ya leídos** y los del personal **cerrados** anteriores al corte (`NOTIFICATION_INBOX_RETENTION_DAYS`, 365 días por defecto de 30 a 3650), y las entregas terminales (`sent`, `simulated`, `failed`) de correo y de push web del personal anteriores al suyo (`STAFF_DELIVERY_RETENTION_DAYS`, 365 de 1 a 3650). Nunca borra un aviso sin leer, un aviso con trabajo pendiente ni la advertencia de token del kiosco, que se regenera mientras el dispositivo siga ahí; borra primero las entregas y salta cualquiera con entrega o acuse vivos, así que las ventanas cruzadas no rompen las claves foráneas `RESTRICT`. Acepta `--preview`, `--database-url`, `--inbox-days`, `--delivery-days` y `--dry-run`, con códigos 2 para configuración y 1 para base inalcanzable.

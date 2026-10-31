@@ -15,10 +15,13 @@ Three producers feed the two inboxes:
   behind the assignment or the ticket is resolved to its ``app_users`` row here
   and the notice is simply skipped when that employee has no active account;
 * the time-based reminders —a membership about to expire, a class about to
-  start— which have no scheduler to wake them up. They are materialised lazily
-  when the member reads the inbox or the unread counter and are deduplicated by
-  a key that names the threshold, so the same reminder is written at most once
-  per window (7, then 3, then 1 day left; 24 then 2 hours before the class).
+  start, a physiotherapy appointment the next day— which nobody raises at the
+  moment they become true. They are materialised lazily when the member reads
+  the inbox or the unread counter, and the deferred-notices cron task
+  (:func:`materialise_deferred_notices`, ADR-076) writes them without a reader.
+  A key that names the threshold deduplicates them, so the same reminder is
+  written at most once per window (7, then 3, then 1 day left; 24 then 2 hours
+  before the class; once for the appointment).
 
 Readers can only ever see and acknowledge their own rows; there is no update or
 delete path on either inbox. The one exception happens outside the reader: the
@@ -59,7 +62,10 @@ from app.modules.notifications.models import (
 from app.modules.notifications.preferences import is_push_enabled
 from app.timezone import to_club_timezone
 
-MEMBERSHIP_EXPIRY_WINDOWS = (7, 3, 1)
+# Ascending order: each read picks the tightest window the membership is
+# already inside, so a 2-day membership gets the 3-day reminder instead of
+# keeping the 7-day one until it expires.
+MEMBERSHIP_EXPIRY_WINDOWS = (1, 3, 7)
 # Ascending order: each read picks the tightest window the class is already
 # inside, so opening the inbox twice within the same window writes one row.
 CLASS_REMINDER_WINDOWS_HOURS = (2, 24)
@@ -120,6 +126,18 @@ class StaffNotificationPage:
     page_size: int
     pages: int
     unread_total: int
+
+
+@dataclass(frozen=True)
+class DeferredNoticesResult:
+    members_checked: int
+    member_notices_written: int
+    attendance_escalations_written: int
+    kiosk_token_notices_written: int
+
+    @property
+    def staff_notices_written(self) -> int:
+        return self.attendance_escalations_written + self.kiosk_token_notices_written
 
 
 NotificationRow = TypeVar("NotificationRow", MemberNotification, StaffNotification)
@@ -1059,7 +1077,7 @@ def _staff_pending_condition():
 
 def _ensure_attendance_request_escalations(
     session: Session, *, now: datetime | None = None
-) -> None:
+) -> int:
     """Escalate expired change requests to the owners while someone reads.
 
     Imported here for the same reason as the class reminder: the staffing service
@@ -1069,7 +1087,7 @@ def _ensure_attendance_request_escalations(
     """
     from app.modules.staffing.service import escalate_overdue_attendance_requests
 
-    escalate_overdue_attendance_requests(session, now=now)
+    return escalate_overdue_attendance_requests(session, now=now)
 
 
 def list_staff_notifications(
@@ -1192,24 +1210,37 @@ def resolve_staff_notifications(
     return len(rows)
 
 
+def _member_notice_exists(session: Session, dedupe_key: str) -> bool:
+    return (
+        session.exec(
+            select(MemberNotification.id).where(
+                MemberNotification.dedupe_key == dedupe_key
+            )
+        ).first()
+        is not None
+    )
+
+
 def _materialise_deferred(
     session: Session, member_id: UUID, *, now: datetime | None = None
-) -> None:
-    """Write every reminder that only exists because someone is looking.
+) -> int:
+    """Write every member reminder that is due for one member.
 
-    There is no scheduler, so the two time-based notices are produced by the
-    read path instead of a worker. Each producer deduplicates itself, which
-    makes this safe to call on every read of the inbox and of the badge.
+    The read path and the deferred-notices task share these producers. Each one
+    deduplicates itself, so calling this on every read of the inbox and of the
+    badge is safe, and the caller sums what each producer actually wrote.
     """
     occurred = _as_utc(now or utc_now())
-    _ensure_membership_expiring(session, member_id, now=occurred)
-    _ensure_class_reminders(session, member_id, now=occurred)
-    _ensure_physio_reminders(session, member_id, now=occurred)
+    return (
+        _ensure_membership_expiring(session, member_id, now=occurred)
+        + _ensure_class_reminders(session, member_id, now=occurred)
+        + _ensure_physio_reminders(session, member_id, now=occurred)
+    )
 
 
 def _ensure_physio_reminders(
     session: Session, member_id: UUID, *, now: datetime | None = None
-) -> None:
+) -> int:
     """Write the day-before reminder of a physiotherapy appointment.
 
     Like the class reminder, it is materialised on read because there is no
@@ -1236,11 +1267,15 @@ def _ensure_physio_reminders(
         )
         .order_by(PhysioAppointment.starts_at)
     ).all()
+    written = 0
     for appointment, service, therapist in rows:
         starts_at = _as_utc(appointment.starts_at)
         local = to_club_timezone(starts_at)
         therapist_name = f"{therapist.first_name} {therapist.last_name}".strip()
         room = f" en {appointment.room}" if appointment.room else ""
+        dedupe_key = f"physio_reminder:{appointment.id}:24"
+        if _member_notice_exists(session, dedupe_key):
+            continue
         create_notification(
             session,
             member_id=member_id,
@@ -1251,17 +1286,19 @@ def _ensure_physio_reminders(
                 f"{local:%d/%m/%Y} a las {local:%H:%M}{room}. Llega 10 minutos antes."
             ),
             ref_id=appointment.id,
-            dedupe_key=f"physio_reminder:{appointment.id}:24",
+            dedupe_key=dedupe_key,
             now=occurred,
             push=False,
         )
-    if rows:
+        written += 1
+    if written:
         session.commit()
+    return written
 
 
 def _ensure_class_reminders(
     session: Session, member_id: UUID, *, now: datetime | None = None
-) -> None:
+) -> int:
     """Write the reminder of every class the member is about to attend.
 
     The window is part of the dedupe key, so a member who opens the app the day
@@ -1289,7 +1326,8 @@ def _ensure_class_reminders(
         .order_by(ClassSession.starts_at)
     ).all()
     if not rows:
-        return
+        return 0
+    written = 0
     for reservation, class_session in rows:
         starts_at = _as_utc(class_session.starts_at)
         hours_left = (starts_at - occurred).total_seconds() / 3600
@@ -1300,6 +1338,9 @@ def _ensure_class_reminders(
         if window is None:
             continue
         local = to_club_timezone(starts_at)
+        dedupe_key = f"class_reminder:{reservation.id}:{window}"
+        if _member_notice_exists(session, dedupe_key):
+            continue
         create_notification(
             session,
             member_id=member_id,
@@ -1311,22 +1352,24 @@ def _ensure_class_reminders(
                 "Llega unos minutos antes."
             ),
             ref_id=reservation.id,
-            dedupe_key=f"class_reminder:{reservation.id}:{window}",
+            dedupe_key=dedupe_key,
             now=occurred,
             push=False,
         )
-    session.commit()
+        written += 1
+    if written:
+        session.commit()
+    return written
 
 
 def _ensure_membership_expiring(
     session: Session, member_id: UUID, *, now: datetime | None = None
-) -> None:
+) -> int:
     """Write the expiring-membership reminder the member is currently inside.
 
-    There is no scheduler in this project, so the reminder is materialised when
-    the inbox is read. The dedupe key is the window (7, 3 or 1 day) rather than
-    the exact day count, which is what keeps one reminder per threshold instead
-    of one per day.
+    It is materialised by the read paths and by the deferred-notices task. The
+    dedupe key is the window (7, 3 or 1 day) rather than the exact day count,
+    which is what keeps one reminder per threshold instead of one per day.
     """
     occurred = _as_utc(now or utc_now())
     row = session.exec(
@@ -1339,12 +1382,15 @@ def _ensure_membership_expiring(
         .order_by(Membership.ends_at.asc())
     ).first()
     if row is None:
-        return
+        return 0
     ends_at = _as_utc(row.ends_at)
     days_remaining = math.ceil((ends_at - occurred).total_seconds() / 86400)
     window = next((limit for limit in MEMBERSHIP_EXPIRY_WINDOWS if days_remaining <= limit), None)
     if window is None:
-        return
+        return 0
+    dedupe_key = f"membership_expiring:{row.id}:{window}"
+    if _member_notice_exists(session, dedupe_key):
+        return 0
     ends_local = to_club_timezone(ends_at)
     body = (
         f"Tu membresía vence el {ends_local:%d/%m/%Y} (faltan {days_remaining} "
@@ -1358,11 +1404,82 @@ def _ensure_membership_expiring(
         title="Tu membresía está por vencer",
         body=body,
         ref_id=row.id,
-        dedupe_key=f"membership_expiring:{row.id}:{window}",
+        dedupe_key=dedupe_key,
         now=occurred,
         push=False,
     )
     session.commit()
+    return 1
+
+
+def _deferred_member_ids(session: Session, occurred: datetime) -> list[UUID]:
+    """Members with a source that can produce a reminder right now."""
+    from app.modules.classes.models import ClassReservation, ClassSession
+    from app.modules.physio.models import PhysioAppointment
+
+    membership_horizon = occurred + timedelta(days=max(MEMBERSHIP_EXPIRY_WINDOWS))
+    class_horizon = occurred + timedelta(hours=max(CLASS_REMINDER_WINDOWS_HOURS))
+    physio_horizon = occurred + timedelta(hours=max(PHYSIO_REMINDER_WINDOWS_HOURS))
+    member_ids: set[UUID] = set(
+        session.exec(
+            select(Membership.member_id).where(
+                Membership.status == "active",
+                Membership.ends_at > occurred,
+                Membership.ends_at <= membership_horizon,
+            )
+        ).all()
+    )
+    member_ids.update(
+        session.exec(
+            select(ClassReservation.member_id)
+            .join(ClassSession, ClassSession.id == ClassReservation.session_id)
+            .where(
+                ClassReservation.status == "reserved",
+                ClassSession.status == "scheduled",
+                ClassSession.starts_at > occurred,
+                ClassSession.starts_at <= class_horizon,
+            )
+        ).all()
+    )
+    member_ids.update(
+        session.exec(
+            select(PhysioAppointment.member_id).where(
+                PhysioAppointment.status == "scheduled",
+                PhysioAppointment.starts_at > occurred,
+                PhysioAppointment.starts_at <= physio_horizon,
+            )
+        ).all()
+    )
+    return sorted(member_ids)
+
+
+def materialise_deferred_notices(
+    session: Session, *, now: datetime | None = None
+) -> DeferredNoticesResult:
+    """Run every reminder that normally waits for a reader.
+
+    The member reminders and both staff notices (the attendance escalation and
+    the expiring kiosk token) are materialised by the read paths because there
+    was no scheduler. This entry point lets a cron job write them without a
+    reader; it is idempotent because every producer deduplicates itself.
+    """
+    occurred = _as_utc(now or utc_now())
+    member_ids = _deferred_member_ids(session, occurred)
+    member_notices = sum(
+        _materialise_deferred(session, member_id, now=occurred)
+        for member_id in member_ids
+    )
+    escalations = _ensure_attendance_request_escalations(session, now=occurred)
+
+    from app.modules.access.kiosk import warn_expiring_kiosk_tokens
+
+    kiosk_notices = warn_expiring_kiosk_tokens(session, now=occurred)
+    return DeferredNoticesResult(
+        members_checked=len(member_ids),
+        member_notices_written=member_notices,
+        attendance_escalations_written=escalations,
+        kiosk_token_notices_written=kiosk_notices,
+    )
 
 
 def _notification_item(row: MemberNotification) -> MemberNotificationItem:

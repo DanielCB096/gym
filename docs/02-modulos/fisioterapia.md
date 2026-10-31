@@ -182,8 +182,8 @@ Veintiuna rutas bajo `web/src/app/api/admin/physio/**` —una por recurso y acci
 - `physio_appointment_scheduled`: al crear la cita desde recepción, con día, hora, fisioterapeuta y la indicación de llegar 10 minutos antes. `dedupe_key = physio_scheduled:<cita>:<socio>`.
 - `physio_appointment_cancelled`: al cancelar; llega al socio aunque la cancelación sea del club.
 - `physio_appointment_rescheduled`: solo si cambia el inicio o el fin, con la ventana anterior y la nueva; la clave lleva el instante del cambio.
-- `physio_reminder`: recordatorio 24 horas antes de la cita, con día, hora, fisioterapeuta y consultorio. Se materializa al leer la bandeja —no hay programador de tareas— y `dedupe_key = physio_reminder:<cita>:24`, así que abrir la bandeja dos veces dentro de la ventana escribe un solo aviso; si la cita se cancela, deja de coincidir y el aviso queda como historial.
-- Sin push ni correo: el socio se entera al abrir su bandeja, como el resto de los avisos.
+- `physio_reminder`: recordatorio 24 horas antes de la cita, con día, hora, fisioterapeuta y consultorio. Se materializa al leer la bandeja **y por cron** (`materialise_deferred_notices`, ADR-076: `backend/emit_deferred_notices.py` cada 60 minutos) y `dedupe_key = physio_reminder:<cita>:24`, así que abrirlo y correr el cron dentro de la ventana escriben un solo aviso; si la cita se cancela, deja de coincidir y el aviso queda como historial.
+- Sin push ni correo: el socio se entera al abrir su bandeja, como el resto de los avisos, aunque desde ADR-076 el recordatorio ya se escribe sin que tenga que abrirla.
 - No se avisa de la compra del paquete ni de la asistencia; no son hechos que el socio deba atender. La anulación del paquete sí avisa, porque cancela citas futuras.
 
 ## 10. Consideraciones de rendimiento

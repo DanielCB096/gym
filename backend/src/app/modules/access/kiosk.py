@@ -356,13 +356,14 @@ def warn_expiring_kiosk_tokens(
 ) -> int:
     """Tell the accounts that can rotate a token that it is about to expire.
 
-    There is no scheduler, so the notice is materialised when the panel reads its
-    inbox, mirroring the member's expiring-membership reminder. Only
-    ``settings.manage`` holders can rotate, so they are the audience. The dedupe
-    key ties the notice to the device, the expiry date, the phase and the
-    account: each token produces at most one "por vencer" and one "caducó"
-    notice, and a rotation — which moves the expiry date — can announce itself
-    again. Devices without an expiry date never alert.
+    The notice is materialised when the panel reads its inbox, mirroring the
+    member's expiring-membership reminder, and the deferred-notices scheduler
+    calls it for the same reason. Only ``settings.manage`` holders can rotate, so
+    they are the audience. The dedupe key ties the notice to the device, the
+    expiry date, the phase and the account: each token produces at most one
+    "por vencer" and one "caducó" notice, and a rotation — which moves the expiry
+    date — can announce itself again. Devices without an expiry date never
+    alert. The return value counts only rows written, not replays.
     """
     occurred_at = _as_utc(now or utc_now())
     devices = session.exec(
@@ -377,6 +378,7 @@ def warn_expiring_kiosk_tokens(
 
     # Imported lazily so the access module keeps its own dependency graph.
     from app.modules.identity.service import user_ids_with_permission
+    from app.modules.notifications.models import StaffNotification
     from app.modules.notifications.service import create_staff_notification
 
     recipients = user_ids_with_permission(session, "settings.manage", now=occurred_at)
@@ -406,6 +408,17 @@ def warn_expiring_kiosk_tokens(
                 "desde la página Kiosco para no dejar la tablet sin acceso."
             )
         for user_id in recipients:
+            dedupe_key = (
+                f"kiosk_token_expiring:{device.id}:"
+                f"{expires_local.date().isoformat()}:{phase}:{user_id}"
+            )
+            already = session.exec(
+                select(StaffNotification.id).where(
+                    StaffNotification.dedupe_key == dedupe_key
+                )
+            ).first()
+            if already is not None:
+                continue
             create_staff_notification(
                 session,
                 user_id=user_id,
@@ -413,14 +426,12 @@ def warn_expiring_kiosk_tokens(
                 title=title,
                 body=body,
                 ref_id=device.id,
-                dedupe_key=(
-                    f"kiosk_token_expiring:{device.id}:"
-                    f"{expires_local.date().isoformat()}:{phase}:{user_id}"
-                ),
+                dedupe_key=dedupe_key,
                 now=occurred_at,
             )
             written += 1
-    session.commit()
+    if written:
+        session.commit()
     return written
 
 

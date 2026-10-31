@@ -30,6 +30,7 @@ Las tres tareas comparten forma —un script de `backend/`, la misma `DATABASE_U
 - **Actualización de ADR-073 (2026-10-31).** El bloque pasó a cinco entradas: `close_physio_day.py` cierra el día anterior de la agenda de fisioterapia a las `00:30` por defecto (`--physio-close-at`, `HH:MM`) y escribe `physio-close.log`; `--install` exige también ese script. Lo demás de esta decisión no cambia.
 - **Actualización de ADR-074 (2026-10-31).** El bloque pasó a seis entradas: `purge_push_data.py` es la tercera purga diaria, treinta minutos después de la del correo (`--daily-at` más dos escalones de 30 min, `04:15` con los valores por defecto), escribe `purge-push.log` y `--install` exige también ese script. Lo demás de esta decisión no cambia.
 - **Actualización de ADR-075 (2026-10-31).** El bloque pasó a siete entradas: `purge_inbox_data.py` es la cuarta purga diaria, noventa minutos después de la primera (`--daily-at` más tres escalones de 30 min, `04:45` con los valores por defecto), escribe `purge-inbox.log` y `--install` exige también ese script. Es la primera tarea que poda avisos y no solo datos operativos, con las reglas de ADR-075. Lo demás de esta decisión no cambia.
+- **Actualización de ADR-076 (2026-10-31).** El bloque pasó a ocho entradas: `emit_deferred_notices.py` materializa por cron los recordatorios del socio y los avisos del personal que dependían de la lectura, cada 60 minutos por defecto (`0 * * * *`, `--notices-every` de 5 a 59 o 60), escribe `deferred-notices.log` y `--install` exige también ese script. Es la primera entrada que no purga ni cierra nada: solo escribe avisos. Lo demás de esta decisión no cambia.
 - **Cada tarea sigue siendo idempotente y sin estado compartido.** El cron no coordina nada: si una corrida tarda más que el intervalo, la siguiente corre igual. Las purgas borran lo que ya no aplica (una segunda pasada borra `0`) y la consulta de acuses no reescribe el estado de la entrega, así que una corrida solapada como mucho repite una consulta.
 
 ## Consecuencias y límites
@@ -46,9 +47,9 @@ Las tres tareas comparten forma —un script de `backend/`, la misma `DATABASE_U
 ## Referencias
 
 - `backend/ops_cron.py` (`build_block`, `replace_block`, `remove_block`, `--print`, `--install`, `--uninstall`)
-- `backend/purge_access_data.py`, `backend/purge_email_receipts.py`, `backend/sync_push_receipts.py`, `backend/flush_staff_push.py` (ADR-071)
+- `backend/purge_access_data.py`, `backend/purge_email_receipts.py`, `backend/sync_push_receipts.py`, `backend/flush_staff_push.py` (ADR-071), `backend/emit_deferred_notices.py` (ADR-076)
 - `backend/src/app/modules/notifications/push_receipts.py` (`sync_member_push_receipts(..., preview=...)`)
-- `backend/tests/test_ops_cron.py` (29 pruebas)
+- `backend/tests/test_ops_cron.py` (35 pruebas)
 - `backend/tests/test_member_push_receipts.py` (12 pruebas, incluida la del `preview` explícito)
 - `docs/06-operacion/despliegue.md` (mantenimiento programado)
 - ADR-040 (retención del kiosco), ADR-058 (retención de los acuses del correo), ADR-062 (acuses de entrega del push)
