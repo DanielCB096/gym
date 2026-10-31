@@ -91,7 +91,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Base de vista previa: {database_url}")
         with Session(engine) as session:
             try:
-                result = sync_member_push_receipts(session, limit=args.limit)
+                result = sync_member_push_receipts(
+                    session, limit=args.limit, preview=is_preview
+                )
             except PushReceiptsFailed as error:
                 print(f"Error al consultar los acuses: {error}", file=sys.stderr)
                 return 1

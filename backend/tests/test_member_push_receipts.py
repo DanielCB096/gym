@@ -259,6 +259,21 @@ def test_preview_defers_without_contacting_expo(session: Session, monkeypatch) -
     assert _receipts(session) == []
 
 
+def test_the_preview_argument_defers_without_the_environment_flag(
+    session: Session, monkeypatch
+) -> None:
+    _sent_delivery(session)
+    monkeypatch.setattr(receipts_module, "preview_mode", lambda: False)
+    monkeypatch.setattr(
+        receipts_module, "fetch_expo_receipts", lambda ids: pytest.fail("no debe llamar")
+    )
+
+    result = sync_member_push_receipts(session, now=NOW, preview=True)
+
+    assert result.deferred is True
+    assert result.pending == 1
+
+
 def test_fetching_receipts_survives_a_transport_error(monkeypatch) -> None:
     def unreachable(*_args, **_kwargs):
         raise httpx.ConnectError("sin red")

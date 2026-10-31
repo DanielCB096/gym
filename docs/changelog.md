@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-31 · Operación: el cron de mantenimiento se instala desde el repositorio
+
+- **Un bloque en lugar de tres líneas a mano**: `backend/ops_cron.py` genera las entradas de `purge_access_data.py`, `purge_email_receipts.py` y `sync_push_receipts.py` delimitadas por `# BEGIN gimnasio-ops` / `# END gimnasio-ops`. `--print` (por defecto) las muestra sin tocar nada, `--install` reemplaza solo ese tramo del crontab y conserva las demás entradas, y `--uninstall` lo retira. Reinstalar es idempotente: cambiar la contraseña de la base o mover la carpeta se resuelve reinstalando en vez de editando a mano.
+- **Programación por defecto**: las purgas a las `03:15` y `03:45` —treinta minutos de separación para no solaparse— y los acuses del push cada 30 minutos, con `--limit 200` tickets por corrida. `--daily-at`, `--receipts-every` (5 a 59, o 60), `--limit` (1 a 1000) y `--app-dir`/`--python`/`--log-dir` permiten ajustarlo sin editar la plantilla. Las horas son locales del servidor: el cron no interpreta `APP_TIMEZONE`.
+- **Escritura segura**: cada orden hace `cd <backend> && DATABASE_URL=<url> <python> <script> >> <log> 2>&1` con rutas y URL citadas; `--install` crea la carpeta de bitácoras y exige que los tres scripts existan; una configuración inválida sale con código 2 sin tocar el crontab; sin el comando `crontab` el instalador lo dice y sugiere `--print` en vez de fallar en silencio. La URL queda en el crontab del usuario, así que `--print` advierte no pegarla en un ticket.
+- **La vista previa de los acuses ya difiere de verdad**: `sync_member_push_receipts` acepta `preview=True` explícito y `sync_push_receipts.py --preview` lo pasa, sin depender solo de `PREVIEW_MODE`.
+- **Pruebas**: 24 casos nuevos en `test_ops_cron.py` (bloque, orden, horas, cita, validaciones, idempotencia, bloque sin cierre, CLI con `--print`/`--install`/`--uninstall`, scripts faltantes, crontab ilegible y `crontab` ausente) y 1 en `test_member_push_receipts.py` (el `preview` explícito). Suite en **424 pruebas**: 419 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Documentación**: ADR-063, despliegue (mantenimiento programado con el instalador), módulo de avisos del socio, plan de pruebas, deuda técnica, traspaso y este changelog.
+
+## 2026-10-31 · Documentación: apertura y cierre del gimnasio
+
+- **Se documentó el flujo de operación diaria**: se creó [docs/03-procesos/apertura-y-cierre-del-gimnasio.md](03-procesos/apertura-y-cierre-del-gimnasio.md) con la apertura del día, cierre operativo, puntos de control del acceso, caja, mantenimiento y responsabilidades.
+- **Se actualizó el índice de procesos**: [docs/README.md](README.md) incluye este procedimiento como documento disponible dentro de la ruta de procesos del proyecto.
+- **Se mantiene la regla de operación**: la documentación sigue siendo el punto de entrada para un cierre operativo consistente sin tocar áreas de trabajo más recientes del proyecto, especialmente el módulo de avisos y pushes del socio.
+
 ## 2026-10-31 · Avisos: el acuse de entrega del push del socio
 
 - **El ticket del envío se guarda**: `send_expo_push` devuelve un `PushSendResult` con el estado y el `id` del ticket, y `member_push_deliveries` lo conserva en `expo_ticket_id` junto con `receipt_checked_at`. Una entrega `pending`, `failed` o `simulated` no tiene ticket y nunca se consulta.

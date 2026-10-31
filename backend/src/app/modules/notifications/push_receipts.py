@@ -128,16 +128,21 @@ def sync_member_push_receipts(
     *,
     limit: int = DEFAULT_RECEIPT_BATCH,
     now: datetime | None = None,
+    preview: bool | None = None,
 ) -> PushReceiptPass:
     """Store the receipts of the sent pushes Expo already answers for.
 
     The pass is safe to repeat: a delivery with a receipt is never asked again,
     an unanswered ticket waits ``RECEIPT_RECHECK`` before the next question, and
     the receipt's unique keys make a concurrent pass store the same answer once.
+    ``preview`` overrides the environment flag for callers that already know
+    they run against the preview database, like ``sync_push_receipts.py``.
     """
 
     occurred = _as_utc(now or utc_now())
-    if preview_mode():
+    if preview is None:
+        preview = preview_mode()
+    if preview:
         return PushReceiptPass(
             checked=0,
             delivered=0,
