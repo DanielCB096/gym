@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-31 · Avisos: rotación del secreto del webhook con periodo de gracia
+
+- **Segundo secreto solo para verificar**: `EMAIL_WEBHOOK_SECRET_PREVIOUS` (opcional) se acepta únicamente al comprobar `X-Email-Signature`; el club sigue firmando con `EMAIL_WEBHOOK_SECRET`, que es obligatorio. Sin el actual, el webhook responde `503` aunque haya uno anterior.
+- **Aviso en el log**: cada firma válida con el secreto anterior deja un `warning` que nombra la variable y pide retirarla cuando terminen los reintentos en vuelo. Si ninguno coincide, sigue siendo `401` con el mensaje genérico.
+- **Pruebas**: 4 casos nuevos en `test_staff_email_receipts.py` —el anterior se acepta durante la gracia y avisa, por sí solo no configura el webhook, un secreto retirado deja de valer y el anterior se lee del entorno—, y el flujo HTTP firma con el anterior (`200` repetido), lo retira y comprueba el `401`. Suite en **346 pruebas**: 341 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Documentación**: ADR-057, deuda técnica, plan de pruebas, README, README del backend, módulo de personal, traspaso y este changelog.
+
 ## 2026-10-31 · Avisos: ventana de tiempo para el acuse de entrega
 
 - **Ventana del webhook**: un evento nuevo de `POST /webhooks/email/delivery` con más de siete días de antigüedad o más de quince minutos de adelanto se rechaza con `422`; el `detail` explica si es «demasiado antiguo» o «demasiado en el futuro». Las tolerancias son `RECEIPT_MAX_AGE` y `RECEIPT_MAX_FUTURE_SKEW` en `receipts.py`.

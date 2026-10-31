@@ -10,13 +10,16 @@ arrived.
 
 The endpoint has no account to authenticate with, so the body is signed with a
 shared secret (``EMAIL_WEBHOOK_SECRET``) and the signature travels in
-``X-Email-Signature`` as ``sha256=<hex>``. Providers retry until they get a 2xx,
-so the provider's event id makes the write idempotent: the same event stored
-twice would otherwise look like two acknowledgements. The signature covers the
-body but not the clock, so a new event must also fall inside a tolerance window
-around the moment it is received; a replay of an event already stored is still
-answered as such. When the club connects a real provider, an adapter translates
-its payload into this contract.
+``X-Email-Signature`` as ``sha256=<hex>``. While the club rotates that secret, a
+second one (``EMAIL_WEBHOOK_SECRET_PREVIOUS``) stays valid for signatures
+already in flight; the current secret is always required and only it can
+configure the endpoint. Providers retry until they get a 2xx, so the provider's
+event id makes the write idempotent: the same event stored twice would otherwise
+look like two acknowledgements. The signature covers the body but not the clock,
+so a new event must also fall inside a tolerance window around the moment it is
+received; a replay of an event already stored is still answered as such. When
+the club connects a real provider, an adapter translates its payload into this
+contract.
 """
 
 from dataclasses import dataclass
@@ -41,6 +44,7 @@ from app.modules.notifications.models import (
 )
 
 WEBHOOK_SECRET_ENV = "EMAIL_WEBHOOK_SECRET"
+WEBHOOK_PREVIOUS_SECRET_ENV = "EMAIL_WEBHOOK_SECRET_PREVIOUS"
 SIGNATURE_PREFIX = "sha256="
 MAX_DETAIL_CHARS = 500
 # The signature authenticates the body, not the moment it describes. A new
@@ -96,13 +100,23 @@ def webhook_secret() -> str:
     return os.getenv(WEBHOOK_SECRET_ENV, "").strip()
 
 
+def webhook_previous_secret() -> str:
+    """The secret kept valid while the club finishes its rotation."""
+
+    return os.getenv(WEBHOOK_PREVIOUS_SECRET_ENV, "").strip()
+
+
 def signature_for(raw_body: bytes, secret: str) -> str:
     digest = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     return f"{SIGNATURE_PREFIX}{digest}"
 
 
 def verify_signature(
-    raw_body: bytes, signature: str | None, *, secret: str | None = None
+    raw_body: bytes,
+    signature: str | None,
+    *,
+    secret: str | None = None,
+    previous_secret: str | None = None,
 ) -> None:
     configured = webhook_secret() if secret is None else secret.strip()
     if not configured:
@@ -112,8 +126,23 @@ def verify_signature(
     candidate = (signature or "").strip()
     if not candidate:
         raise ReceiptSignatureInvalid("Falta la firma del webhook.")
-    if not hmac.compare_digest(signature_for(raw_body, configured), candidate):
-        raise ReceiptSignatureInvalid("La firma del webhook no coincide.")
+    if hmac.compare_digest(signature_for(raw_body, configured), candidate):
+        return
+    previous = (
+        webhook_previous_secret()
+        if previous_secret is None
+        else previous_secret.strip()
+    )
+    if previous and hmac.compare_digest(
+        signature_for(raw_body, previous), candidate
+    ):
+        logger.warning(
+            "La firma del webhook coincide con el secreto anterior (%s); "
+            "retírelo cuando terminen los reintentos en vuelo.",
+            WEBHOOK_PREVIOUS_SECRET_ENV,
+        )
+        return
+    raise ReceiptSignatureInvalid("La firma del webhook no coincide.")
 
 
 def normalize_message_id(value: str) -> str:
@@ -302,11 +331,13 @@ __all__ = [
     "ReceiptRejected",
     "ReceiptSignatureInvalid",
     "ReceiptStale",
+    "WEBHOOK_PREVIOUS_SECRET_ENV",
     "WEBHOOK_SECRET_ENV",
     "normalize_message_id",
     "parse_delivery_report",
     "record_email_receipt",
     "signature_for",
     "verify_signature",
+    "webhook_previous_secret",
     "webhook_secret",
 ]

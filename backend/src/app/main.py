@@ -4767,7 +4767,8 @@ def retry_member_push_delivery_endpoint(
     tags=["webhooks"],
     description=(
         "Acuse de entrega del proveedor de correo. El cuerpo se firma con "
-        "EMAIL_WEBHOOK_SECRET y se envía en X-Email-Signature como sha256=<hex>. "
+        "EMAIL_WEBHOOK_SECRET y se envía en X-Email-Signature como sha256=<hex>; "
+        "durante una rotación también se acepta EMAIL_WEBHOOK_SECRET_PREVIOUS. "
         "Campos: message_id, event_id, event (delivered|bounced|complained), "
         "occurred_at y detail. El mismo event_id se responde como repetido. Un "
         "evento nuevo debe caer en la ventana de 7 días de antigüedad y 15 "

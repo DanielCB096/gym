@@ -43,6 +43,7 @@ from app.modules.notifications.delivery import list_staff_notification_deliverie
 
 NOW = datetime(2026, 10, 30, 18, 0, tzinfo=timezone.utc)
 SECRET = "webhook-secret-for-tests"
+PREVIOUS_SECRET = "previous-webhook-secret-for-tests"
 
 
 def _build_engine():
@@ -404,6 +405,58 @@ def test_the_signature_is_mandatory_and_must_match() -> None:
             raise AssertionError(f"signature accepted: {secret!r} {signature!r}")
 
 
+def test_the_previous_secret_is_accepted_during_rotation(caplog) -> None:
+    body = b'{"message_id": "m@x"}'
+    caplog.set_level(logging.WARNING, logger="app.modules.notifications.receipts")
+
+    verify_signature(
+        body,
+        signature_for(body, "secreto-anterior"),
+        secret="secreto-nuevo",
+        previous_secret="secreto-anterior",
+    )
+    assert "secreto anterior" in caplog.text
+
+    verify_signature(
+        body,
+        signature_for(body, "secreto-nuevo"),
+        secret="secreto-nuevo",
+        previous_secret="secreto-anterior",
+    )
+
+
+def test_the_previous_secret_alone_does_not_configure_the_webhook() -> None:
+    body = b'{"message_id": "m@x"}'
+
+    with pytest.raises(ReceiptNotConfigured):
+        verify_signature(
+            body,
+            signature_for(body, "viejo"),
+            secret="",
+            previous_secret="viejo",
+        )
+
+
+def test_a_retired_secret_stops_working() -> None:
+    body = b'{"message_id": "m@x"}'
+
+    with pytest.raises(ReceiptSignatureInvalid):
+        verify_signature(
+            body,
+            signature_for(body, "viejo"),
+            secret="nuevo",
+            previous_secret="",
+        )
+
+
+def test_the_previous_secret_comes_from_the_environment(monkeypatch) -> None:
+    body = b'{"message_id": "m@x"}'
+    monkeypatch.setenv("EMAIL_WEBHOOK_SECRET", "nuevo")
+    monkeypatch.setenv("EMAIL_WEBHOOK_SECRET_PREVIOUS", "viejo")
+
+    verify_signature(body, signature_for(body, "viejo"))
+
+
 def _panel_deliveries(client: TestClient, headers: dict[str, str]) -> dict:
     response = client.get("/admin/staff/notifications/deliveries", headers=headers)
     assert response.status_code == 200, response.text
@@ -416,6 +469,8 @@ def test_the_webhook_stores_the_ack_and_the_panel_shows_it(
     monkeypatch.setenv("SECRET_KEY", "test-receipts-secret")
     monkeypatch.setenv("PREVIEW_MODE", "true")
     monkeypatch.setenv("EMAIL_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("EMAIL_WEBHOOK_SECRET_PREVIOUS", PREVIOUS_SECRET)
+    caplog.set_level(logging.WARNING, logger="app.modules.notifications.receipts")
 
     engine = _build_engine()
     SQLModel.metadata.create_all(engine)
@@ -453,6 +508,27 @@ def test_the_webhook_stores_the_ack_and_the_panel_shows_it(
             assert replay.json()["duplicate"] is True
             assert replay.json()["id"] == accepted.json()["id"]
 
+            rotated = client.post(
+                "/webhooks/email/delivery",
+                content=body,
+                headers={
+                    "X-Email-Signature": signature_for(body, PREVIOUS_SECRET)
+                },
+            )
+            assert rotated.status_code == 200, rotated.text
+            assert rotated.json()["duplicate"] is True
+            assert "secreto anterior" in caplog.text
+
+            monkeypatch.delenv("EMAIL_WEBHOOK_SECRET_PREVIOUS")
+            retired = client.post(
+                "/webhooks/email/delivery",
+                content=body,
+                headers={
+                    "X-Email-Signature": signature_for(body, PREVIOUS_SECRET)
+                },
+            )
+            assert retired.status_code == 401
+
             board = _panel_deliveries(client, headers)
             assert board["items"][0]["status"] == "sent"
             assert board["items"][0]["ack_status"] == "delivered"
@@ -487,9 +563,6 @@ def test_the_webhook_stores_the_ack_and_the_panel_shows_it(
             )
             assert malformed.status_code == 422
 
-            caplog.set_level(
-                logging.WARNING, logger="app.modules.notifications.receipts"
-            )
             stale = _post(
                 client,
                 json.dumps(
