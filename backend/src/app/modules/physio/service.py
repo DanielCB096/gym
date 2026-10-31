@@ -1295,6 +1295,12 @@ def _assert_slot_free(
     ends_at: datetime,
     exclude_id: UUID | None = None,
 ) -> None:
+    # Locking the therapist row serializes two bookings of the same employee on
+    # engines with row locks; SQLite drops the clause, as everywhere else. It
+    # covers partial overlaps, which the unique start index cannot see.
+    session.exec(
+        select(Employee).where(Employee.id == therapist_id).with_for_update()
+    ).first()
     statement = select(PhysioAppointment.id).where(
         PhysioAppointment.therapist_employee_id == therapist_id,
         PhysioAppointment.status != "cancelled",

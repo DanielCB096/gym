@@ -7,7 +7,7 @@
 
 El módulo de fisioterapia ya tiene catálogo de consultorios (`physio_rooms`) y cada cita puede apuntar a uno por `room_id`, con el consultorio predeterminado del fisioterapeuta cuando se deja vacío (ADR-039 y su incremento 3). Sin embargo, la agenda solo validaba al fisioterapeuta: dos citas con especialistas distintos podían reservar la misma sala a la misma hora, y el panel mostraba dos pacientes en el mismo consultorio. La deuda técnica lo listaba en dos puntos: «el consultorio es catálogo, pero no recurso reservable» y «el traslape solo se atrapa en el inicio exacto».
 
-Al revisar el segundo punto se confirmó que estaba desactualizado: `_assert_slot_free` ya compara intervalos (`starts_at < fin AND ends_at > inicio`), no solo el inicio exacto, así que el traslape parcial del mismo fisioterapeuta se rechaza desde que se creó la agenda. El hueco real era la sala: el consultorio es el segundo recurso físico que se puede encimar, y con dos especialistas atendiendo en paralelo el club puede tener más citas que salas.
+Al revisar el segundo punto se confirmó que estaba desactualizado: `_assert_slot_free` ya compara intervalos (`starts_at < fin AND ends_at > inicio`), no solo el inicio exacto, así que el traslape parcial del mismo fisioterapeuta se rechaza desde que se creó la agenda; la serialización de esa comprobación llegó después con el bloqueo del empleado (ADR-072). El hueco real era la sala: el consultorio es el segundo recurso físico que se puede encimar, y con dos especialistas atendiendo en paralelo el club puede tener más citas que salas.
 
 ## Decisión
 
@@ -32,5 +32,6 @@ Al revisar el segundo punto se confirmó que estaba desactualizado: `_assert_slo
 - `backend/src/app/main.py` (`(PhysioSlotConflict, 409)`)
 - `backend/tests/test_physio_api.py` (`test_rooms_cannot_double_book_the_same_hour`)
 - `backend/tests/test_physio_rooms_postgres.py` (concurrencia opt-in de la sala con `TEST_POSTGRES_URL`)
+- `docs/05-decisiones/ADR-072-bloqueo-del-fisioterapeuta-al-agendar.md`
 - `docs/02-modulos/fisioterapia.md`
 - `docs/05-decisiones/ADR-039-fisioterapia-cobro-por-asistencia.md`

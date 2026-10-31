@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-31 · Fisioterapia: bloqueo del fisioterapeuta al agendar (ADR-072)
+
+- `_assert_slot_free` bloquea la fila del empleado con `SELECT ... FOR UPDATE` antes de comparar intervalos, así que dos recepcionistas que agendan horas parcialmente encimadas del mismo fisioterapeuta se serializan en PostgreSQL, con o sin consultorio de catálogo; el alta y el movimiento pasan por la misma comprobación. Sin migración ni cambio de contrato.
+- Nueva prueba opt-in `backend/tests/test_physio_therapist_postgres.py`: contra PostgreSQL 16 en Docker pasó 5 de 5 veces y, sin el bloqueo, el mismo escenario dejó dos citas solapadas en 5 de 5 rondas.
+- Suite backend completa: **506 pruebas, 498 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL`; se actualizaron la deuda, el plan de pruebas, la ficha de fisioterapia, ADR-069, TRASPASO y el README del backend.
+
 ## 2026-10-31 · Fisioterapia: prueba opt-in de concurrencia de la sala (ADR-069)
 
 - Se agregó `backend/tests/test_physio_rooms_postgres.py` (2 pruebas opt-in con `TEST_POSTGRES_URL`): dos altas simultáneas en el mismo consultorio y dos movimientos simultáneos a la misma sala dejan una sola cita, y la otra transacción recibe `409` de consultorio y se revierte.
