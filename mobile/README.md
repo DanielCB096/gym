@@ -103,6 +103,17 @@ CORS_ORIGINS=http://localhost:8081,http://127.0.0.1:8081
 
 `CORS_ORIGINS` solo aplica a Expo web; la app nativa no usa CORS. La app envía el token como `Authorization: Bearer`, por lo que el backend mantiene `allow_credentials=False`.
 
+## Build interno de Android para probar el aviso
+
+El perfil `preview` de `eas.json` produce un APK instalable y activa la tarjeta «Prueba de arranque en frío» dentro de Avisos (`EXPO_PUBLIC_PUSH_TEST=true`). El build está ligado al proyecto EAS `@danielcb096s-team/centro-fit-socio` (ID `90abae9f-0051-44f2-9c5f-c83a2caaa10e`).
+
+1. El teléfono debe alcanzar el backend: define `EXPO_PUBLIC_API_URL` en el entorno `preview` de EAS con la IP de la LAN (por ejemplo `http://192.168.100.53:8000`) y arranca el backend con `--host 0.0.0.0`.
+2. Lanza el build: `npx eas-cli build --platform android --profile preview`.
+3. Instala el APK con el enlace o el QR del build e inicia sesión con un socio de la vista previa.
+4. En Avisos, toca «Programar aviso en 20 segundos», sal de la app deslizándola de recientes (sin forzar la detención) y espera el aviso. Al tocarlo debe abrir la pantalla de su tipo —Facturas si la bandeja está vacía— sin pasar por el inicio.
+
+El perfil `production` no define `EXPO_PUBLIC_PUSH_TEST`, así que la tarjeta no aparece en una build de tienda. La escucha del toque y el arranque en frío no se pueden probar en Expo web.
+
 ## Flujo de acceso
 
 1. `POST /member/auth/request-code` con `{ "email": "..." }` responde `202` siempre (correo desconocido o inactivo incluido) y, solo en vista previa, devuelve `preview_code`.

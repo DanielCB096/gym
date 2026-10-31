@@ -24,6 +24,7 @@ import {
   notificationDestination,
   type NotificationDestination,
 } from "../notificationRouting";
+import { PUSH_PROBE_ENABLED, scheduleLocalPushProbe } from "../pushProbe";
 import { colors, radius, sharedStyles, spacing } from "../theme";
 import type {
   MemberNotification,
@@ -82,6 +83,8 @@ export function NotificationsScreen({
   const [busy, setBusy] = useState(false);
   const [preferenceBusy, setPreferenceBusy] =
     useState<MemberNotificationCategory | null>(null);
+  const [probeBusy, setProbeBusy] = useState(false);
+  const [probeNotice, setProbeNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -238,6 +241,28 @@ export function NotificationsScreen({
       setError(describeError(toggleError));
     } finally {
       setPreferenceBusy(null);
+    }
+  }
+
+  async function handleScheduleProbe() {
+    if (probeBusy) {
+      return;
+    }
+    setProbeBusy(true);
+    try {
+      const first = inbox?.items[0];
+      await scheduleLocalPushProbe(
+        first ? { id: first.id, kind: first.kind } : undefined,
+      );
+      setProbeNotice(
+        "Aviso programado para dentro de 20 segundos. Cierra la app sin forzar su detención, espera a que suene y tócalo.",
+      );
+    } catch (probeError) {
+      setProbeNotice(
+        probeError instanceof Error ? probeError.message : describeError(probeError),
+      );
+    } finally {
+      setProbeBusy(false);
     }
   }
 
@@ -398,6 +423,35 @@ export function NotificationsScreen({
               />
             </View>
           ))}
+        </View>
+      ) : null}
+
+      {PUSH_PROBE_ENABLED ? (
+        <View style={sharedStyles.card}>
+          <Text style={sharedStyles.label}>Prueba de arranque en frío</Text>
+          <Text style={sharedStyles.body}>
+            Programa un aviso local con el mismo payload del push. Sal de la app
+            antes de que suene y toca el aviso: debe abrir la pantalla que le
+            corresponde sin pasar por el inicio.
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Programar aviso local de prueba"
+            disabled={probeBusy}
+            onPress={() => void handleScheduleProbe()}
+            style={({ pressed }) => [
+              sharedStyles.secondaryButton,
+              probeBusy && sharedStyles.primaryButtonDisabled,
+              pressed && sharedStyles.secondaryButtonPressed,
+            ]}
+          >
+            <Text style={sharedStyles.secondaryButtonText}>
+              {probeBusy ? "Programando…" : "Programar aviso en 20 segundos"}
+            </Text>
+          </Pressable>
+          {probeNotice ? (
+            <Text style={sharedStyles.hint}>{probeNotice}</Text>
+          ) : null}
         </View>
       ) : null}
 
