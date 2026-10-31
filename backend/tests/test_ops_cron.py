@@ -1,8 +1,9 @@
 """The operations cron block installed by ``ops_cron.py``.
 
-The block schedules the physiotherapy day close, the two daily purges, the Expo
-receipts pass and the staff push drain, keeps unrelated crontab lines untouched,
-and reinstalling replaces the old block instead of adding a second copy.
+The block schedules the physiotherapy day close, the three daily purges, the
+Expo receipts pass and the staff push drain, keeps unrelated crontab lines
+untouched, and reinstalling replaces the old block instead of adding a second
+copy.
 """
 
 from dataclasses import replace
@@ -33,7 +34,7 @@ def _block(**overrides: object) -> str:
     return ops_cron.build_block(replace(BASE, **overrides))
 
 
-def test_block_schedules_the_five_jobs_in_order() -> None:
+def test_block_schedules_the_six_jobs_in_order() -> None:
     lines = _block().splitlines()
     assert lines[0] == ops_cron.BEGIN_MARKER
     assert lines[-1] == ops_cron.END_MARKER
@@ -41,20 +42,25 @@ def test_block_schedules_the_five_jobs_in_order() -> None:
     physio = next(line for line in lines if "close_physio_day.py" in line)
     access = next(line for line in lines if "purge_access_data.py" in line)
     email = next(line for line in lines if "purge_email_receipts.py" in line)
+    push_purge = next(line for line in lines if "purge_push_data.py" in line)
     receipts = next(line for line in lines if "sync_push_receipts.py" in line)
     staff_push = next(line for line in lines if "flush_staff_push.py" in line)
 
     assert physio.startswith("30 0 * * * ")
     assert access.startswith("15 3 * * * ")
     assert email.startswith("45 3 * * * ")
+    assert push_purge.startswith("15 4 * * * ")
     assert receipts.startswith("*/30 * * * * ")
     assert staff_push.startswith("*/15 * * * * ")
     assert lines.index(physio) < lines.index(access)
     assert lines.index(access) < lines.index(email)
+    assert lines.index(email) < lines.index(push_purge)
+    assert lines.index(push_purge) < lines.index(receipts)
     assert lines.index(receipts) < lines.index(staff_push)
     assert "--limit 200" in receipts
     assert "--limit" not in staff_push
-    for line in (physio, access, email, receipts, staff_push):
+    assert "--receipt-days" not in push_purge
+    for line in (physio, access, email, push_purge, receipts, staff_push):
         assert "cd " in line
         assert "DATABASE_URL=" in line
         assert ">> " in line
@@ -73,6 +79,7 @@ def test_logs_are_named_per_job() -> None:
     assert "physio-close.log" in block
     assert "purge-access.log" in block
     assert "purge-email.log" in block
+    assert "purge-push.log" in block
     assert "push-receipts.log" in block
     assert "staff-push.log" in block
 
@@ -81,8 +88,12 @@ def test_daily_schedule_wraps_midnight() -> None:
     block = _block(daily_at="23:50")
     access = next(line for line in block.splitlines() if "purge_access_data.py" in line)
     email = next(line for line in block.splitlines() if "purge_email_receipts.py" in line)
+    push_purge = next(
+        line for line in block.splitlines() if "purge_push_data.py" in line
+    )
     assert access.startswith("50 23 * * * ")
     assert email.startswith("20 0 * * * ")
+    assert push_purge.startswith("50 0 * * * ")
 
 
 def test_physio_close_accepts_another_time() -> None:
@@ -193,6 +204,7 @@ def test_cli_print_does_not_touch_the_crontab(monkeypatch: pytest.MonkeyPatch, c
     assert ops_cron.BEGIN_MARKER in printed
     assert "sync_push_receipts.py" in printed
     assert "purge_access_data.py" in printed
+    assert "purge_push_data.py" in printed
     assert "close_physio_day.py" in printed
 
 
@@ -248,6 +260,7 @@ def test_cli_install_requires_every_script(monkeypatch: pytest.MonkeyPatch, caps
     assert code == 2
     assert "sync_push_receipts.py" in error
     assert "flush_staff_push.py" in error
+    assert "purge_push_data.py" in error
     assert "close_physio_day.py" in error
 
 

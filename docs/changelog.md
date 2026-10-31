@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-31 · Push del socio: retención de acuses y entregas (ADR-074)
+
+- `backend/purge_push_data.py` y `app/modules/notifications/push_retention.py` podan el push del socio en una corrida: los acuses de Expo se cuentan desde `received_at` (90 días por defecto, `PUSH_RECEIPT_RETENTION_DAYS`) y las entregas en estado terminal (`sent`, `simulated`, `failed`) desde `created_at` (365, `PUSH_DELIVERY_RETENTION_DAYS`), de 1 a 3650 cada ventana. Nunca se borra una `pending` ni una entrega con acuse vivo, y el script acepta `--preview`, `--database-url`, `--receipt-days`, `--delivery-days` y `--dry-run`, con códigos 2 para configuración y 1 para base inalcanzable.
+- `ops_cron.py` pasó a seis entradas: la purga del push es la tercera diaria, a las `04:15` con los valores por defecto y bitácora `purge-push.log`; `--install` exige también el script. Sin migración: los índices de ADR-062 ya sirven. Se actualizaron ADR-062, ADR-063, la ficha de avisos, la guía de despliegue, la deuda, el plan de pruebas, TRASPASO y el README del backend.
+- Suite backend completa: **534 pruebas, 526 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL` (`test_push_retention.py` suma 17 y el cron sigue en 32).
+
 ## 2026-10-31 · Fisioterapia: cierre programado del día (ADR-073)
 
 - `backend/close_physio_day.py` aplica por cron el mismo cierre del botón «Cerrar día» (`close_physio_day` en `physio.service`): marca `no_show` solo las citas `scheduled` que ya terminaron, no cobra ni descuenta créditos y deja `marked_by` nulo. Cierra un día por corrida (el anterior por defecto en la zona del club, `--date AAAA-MM-DD` para otro), acepta `--preview` sobre `gym_preview.db` y `--database-url`, y sale con código 2 sin URL y con 1 si la base no responde.

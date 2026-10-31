@@ -1,7 +1,8 @@
 """Install the cron entries that keep the operations data fresh.
 
 The application has no scheduler: the maintenance scripts run from the host's
-cron (ADR-058, ADR-062, ADR-071, ADR-073). This script renders the five entries
+cron (ADR-058, ADR-062, ADR-071, ADR-073, ADR-074). This script renders the
+six entries
 as one block delimited by markers, so reinstalling after moving the app,
 changing the database password or adjusting the schedule replaces the old block
 instead of duplicating lines, and unrelated crontab entries are left untouched.
@@ -37,13 +38,14 @@ MAX_PUSH_LIMIT = 1000
 MIN_RECEIPTS_EVERY = 5
 MIN_STAFF_PUSH_EVERY = 5
 MAX_SCHEDULE_EVERY = 60
-# The purges run one after the other; the second waits this many minutes.
+# The daily purges run one after the other, spaced by this many minutes.
 PURGE_STAGGER_MINUTES = 30
 
 _DAILY_AT = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 _SCRIPTS = (
     "purge_access_data.py",
     "purge_email_receipts.py",
+    "purge_push_data.py",
     "sync_push_receipts.py",
     "flush_staff_push.py",
     "close_physio_day.py",
@@ -100,7 +102,7 @@ def add_minutes(hour: int, minute: int, offset: int) -> tuple[int, int]:
 
 
 def build_block(config: OpsCronConfig) -> str:
-    """Render the marked crontab block for the five maintenance jobs."""
+    """Render the marked crontab block for the six maintenance jobs."""
 
     database_url = config.database_url.strip()
     if not database_url:
@@ -112,6 +114,9 @@ def build_block(config: OpsCronConfig) -> str:
 
     hour, minute = parse_daily_at(config.daily_at)
     second_hour, second_minute = add_minutes(hour, minute, PURGE_STAGGER_MINUTES)
+    third_hour, third_minute = add_minutes(
+        hour, minute, PURGE_STAGGER_MINUTES * 2
+    )
     close_hour, close_minute = parse_daily_at(config.physio_close_at)
     receipts = receipts_schedule(config.receipts_every)
     staff_push = staff_push_schedule(config.staff_push_every)
@@ -131,7 +136,8 @@ def build_block(config: OpsCronConfig) -> str:
             f"{config.receipts_every} min, push del personal cada "
             f"{config.staff_push_every} min, cierre de fisioterapia a las "
             f"{close_hour:02d}:{close_minute:02d} y purgas diarias a las "
-            f"{hour:02d}:{minute:02d} y {second_hour:02d}:{second_minute:02d}."
+            f"{hour:02d}:{minute:02d}, {second_hour:02d}:{second_minute:02d} y "
+            f"{third_hour:02d}:{third_minute:02d}."
         ),
         (
             f"{close_minute} {close_hour} * * * "
@@ -141,6 +147,10 @@ def build_block(config: OpsCronConfig) -> str:
         (
             f"{second_minute} {second_hour} * * * "
             f"{command('purge_email_receipts.py', '', 'purge-email.log')}"
+        ),
+        (
+            f"{third_minute} {third_hour} * * * "
+            f"{command('purge_push_data.py', '', 'purge-push.log')}"
         ),
         (
             f"{receipts} "
@@ -256,8 +266,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=(
             "Genera o instala el bloque de cron de las tareas de operación: "
             "cierre del día de fisioterapia, purga de accesos, purga de acuses "
-            "de correo, consulta de acuses del push y envío de la cola del "
-            "push web del personal."
+            "de correo, purga de acuses y entregas del push, consulta de acuses "
+            "del push y envío de la cola del push web del personal."
         )
     )
     action = parser.add_mutually_exclusive_group()
@@ -373,8 +383,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Bloque instalado en el crontab: acuses cada {config.receipts_every} min, "
         f"push del personal cada {config.staff_push_every} min, cierre de "
-        f"fisioterapia a las {config.physio_close_at} y purgas diarias desde "
-        f"las {config.daily_at}. Revisa con: crontab -l"
+        f"fisioterapia a las {config.physio_close_at} y tres purgas diarias "
+        f"desde las {config.daily_at}. Revisa con: crontab -l"
     )
     return 0
 
