@@ -12,15 +12,19 @@ The endpoint has no account to authenticate with, so the body is signed with a
 shared secret (``EMAIL_WEBHOOK_SECRET``) and the signature travels in
 ``X-Email-Signature`` as ``sha256=<hex>``. Providers retry until they get a 2xx,
 so the provider's event id makes the write idempotent: the same event stored
-twice would otherwise look like two acknowledgements. When the club connects a
-real provider, an adapter translates its payload into this contract.
+twice would otherwise look like two acknowledgements. The signature covers the
+body but not the clock, so a new event must also fall inside a tolerance window
+around the moment it is received; a replay of an event already stored is still
+answered as such. When the club connects a real provider, an adapter translates
+its payload into this contract.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
+import logging
 import os
 from uuid import UUID
 
@@ -39,9 +43,16 @@ from app.modules.notifications.models import (
 WEBHOOK_SECRET_ENV = "EMAIL_WEBHOOK_SECRET"
 SIGNATURE_PREFIX = "sha256="
 MAX_DETAIL_CHARS = 500
+# The signature authenticates the body, not the moment it describes. A new
+# event older than the age (a captured body replayed weeks later) or far in the
+# future (a wrong or hostile clock) is not placed in the delivery's history.
+RECEIPT_MAX_AGE = timedelta(days=7)
+RECEIPT_MAX_FUTURE_SKEW = timedelta(minutes=15)
 # Only a message that actually left can be acknowledged: a pending row has no
 # provider event yet and a simulated one never contacted a server.
 ACKNOWLEDGEABLE_DELIVERY_STATUSES = ("sent",)
+
+logger = logging.getLogger(__name__)
 
 
 class ReceiptError(Exception):
@@ -58,6 +69,10 @@ class ReceiptSignatureInvalid(ReceiptError):
 
 class ReceiptInvalid(ReceiptError):
     """The body does not respect the webhook contract."""
+
+
+class ReceiptStale(ReceiptInvalid):
+    """A new event whose date falls outside the accepted window."""
 
 
 class ReceiptNotFound(ReceiptError):
@@ -147,7 +162,9 @@ def record_email_receipt(
     """Store one acknowledgement, or return the one already stored.
 
     The boolean says whether the row is new, so the webhook can answer a replay
-    with the same 2xx without pretending to have stored it twice.
+    with the same 2xx without pretending to have stored it twice. The window is
+    checked only for a new event: a stored one keeps answering its replays even
+    when its date has since fallen outside the tolerance.
     """
 
     occurred = _as_utc(now or utc_now())
@@ -166,6 +183,8 @@ def record_email_receipt(
     existing = _by_event_id(session, report.provider_event_id)
     if existing is not None:
         return _replayed(existing, delivery.id)
+
+    _ensure_within_window(report, now=occurred)
 
     receipt = StaffNotificationDeliveryReceipt(
         delivery_id=delivery.id,
@@ -212,6 +231,38 @@ def _replayed(
     return receipt, False
 
 
+def _ensure_within_window(report: EmailDeliveryReport, *, now: datetime) -> None:
+    problem = _window_problem(report.occurred_at, now=now)
+    if problem is None:
+        return
+    logger.warning(
+        "Acuse rechazado fuera de la ventana temporal: mensaje %s, evento %s (%s).",
+        report.message_id,
+        report.provider_event_id,
+        problem,
+    )
+    raise ReceiptStale(problem)
+
+
+def _window_problem(moment: datetime | None, *, now: datetime) -> str | None:
+    if moment is None:
+        return "El acuse no trae la fecha del evento."
+    at = _as_utc(moment)
+    if at < now - RECEIPT_MAX_AGE:
+        days = RECEIPT_MAX_AGE.days
+        return (
+            "El acuse es demasiado antiguo: su fecha supera la ventana de "
+            f"{days} días."
+        )
+    if at > now + RECEIPT_MAX_FUTURE_SKEW:
+        minutes = int(RECEIPT_MAX_FUTURE_SKEW.total_seconds() // 60)
+        return (
+            "La fecha del acuse está demasiado en el futuro: supera los "
+            f"{minutes} minutos de tolerancia."
+        )
+    return None
+
+
 def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
@@ -242,12 +293,15 @@ def _as_utc(moment: datetime) -> datetime:
 __all__ = [
     "ACKNOWLEDGEABLE_DELIVERY_STATUSES",
     "EmailDeliveryReport",
+    "RECEIPT_MAX_AGE",
+    "RECEIPT_MAX_FUTURE_SKEW",
     "ReceiptError",
     "ReceiptInvalid",
     "ReceiptNotConfigured",
     "ReceiptNotFound",
     "ReceiptRejected",
     "ReceiptSignatureInvalid",
+    "ReceiptStale",
     "WEBHOOK_SECRET_ENV",
     "normalize_message_id",
     "parse_delivery_report",

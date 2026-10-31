@@ -8,6 +8,7 @@ only a message the SMTP server accepted can be acknowledged.
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 from uuid import uuid4
 
 import pytest
@@ -30,6 +31,7 @@ from app.modules.notifications.receipts import (
     ReceiptNotFound,
     ReceiptRejected,
     ReceiptSignatureInvalid,
+    ReceiptStale,
     normalize_message_id,
     parse_delivery_report,
     record_email_receipt,
@@ -244,6 +246,92 @@ def test_only_a_message_that_left_can_be_acknowledged(session: Session) -> None:
         )
 
 
+def test_a_new_event_older_than_the_window_is_rejected(session: Session) -> None:
+    account = _account(session, email="lucia@example.test")
+    delivery = _sent_delivery(session, account)
+    old = NOW - timedelta(days=8)
+    report = parse_delivery_report(_report(delivery, occurred_at=old.isoformat()))
+
+    with pytest.raises(ReceiptStale) as error:
+        record_email_receipt(session, report, now=NOW)
+
+    assert "antiguo" in str(error.value)
+    assert session.exec(select(StaffNotificationDeliveryReceipt)).all() == []
+
+
+def test_a_new_event_inside_the_window_is_accepted(session: Session) -> None:
+    account = _account(session, email="lucia@example.test")
+    delivery = _sent_delivery(session, account)
+    moment = NOW - timedelta(days=6)
+    receipt, created = record_email_receipt(
+        session,
+        parse_delivery_report(_report(delivery, occurred_at=moment.isoformat())),
+        now=NOW,
+    )
+
+    assert created is True
+    assert receipt.occurred_at.replace(tzinfo=timezone.utc) == moment
+
+
+def test_a_new_event_from_the_future_is_rejected(session: Session) -> None:
+    account = _account(session, email="lucia@example.test")
+    delivery = _sent_delivery(session, account)
+    soon = NOW + timedelta(minutes=20)
+    report = parse_delivery_report(_report(delivery, occurred_at=soon.isoformat()))
+
+    with pytest.raises(ReceiptStale) as error:
+        record_email_receipt(session, report, now=NOW)
+
+    assert "futuro" in str(error.value)
+    assert session.exec(select(StaffNotificationDeliveryReceipt)).all() == []
+
+
+def test_a_small_clock_skew_is_tolerated(session: Session) -> None:
+    account = _account(session, email="lucia@example.test")
+    delivery = _sent_delivery(session, account)
+    soon = NOW + timedelta(minutes=5)
+    receipt, created = record_email_receipt(
+        session,
+        parse_delivery_report(_report(delivery, occurred_at=soon.isoformat())),
+        now=NOW,
+    )
+
+    assert created is True
+    assert receipt.occurred_at.replace(tzinfo=timezone.utc) == soon
+
+
+def test_a_new_event_without_a_date_cannot_be_placed(session: Session) -> None:
+    account = _account(session, email="lucia@example.test")
+    delivery = _sent_delivery(session, account)
+
+    with pytest.raises(ReceiptStale) as error:
+        record_email_receipt(
+            session,
+            parse_delivery_report(_report(delivery, occurred_at=None)),
+            now=NOW,
+        )
+
+    assert "fecha" in str(error.value)
+    assert session.exec(select(StaffNotificationDeliveryReceipt)).all() == []
+
+
+def test_a_stored_event_is_replayed_even_when_its_date_is_old(
+    session: Session,
+) -> None:
+    account = _account(session, email="lucia@example.test")
+    delivery = _sent_delivery(session, account)
+    old = NOW - timedelta(days=8)
+    report = parse_delivery_report(_report(delivery, occurred_at=old.isoformat()))
+    stored, created = record_email_receipt(session, report, now=old)
+    assert created is True
+
+    replay, repeated = record_email_receipt(session, report, now=NOW)
+
+    assert repeated is False
+    assert replay.id == stored.id
+    assert len(session.exec(select(StaffNotificationDeliveryReceipt)).all()) == 1
+
+
 def test_an_unknown_message_id_is_not_found(session: Session) -> None:
     _account(session, email="lucia@example.test")
     body = json.dumps(
@@ -322,7 +410,9 @@ def _panel_deliveries(client: TestClient, headers: dict[str, str]) -> dict:
     return response.json()
 
 
-def test_the_webhook_stores_the_ack_and_the_panel_shows_it(monkeypatch) -> None:
+def test_the_webhook_stores_the_ack_and_the_panel_shows_it(
+    monkeypatch, caplog
+) -> None:
     monkeypatch.setenv("SECRET_KEY", "test-receipts-secret")
     monkeypatch.setenv("PREVIEW_MODE", "true")
     monkeypatch.setenv("EMAIL_WEBHOOK_SECRET", SECRET)
@@ -343,12 +433,13 @@ def test_the_webhook_stores_the_ack_and_the_panel_shows_it(monkeypatch) -> None:
             assert login.status_code == 200, login.text
             headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
+            moment = datetime.now(timezone.utc) - timedelta(minutes=5)
             body = json.dumps(
                 {
                     "message_id": f"<{message_id}>",
                     "event_id": "evt-delivered-1",
                     "event": "delivered",
-                    "occurred_at": "2026-10-30T18:05:00+00:00",
+                    "occurred_at": moment.isoformat(),
                     "detail": "250 2.0.0 Ok",
                 }
             ).encode("utf-8")
@@ -395,6 +486,24 @@ def test_the_webhook_stores_the_ack_and_the_panel_shows_it(monkeypatch) -> None:
                 ).encode("utf-8"),
             )
             assert malformed.status_code == 422
+
+            caplog.set_level(
+                logging.WARNING, logger="app.modules.notifications.receipts"
+            )
+            stale = _post(
+                client,
+                json.dumps(
+                    {
+                        "message_id": message_id,
+                        "event_id": "evt-stale",
+                        "event": "delivered",
+                        "occurred_at": "2020-01-01T00:00:00+00:00",
+                    }
+                ).encode("utf-8"),
+            )
+            assert stale.status_code == 422
+            assert "antiguo" in stale.json()["detail"]
+            assert "fuera de la ventana temporal" in caplog.text
 
         monkeypatch.delenv("EMAIL_WEBHOOK_SECRET")
         with TestClient(app) as client:

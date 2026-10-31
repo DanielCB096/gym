@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-31 · Avisos: ventana de tiempo para el acuse de entrega
+
+- **Ventana del webhook**: un evento nuevo de `POST /webhooks/email/delivery` con más de siete días de antigüedad o más de quince minutos de adelanto se rechaza con `422`; el `detail` explica si es «demasiado antiguo» o «demasiado en el futuro». Las tolerancias son `RECEIPT_MAX_AGE` y `RECEIPT_MAX_FUTURE_SKEW` en `receipts.py`.
+- **Solo eventos nuevos**: la comprobación corre después de buscar el `provider_event_id`, así que los recibos ya guardados —anteriores a este corte— siguen respondiendo a sus reintentos con `200` y `duplicate: true`. Un evento nuevo sin `occurred_at` tampoco se puede fechar y se rechaza.
+- **Rastro del rechazo**: cada descarte escribe un `warning` con el `message_id`, el `provider_event_id` y el motivo, sin volcar el cuerpo del proveedor. El error es `ReceiptStale`, subclase de `ReceiptInvalid`, así que el endpoint lo mapea a `422` sin ramas nuevas.
+- **Pruebas**: 6 casos nuevos en `test_staff_email_receipts.py` —evento antiguo rechazado sin escribir fila, evento de seis días aceptado, futuro rechazado, cinco minutos de adelanto tolerados, ausencia de fecha rechazada y replay de un evento guardado cuya fecha ya quedó fuera—, y el flujo HTTP suma el `422` de un cuerpo firmado con fecha de 2020 y la comprobación del `warning` en el log. Suite en **342 pruebas**: 337 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Documentación**: ADR-056, deuda técnica, plan de pruebas, README, README del backend, modelo de datos, módulo de personal, traspaso y este changelog.
+
 ## 2026-10-30 · Avisos: aviso al personal cuando un push se agota
 
 - **Tipo nuevo**: `staff_notifications` admite `member_push_failed` (migración `20261031_0069`, que rehace `ck_staff_notifications_kind` con diez tipos; la reversión se niega mientras existan alertas). La campana del panel lo pinta como «Avisos · push sin entregar».

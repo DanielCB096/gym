@@ -1,6 +1,6 @@
 # Traspaso para retomar el trabajo
 
-Actualizado: 2026-10-30 · Rama: `main` · ADR-055 se publica en el commit de este corte; ADR-054 quedó en `94c3a6a` y ADR-050 a ADR-053 en `8a0daa8`.
+Actualizado: 2026-10-31 · Rama: `main` · ADR-056 se publica en el commit de este corte; ADR-055 quedó en `d7c21ac`, ADR-054 en `94c3a6a` y ADR-050 a ADR-053 en `8a0daa8`.
 
 Esta nota es el punto de entrada para otra persona o IA. El estado detallado vive en [README.md](README.md#estado-del-proyecto) y el histórico en [changelog.md](changelog.md); aquí solo se resume qué está hecho, qué sigue y qué no debe tocarse sin pedirlo.
 
@@ -15,16 +15,17 @@ Sobre eso, el corte de acuse y push añadió dos canales nuevos:
 - **ADR-053 · cola de push del socio en el panel**: `GET /admin/notifications/push-deliveries` lista la cola con el socio y el aviso resueltos, filtro por estado, paginación y el token enmascarado (`…A111`); los conteos incluyen los dispositivos activos. `POST …/send` drena la cola bajo demanda y `POST …/{id}/retry` reintenta solo lo `failed`, conservando `attempts`; si Expo responde `DeviceNotRegistered`, el token se retira. Reutiliza `attendance.read`/`attendance.manage` y vive junto a «Correos del personal» en la pestaña Equipo.
 - **ADR-054 · reintento automático del push del socio**: `member_push_deliveries.next_attempt_at` (migración `20261031_0068`) programa el siguiente intento de una fila `failed` a un minuto y después a cinco, hasta tres intentos. La pasada toma `pending` y los `failed` vencidos con el mismo compare-and-set, publica `retried` y deja `remaining` en lo que aún tiene trabajo; al agotarse la fila queda `failed` sin reintento, y `DeviceNotRegistered` nunca se reprograma. El panel muestra «Reintento HH:MM» o «Sin reintentos» y el aviso del envío resume los reintentos automáticos.
 - **ADR-055 · aviso al personal cuando un push se agota**: al llegar a `MAX_PUSH_ATTEMPTS` la pasada escribe `member_push_failed` (migración `20261031_0069`) a las cuentas con `attendance.manage`, con el socio, el título, el error y `ref_id` a la entrega; el dedupe es por `(entrega, cuenta)`. Viaja también por correo con `[Avisos] ` y el pie que señala la tarjeta «Push del socio»; la pasada de push desde el motor y los dos endpoints de la cola vacían el correo antes de responder. Un `DeviceNotRegistered` no alerta.
-- La suite del backend quedó en **336 pruebas** (331 pasan; las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`). La migración más reciente es `20261031_0069_member_push_failed_kind` (rehace el `CHECK` de tipos de aviso con diez).
+- **ADR-056 · ventana de tiempo del acuse de entrega**: un evento **nuevo** del webhook con más de siete días de antigüedad (`RECEIPT_MAX_AGE`), más de quince minutos de adelanto (`RECEIPT_MAX_FUTURE_SKEW`) o sin `occurred_at` se rechaza con `422` mediante `ReceiptStale` y deja un `warning` con el mensaje y el evento. La comprobación corre después de buscar el `provider_event_id`, así que los recibos ya guardados siguen contestando a sus reintentos como repetidos; no hay migración.
+- La suite del backend quedó en **342 pruebas** (337 pasan; las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`). La migración más reciente sigue siendo `20261031_0069_member_push_failed_kind` (rehace el `CHECK` de tipos de aviso con diez).
 - `npx tsc --noEmit` quedó limpio en el panel y en la app móvil. En la vista previa se agotó un push sintético: las cuatro cuentas con `attendance.manage` recibieron su alerta y su correo `simulated`, la campana mostró «Notificaciones, 1 por atender» y «Correos del personal» las filas «Push del socio sin entregar» / «Avisos · push sin entregar» / «Simulado»; la tarjeta «PUSH DEL SOCIO» mostró 3 intentos y «Sin reintentos». Los avisos, alertas, entregas y token sintéticos se borraron al terminar.
-- **ADR-050 a ADR-053 van en `8a0daa8`; ADR-054 en `94c3a6a`; ADR-055 va en el commit de este corte** (`feat(avisos): …`), empujado a `origin/main` junto con el código, las pruebas y la documentación.
+- **ADR-050 a ADR-053 van en `8a0daa8`; ADR-054 en `94c3a6a`; ADR-055 en `d7c21ac`; ADR-056 va en el commit de este corte** (`feat(avisos): …`), empujado a `origin/main` junto con el código, las pruebas y la documentación.
 
 ## Siguiente corte sugerido
 
 En este orden, salvo que se pida otra cosa:
 
 1. **Conectar los canales reales.** El acuse ya tiene contrato y cola, pero falta el adaptador del proveedor de correo (y el SMTP real): el webhook existe y se prueba firmado, pero nadie lo llama todavía. Del lado push, la app ya registra el token, pero sin un build de EAS con `extra.eas.projectId` y un dispositivo físico solo se ejerce la simulación.
-2. **Cerrar los límites del canal nuevo**: ventana de tiempo y rotación de secreto en el webhook, retención de recibos, preferencias por tipo y navegación al tocar el aviso. El aviso al personal cuando un push se agota ya existe (ADR-055) y sus límites —que la alerta espera a la pasada y que no se cierra sola— están listados en `docs/deuda-tecnica.md`.
+2. **Cerrar los límites del canal nuevo**: la ventana de tiempo del webhook ya existe (ADR-056), así que quedan la rotación de `EMAIL_WEBHOOK_SECRET` con periodo de gracia, la retención de recibos, las preferencias por tipo y la navegación al tocar el aviso. El aviso al personal cuando un push se agota ya existe (ADR-055) y sus límites —que la alerta espera a la pasada y que no se cierra sola— están listados en `docs/deuda-tecnica.md`.
 
 El resto de la lista pendiente (pago en línea, reportes programados, mensajería entrenador-socio, nómina, conexión bancaria, etc.) está en la sección «Estado del proyecto» del [README](README.md#estado-del-proyecto).
 
