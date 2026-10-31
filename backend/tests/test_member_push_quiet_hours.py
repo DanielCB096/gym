@@ -25,6 +25,7 @@ from app.modules.notifications.models import MemberPushDelivery
 from app.modules.notifications.push import (
     MemberPushQuietWindow,
     PushDeliveryFailed,
+    PushSendResult,
     member_push_quiet_window,
     parse_push_quiet_window,
     register_member_push_token,
@@ -38,6 +39,7 @@ NOW = datetime(2026, 10, 30, 17, 0, tzinfo=timezone.utc)  # 11:00 local
 INSIDE = datetime(2026, 10, 31, 5, 30, tzinfo=timezone.utc)  # 23:30 local
 AFTER = datetime(2026, 10, 31, 13, 30, tzinfo=timezone.utc)  # 07:30 local
 TOKEN_A = "ExponentPushToken[aaaAAA111]"
+SENT = PushSendResult(status="sent", ticket_id="tkt-demo")
 
 
 def _quiet_window(
@@ -120,9 +122,9 @@ def test_the_pass_defers_inside_the_window(session: Session, monkeypatch) -> Non
     delivery = _queue_one_push(session)
     calls: list[dict[str, object]] = []
 
-    def spy(**kwargs) -> str:
+    def spy(**kwargs) -> PushSendResult:
         calls.append(kwargs)
-        return "sent"
+        return SENT
 
     monkeypatch.setattr(push_module, "send_expo_push", spy)
     result = send_pending_member_push_deliveries(session, now=INSIDE)
@@ -139,7 +141,7 @@ def test_the_pass_defers_inside_the_window(session: Session, monkeypatch) -> Non
 def test_the_pass_sends_after_the_window_ends(session: Session, monkeypatch) -> None:
     _quiet_window(monkeypatch)
     delivery = _queue_one_push(session)
-    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: "sent")
+    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: SENT)
 
     deferred = send_pending_member_push_deliveries(session, now=INSIDE)
     assert deferred.deferred is True
@@ -174,7 +176,7 @@ def test_a_retry_that_fell_due_waits_for_the_window_to_end(
     session.refresh(delivery)
     assert delivery.attempts == 1
 
-    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: "sent")
+    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: SENT)
     late = send_pending_member_push_deliveries(session, now=AFTER)
     assert (late.retried, late.sent) == (1, 1)
     session.refresh(delivery)
@@ -185,7 +187,7 @@ def test_a_retry_that_fell_due_waits_for_the_window_to_end(
 def test_the_manual_send_bypasses_the_window(session: Session, monkeypatch) -> None:
     _quiet_window(monkeypatch)
     delivery = _queue_one_push(session)
-    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: "sent")
+    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: SENT)
 
     result = send_pending_member_push_deliveries(
         session, override_quiet_hours=True, now=INSIDE
@@ -209,7 +211,7 @@ def test_the_manual_retry_bypasses_the_window(session: Session, monkeypatch) -> 
     session.refresh(delivery)
     assert delivery.status == "failed"
 
-    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: "sent")
+    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: SENT)
     retry_member_push_delivery(session, delivery.id, now=INSIDE)
     session.refresh(delivery)
     assert delivery.status == "sent"
@@ -234,7 +236,7 @@ def test_without_a_window_the_pass_sends_as_before(
 ) -> None:
     _quiet_window(monkeypatch, start=None, end=None)
     delivery = _queue_one_push(session)
-    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: "sent")
+    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: SENT)
 
     result = send_pending_member_push_deliveries(session, now=INSIDE)
 
@@ -252,7 +254,7 @@ def test_silence_covers_the_hours_after_midnight(
     _quiet_window(monkeypatch, start="22:00", end="07:00")
     delivery = _queue_one_push(session)
     midnight = NOW + timedelta(hours=13, minutes=30)  # 00:30 local, Oct 31
-    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: "sent")
+    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: SENT)
 
     deferred = send_pending_member_push_deliveries(session, now=midnight)
     assert deferred.deferred is True

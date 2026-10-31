@@ -507,6 +507,10 @@ from app.modules.notifications.push import (
     send_pending_member_push_deliveries_from_engine,
     validate_push_quiet_window,
 )
+from app.modules.notifications.push_receipts import (
+    PushReceiptsFailed,
+    sync_member_push_receipts,
+)
 from app.modules.portal.classes import (
     MemberClassItem,
     MemberClassNotAllowed,
@@ -2661,6 +2665,9 @@ class MemberPushDeliveryResponse(BaseModel):
     last_attempt_at: datetime | None
     next_attempt_at: datetime | None
     sent_at: datetime | None
+    receipt_status: str | None = None
+    receipt_detail: str | None = None
+    receipt_at: datetime | None = None
 
 
 class MemberPushDeliveryPageResponse(BaseModel):
@@ -2682,6 +2689,16 @@ class MemberPushDeliveryPassResponse(BaseModel):
     deactivated: int
     retried: int
     remaining: int
+    deferred: bool
+
+
+class MemberPushReceiptPassResponse(BaseModel):
+    checked: int
+    delivered: int
+    errors: int
+    expired: int
+    deactivated: int
+    pending: int
     deferred: bool
 
 
@@ -4852,6 +4869,38 @@ def retry_member_push_delivery_endpoint(
             status_code=status.HTTP_409_CONFLICT, detail=str(error)
         ) from error
     return _member_push_delivery_response(item)
+
+
+@app.post(
+    "/admin/notifications/push-deliveries/receipts",
+    response_model=MemberPushReceiptPassResponse,
+    tags=["staff administration"],
+    description=(
+        "Consulta los acuses de Expo para los push enviados: guarda uno por "
+        "entrega (entregado, error o vencido a las 24 horas) y retira el token "
+        "cuando Expo reporta que la app ya no está instalada. En la vista previa "
+        "no hay tickets reales y la respuesta llega con `deferred`."
+    ),
+)
+def sync_member_push_receipts_endpoint(
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
+    session: SessionDependency,
+) -> MemberPushReceiptPassResponse:
+    try:
+        result = sync_member_push_receipts(session)
+    except PushReceiptsFailed as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
+        ) from error
+    return MemberPushReceiptPassResponse(
+        checked=result.checked,
+        delivered=result.delivered,
+        errors=result.errors,
+        expired=result.expired,
+        deactivated=result.deactivated,
+        pending=result.pending,
+        deferred=result.deferred,
+    )
 
 
 @app.post(
@@ -10705,6 +10754,9 @@ def _member_push_delivery_response(
         last_attempt_at=item.last_attempt_at,
         next_attempt_at=item.next_attempt_at,
         sent_at=item.sent_at,
+        receipt_status=item.receipt_status,
+        receipt_detail=item.receipt_detail,
+        receipt_at=item.receipt_at,
     )
 
 

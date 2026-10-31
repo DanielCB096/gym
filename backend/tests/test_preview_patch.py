@@ -530,9 +530,11 @@ def test_preview_upgrade_registers_the_email_switch_columns() -> None:
     assert row == (1,)
 
 
-def test_preview_upgrade_registers_the_push_retry_column() -> None:
+def test_preview_upgrade_registers_the_push_retry_and_receipt_columns() -> None:
     assert preview_patch.ADDED_COLUMNS["member_push_deliveries"] == {
-        "next_attempt_at": "DATETIME"
+        "next_attempt_at": "DATETIME",
+        "expo_ticket_id": "VARCHAR(100)",
+        "receipt_checked_at": "DATETIME",
     }
 
     connection = sqlite3.connect(":memory:")
@@ -549,7 +551,7 @@ def test_preview_upgrade_registers_the_push_retry_column() -> None:
         row[1]
         for row in connection.execute("PRAGMA table_info(member_push_deliveries)")
     }
-    assert "next_attempt_at" in columns
+    assert {"next_attempt_at", "expo_ticket_id", "receipt_checked_at"} <= columns
 
 
 # The preview database stopped at the three kinds the first migration created.

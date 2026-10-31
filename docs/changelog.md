@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-31 · Avisos: el acuse de entrega del push del socio
+
+- **El ticket del envío se guarda**: `send_expo_push` devuelve un `PushSendResult` con el estado y el `id` del ticket, y `member_push_deliveries` lo conserva en `expo_ticket_id` junto con `receipt_checked_at`. Una entrega `pending`, `failed` o `simulated` no tiene ticket y nunca se consulta.
+- **La pasada de acuses pregunta a Expo**: `sync_member_push_receipts` toma las entregas `sent` con ticket y sin acuse, consulta `getReceipts` en lotes de 200 (máximo 1000), escribe una fila final por entrega y ticket en `member_push_delivery_receipts` —`ok` o `error` con su detalle— y, si el ticket ya tiene más de 24 horas, lo registra `expired` sin preguntar. Un ticket sin respuesta espera quince minutos antes de volver a consultarse; un `DeviceNotRegistered` retira el dispositivo. El estado de la entrega no se reescribe.
+- **Dos disparadores, como el resto del proyecto**: `POST /admin/notifications/push-deliveries/receipts` (con `attendance.manage`) corre la pasada bajo demanda y `backend/sync_push_receipts.py` la corre por cron (`--preview`, `--database-url`, `--limit`). La vista previa difiere sin contactar a Expo porque no acumula tickets.
+- **El panel muestra el acuse**: la tarjeta «Push del socio» suma la columna «ACUSE» («Entregado», «Con error» con su detalle, «Caducado», «Sin acuse» o «—») y el botón «Consultar acuses», que informa cuántos se revisaron, entregaron, fallaron, vencieron o retiraron dispositivo. Sin permiso nuevo: leer el listado sigue siendo `attendance.read` y la pasada `attendance.manage`.
+- **Esquema**: migración `20261031_0072_member_push_receipts` —dos columnas en `member_push_deliveries` y la tabla `member_push_delivery_receipts` con FK `RESTRICT`, unicidad por entrega y por ticket, `CHECK` de estado e índice por fecha de recepción—; `preview_patch.py` replica las dos columnas en la base de vista previa.
+- **Pruebas**: 11 casos nuevos en `test_member_push_receipts.py` (ticket del envío y de la pasada, acuse entregado y con error, espera de quince minutos, vencimiento a 24 horas, vista previa diferida, fallos de la consulta, lectura por ticket y el flujo HTTP del panel con permisos). Suite en **399 pruebas**: 394 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Documentación**: ADR-062, módulo de avisos del socio, modelo de datos, plan de pruebas, despliegue (cron de la pasada), deuda técnica, traspaso y este changelog.
+
 ## 2026-10-31 · Avisos: el panel anuncia el horario de silencio
 
 - **La ventana viaja con la cola**: `GET /admin/notifications/push-deliveries` publica `quiet_window` (`start`, `end`, `active`) calculado con la misma función que consulta la pasada (`member_push_quiet_window`), así que el panel no adivina: si la pasada esperaría ahora mismo, `active` lo dice.

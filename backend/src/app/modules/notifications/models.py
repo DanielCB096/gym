@@ -397,6 +397,10 @@ class StaffNotificationDeliveryReceipt(SQLModel, table=True):
 
 PUSH_PLATFORMS = ("ios", "android")
 MAX_PUSH_TOKEN_CHARS = 255
+MAX_EXPO_TICKET_CHARS = 100
+# Expo answers a send with a ticket and the ticket's receipt later says whether
+# the device got it. ``expired`` records a receipt Expo no longer keeps (24 h).
+PUSH_RECEIPT_STATUSES = ("ok", "error", "expired")
 
 
 class MemberPushToken(SQLModel, table=True):
@@ -516,7 +520,57 @@ class MemberPushDelivery(SQLModel, table=True):
         default=None, sa_type=DateTime(timezone=True)
     )
     sent_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    # Expo's ticket for the accepted send; it is what the receipts pass asks
+    # about later. ``receipt_checked_at`` throttles that question while Expo has
+    # no answer yet, so a pass does not repeat the same lookup every minute.
+    expo_ticket_id: str | None = Field(
+        default=None, max_length=MAX_EXPO_TICKET_CHARS
+    )
+    receipt_checked_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
     created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
+class MemberPushDeliveryReceipt(SQLModel, table=True):
+    """What Expo said about a push after accepting it.
+
+    ``sent`` means Expo took the message; only the ticket's receipt says whether
+    the phone got it. One row per delivery: the ticket identifies the send, so a
+    second receipt for the same ticket is the same answer and never a new row.
+    The delivery's status is not rewritten — the receipt is information beside
+    the queue, exactly like the staff email receipts of ADR-051.
+    """
+
+    __tablename__ = "member_push_delivery_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ok', 'error', 'expired')",
+            name="ck_member_push_delivery_receipts_status",
+        ),
+        UniqueConstraint("delivery_id", name="uq_member_push_delivery_receipts_delivery"),
+        UniqueConstraint("ticket_id", name="uq_member_push_delivery_receipts_ticket"),
+        Index(
+            "ix_member_push_delivery_receipts_received",
+            "received_at",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    delivery_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("member_push_deliveries.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    ticket_id: str = Field(max_length=MAX_EXPO_TICKET_CHARS)
+    status: str = Field(max_length=16)
+    detail: str | None = Field(default=None, max_length=500)
+    received_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )

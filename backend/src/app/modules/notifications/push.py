@@ -32,6 +32,7 @@ from app.modules.notifications.models import (
     PUSH_PLATFORMS,
     MemberNotification,
     MemberPushDelivery,
+    MemberPushDeliveryReceipt,
     MemberPushToken,
     utc_now,
 )
@@ -111,6 +112,18 @@ class MemberPushPass:
 
 
 @dataclass(frozen=True)
+class PushSendResult:
+    """What Expo answered to one send: the status and, if accepted, its ticket.
+
+    The ticket is the handle for the receipt that says whether the phone
+    actually got the message; the queue keeps it so a later pass can ask.
+    """
+
+    status: str
+    ticket_id: str | None = None
+
+
+@dataclass(frozen=True)
 class MemberPushQuietWindow:
     """The club's silence window as the panel shows it."""
 
@@ -138,6 +151,9 @@ class MemberPushDeliveryItem:
     last_attempt_at: datetime | None
     next_attempt_at: datetime | None
     sent_at: datetime | None
+    receipt_status: str | None = None
+    receipt_detail: str | None = None
+    receipt_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -269,11 +285,11 @@ def deactivate_member_push_tokens(
 
 def send_expo_push(
     *, token: str, title: str, body: str, data: dict[str, str]
-) -> str:
-    """Send one message and return ``sent``; preview mode returns ``simulated``."""
+) -> PushSendResult:
+    """Send one message; returns ``sent`` with its ticket or ``simulated``."""
 
     if preview_mode():
-        return "simulated"
+        return PushSendResult(status="simulated")
     try:
         timeout = float(
             os.getenv("EXPO_PUSH_TIMEOUT", str(DEFAULT_TIMEOUT_SECONDS))
@@ -312,7 +328,7 @@ def send_expo_push(
 
     ticket = _ticket(payload)
     if ticket["status"] == "ok":
-        return "sent"
+        return PushSendResult(status="sent", ticket_id=ticket["id"])
     if ticket["code"] == UNREGISTERED_ERROR:
         raise PushTokenUnregistered(
             "La app ya no está instalada en el dispositivo; se retiró el token."
@@ -331,10 +347,12 @@ def _ticket(payload: object) -> dict[str, str | None]:
     details = data.get("details")
     code = details.get("error") if isinstance(details, dict) else None
     message = data.get("message")
+    ticket_id = data.get("id")
     return {
         "status": str(data.get("status") or ""),
         "code": code if isinstance(code, str) else None,
         "message": message if isinstance(message, str) else None,
+        "id": ticket_id if isinstance(ticket_id, str) and ticket_id else None,
     }
 
 
@@ -442,7 +460,7 @@ def _deliver(
     if notice.ref_id is not None:
         data["ref_id"] = str(notice.ref_id)
     try:
-        status = send_expo_push(
+        result = send_expo_push(
             token=delivery.token,
             title=notice.title,
             body=notice.body,
@@ -475,10 +493,12 @@ def _deliver(
         session.commit()
         _schedule_retry(session, delivery, now=now)
         return False
-    delivery.status = status
+    delivery.status = result.status
     delivery.error = None
     delivery.next_attempt_at = None
     delivery.sent_at = now
+    delivery.expo_ticket_id = result.ticket_id
+    delivery.receipt_checked_at = None
     session.add(delivery)
     session.commit()
     return False
@@ -794,12 +814,16 @@ def list_member_push_deliveries(
     )
     total_query = select(func.count(MemberPushDelivery.id))
     rows_query = (
-        select(MemberPushDelivery, MemberNotification, Member)
+        select(MemberPushDelivery, MemberNotification, Member, MemberPushDeliveryReceipt)
         .join(
             MemberNotification,
             MemberNotification.id == MemberPushDelivery.notification_id,
         )
         .join(Member, Member.id == MemberPushDelivery.member_id)
+        .outerjoin(
+            MemberPushDeliveryReceipt,
+            MemberPushDeliveryReceipt.delivery_id == MemberPushDelivery.id,
+        )
     )
     if condition is not None:
         total_query = total_query.where(condition)
@@ -816,8 +840,8 @@ def list_member_push_deliveries(
     pages = (total + page_size - 1) // page_size if total > 0 else 0
     return MemberPushDeliveryPage(
         items=[
-            _delivery_item(session, delivery, notice=notice, member=member)
-            for delivery, notice, member in rows
+            _delivery_item(session, delivery, notice=notice, member=member, receipt=receipt)
+            for delivery, notice, member, receipt in rows
         ],
         total=total,
         page=page,
@@ -833,11 +857,18 @@ def _delivery_item(
     *,
     notice: MemberNotification | None = None,
     member: Member | None = None,
+    receipt: MemberPushDeliveryReceipt | None = None,
 ) -> MemberPushDeliveryItem:
     if notice is None:
         notice = session.get(MemberNotification, delivery.notification_id)
     if member is None:
         member = session.get(Member, delivery.member_id)
+    if receipt is None:
+        receipt = session.exec(
+            select(MemberPushDeliveryReceipt).where(
+                MemberPushDeliveryReceipt.delivery_id == delivery.id
+            )
+        ).first()
     name = (
         f"{member.first_name} {member.last_name}".strip()
         if member is not None
@@ -869,6 +900,11 @@ def _delivery_item(
         sent_at=(
             _as_utc(delivery.sent_at) if delivery.sent_at is not None else None
         ),
+        receipt_status=receipt.status if receipt is not None else None,
+        receipt_detail=receipt.detail if receipt is not None else None,
+        receipt_at=(
+            _as_utc(receipt.received_at) if receipt is not None else None
+        ),
     )
 
 
@@ -898,6 +934,7 @@ __all__ = [
     "PushDeliveryRetryNotAllowed",
     "PushError",
     "PushMemberNotFound",
+    "PushSendResult",
     "PushTokenUnregistered",
     "QUIET_END_ENV",
     "QUIET_START_ENV",

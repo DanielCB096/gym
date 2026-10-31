@@ -84,7 +84,11 @@ ADDED_COLUMNS = {
         "cancellation_requested_at": "DATETIME",
         "cancellation_checked_at": "DATETIME",
     },
-    "member_push_deliveries": {"next_attempt_at": "DATETIME"},
+    "member_push_deliveries": {
+        "next_attempt_at": "DATETIME",
+        "expo_ticket_id": "VARCHAR(100)",
+        "receipt_checked_at": "DATETIME",
+    },
 }
 
 # New RBAC rows for features added after the preview database was seeded.

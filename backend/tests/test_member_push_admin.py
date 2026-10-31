@@ -32,6 +32,7 @@ from app.modules.notifications.push import (
     PushDeliveryNotFound,
     PushDeliveryRetryNotAllowed,
     PushError,
+    PushSendResult,
     PushTokenUnregistered,
     list_member_push_deliveries,
     mask_push_token,
@@ -44,6 +45,7 @@ from app.modules.notifications.service import create_notification
 
 NOW = datetime(2026, 10, 30, 18, 0, tzinfo=timezone.utc)
 TOKEN_A = "ExponentPushToken[aaaAAA111]"
+SENT = PushSendResult(status="sent", ticket_id="tkt-demo")
 
 
 def _member(session: Session, *, email: str = "ana@example.test") -> Member:
@@ -117,9 +119,9 @@ def test_retry_only_accepts_a_failed_delivery(session: Session, monkeypatch) -> 
 
     calls: list[dict[str, object]] = []
 
-    def working(**kwargs) -> str:
+    def working(**kwargs) -> PushSendResult:
         calls.append(kwargs)
-        return "sent"
+        return SENT
 
     monkeypatch.setattr(push_module, "send_expo_push", working)
     retried = retry_member_push_delivery(session, failed.id, now=NOW)
@@ -311,8 +313,8 @@ def test_push_delivery_queue_api(monkeypatch) -> None:
                 f"/admin/notifications/push-deliveries/{uuid4()}/retry", headers=owner
             ).status_code == 404
 
-            def working(**_kwargs) -> str:
-                return "sent"
+            def working(**_kwargs) -> PushSendResult:
+                return SENT
 
             monkeypatch.setattr(push_module, "send_expo_push", working)
             retried = client.post(

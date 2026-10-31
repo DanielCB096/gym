@@ -34,6 +34,7 @@ from app.modules.notifications.push import (
     InvalidPushToken,
     PushDeliveryFailed,
     PushMemberNotFound,
+    PushSendResult,
     PushTokenUnregistered,
     clean_push_token,
     deactivate_member_push_token,
@@ -48,6 +49,7 @@ NOW = datetime(2026, 10, 30, 18, 0, tzinfo=timezone.utc)
 TOKEN_A = "ExponentPushToken[aaaAAA111]"
 TOKEN_B = "ExpoPushToken[bbbBBB222]"
 TOKEN_C = "ExponentPushToken[cccCCC333]"
+SENT = PushSendResult(status="sent", ticket_id="tkt-demo")
 
 
 def _member(session: Session, *, email: str) -> Member:
@@ -366,7 +368,7 @@ def test_a_retry_that_works_clears_the_schedule(
     monkeypatch.setattr(push_module, "send_expo_push", _unreachable)
     send_pending_member_push_deliveries(session, now=NOW)
 
-    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: "sent")
+    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: SENT)
     result = send_pending_member_push_deliveries(
         session, now=NOW + timedelta(minutes=1)
     )
