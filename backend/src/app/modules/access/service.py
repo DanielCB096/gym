@@ -499,6 +499,36 @@ def read_occupancy_policy(session: Session) -> tuple[int | None, int]:
     return settings.max_occupancy, settings.occupancy_window_seconds
 
 
+@dataclass(frozen=True)
+class CurrentOccupancy:
+    """The estimate the kiosk is enforcing, read once for the panel."""
+
+    inside: int
+    max_occupancy: int | None
+    occupancy_window_seconds: int
+    sampled_at: datetime
+
+
+def read_current_occupancy(
+    session: Session, *, now: datetime | None = None
+) -> CurrentOccupancy:
+    """Count how many members are estimated inside right now.
+
+    It reads the same policy and window the kiosk applies, so the number the
+    reception sees is the one behind the next denial for capacity.
+    """
+    moment = _as_utc(now or utc_now())
+    max_occupancy, window_seconds = read_occupancy_policy(session)
+    return CurrentOccupancy(
+        inside=count_current_occupancy(
+            session, window_seconds=window_seconds, now=moment
+        ),
+        max_occupancy=max_occupancy,
+        occupancy_window_seconds=window_seconds,
+        sampled_at=moment,
+    )
+
+
 def get_access_settings(session: Session) -> AccessSettings:
     """Return the singleton settings row, creating it with defaults if needed."""
     settings = session.get(AccessSettings, 1)

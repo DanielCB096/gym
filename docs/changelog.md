@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-31 · Accesos: ocupación estimada en vivo para recepción
+
+- Se añadió `GET /admin/access/occupancy` (permiso `access.read`), que publica la estimación que ya aplica el kiosco: `inside`, `max_occupancy`, `occupancy_window_seconds` y `sampled_at`, calculados por `read_current_occupancy` con la misma política y ventana de `access_settings` y sin crear la fila cuando no existe.
+- El panel reemplaza la muestra falsa (82 de 120 con zonas y «Sin sensores de aforo conectados») por la ocupación real en «Ocupación estimada» (Resumen) y «Ahora mismo» (Accesos): `N / tope`, porcentaje, hora de muestra y el aviso de que cada entrada cuenta N minutos; sin tope muestra solo el número. Se refresca cada 30 segundos mientras la página está abierta, conserva la última muestra si la consulta falla y no hace la petición a los perfiles sin `access.read`, que ven un mensaje de permiso.
+- Prueba nueva en `test_kiosk_access_api.py` para permisos (`401`/`403`), conteo con la política por defecto (entradas autorizadas dentro de la ventana, manuales incluidas; denegadas, salidas y viejas fuera) y lectura de la política guardada desde el panel; la suite queda en **442 pruebas (437 pasan y 5 de concurrencia se omiten sin `TEST_POSTGRES_URL`)**. Sin migración.
+- Verificado en la vista previa con cuentas temporales de Recepción y Entrenador: tope alcanzado, cerca del 80 %, sin tope, sondeo de 30 segundos y degradación por permiso, con limpieza total al terminar. Documentado en ADR-068.
+
 ## 2026-10-31 · Avisos: el aviso resalta el ítem en su pantalla
 
 - `notificationRouting.ts` estrena `notificationRefTarget` y `notificationFocus`: traducen el `kind` y el `ref_id` de un aviso al renglón que la pantalla de destino lista —factura, reserva o sesión de clase, cita de fisioterapia o meta—. `PushTap` lee ahora `ref_id` del payload y la bandeja entrega el mismo par al manejador de destino.

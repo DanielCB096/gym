@@ -362,6 +362,13 @@ type AccessSettings = {
   updated_at: string;
 };
 
+type AccessOccupancy = {
+  inside: number;
+  max_occupancy: number | null;
+  occupancy_window_seconds: number;
+  sampled_at: string;
+};
+
 type BackendMembershipState = {
   membership_id: string;
   member_id: string;
@@ -3109,6 +3116,7 @@ export default function HomePage() {
   const [accessQuery, setAccessQuery] = useState("");
   const [accessFilter, setAccessFilter] = useState<"Todos" | AccessState>("Todos");
   const [accessPage, setAccessPage] = useState(1);
+  const [occupancy, setOccupancy] = useState<AccessOccupancy | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
   const [newMemberOpen, setNewMemberOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -3432,6 +3440,34 @@ export default function HomePage() {
     return () => { active = false; };
   }, [accessFilter, accessPage, accessQuery, activePage, authState, currentUser, manualRefresh]);
 
+  useEffect(() => {
+    if (authState !== "signed_in" || !currentUser || !currentUser.permissions.includes("access.read")) return;
+    if (activePage !== "Resumen" && activePage !== "Accesos") return;
+    let active = true;
+
+    const loadOccupancy = async () => {
+      try {
+        const response = await fetch("/api/admin/access/occupancy", { cache: "no-store" });
+        if (response.status === 401) {
+          if (active) {
+            setCurrentUser(null);
+            setAuthState("signed_out");
+          }
+          return;
+        }
+        if (!response.ok) throw new Error("No se pudo consultar la ocupación.");
+        const payload = await response.json() as AccessOccupancy;
+        if (active) setOccupancy(payload);
+      } catch {
+        // Keep the last estimate on screen; its sample time says how old it is.
+      }
+    };
+
+    void loadOccupancy();
+    const timer = window.setInterval(loadOccupancy, 30000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [activePage, authState, currentUser, manualRefresh]);
+
   const showToast = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(""), 3000);
@@ -3754,7 +3790,7 @@ export default function HomePage() {
             </div>
           </div>
 
-          {activePage === "Resumen" && <DashboardView dashboard={dashboard} recentEvents={recentAccess.map(accessEventToDisplay).slice(0, 5)} canViewAccess={hasPermission("access.read")} loading={dashboardLoading} error={dashboardError} onNavigate={selectPage} onManual={() => setManualOpen(true)} canManual={hasPermission("access.manual_override")} />}
+          {activePage === "Resumen" && <DashboardView dashboard={dashboard} recentEvents={recentAccess.map(accessEventToDisplay).slice(0, 5)} canViewAccess={hasPermission("access.read")} occupancy={occupancy} loading={dashboardLoading} error={dashboardError} onNavigate={selectPage} onManual={() => setManualOpen(true)} canManual={hasPermission("access.manual_override")} />}
           {activePage === "Accesos" && (
             <AccessView
               directory={accessDirectory}
@@ -3768,6 +3804,7 @@ export default function HomePage() {
               onPageChange={setAccessPage}
               onManual={() => hasPermission("access.manual_override") && setManualOpen(true)}
               canManual={hasPermission("access.manual_override")}
+              occupancy={occupancy}
             />
           )}
           {activePage === "Socios" && (
@@ -3811,7 +3848,7 @@ export default function HomePage() {
   );
 }
 
-function DashboardView({ dashboard, recentEvents, canViewAccess, loading, error, onNavigate, onManual, canManual }: { dashboard: DashboardData | null; recentEvents: AccessEvent[]; canViewAccess: boolean; loading: boolean; error: string; onNavigate: (page: PageName) => void; onManual: () => void; canManual: boolean }) {
+function DashboardView({ dashboard, recentEvents, canViewAccess, occupancy, loading, error, onNavigate, onManual, canManual }: { dashboard: DashboardData | null; recentEvents: AccessEvent[]; canViewAccess: boolean; occupancy: AccessOccupancy | null; loading: boolean; error: string; onNavigate: (page: PageName) => void; onManual: () => void; canManual: boolean }) {
   const members = dashboard?.members;
   const access = dashboard?.access;
   const attentionCount = (members?.expiring_soon ?? 0) + (members?.pending ?? 0) + (canViewAccess ? access?.denied_today ?? 0 : 0);
@@ -3853,18 +3890,13 @@ function DashboardView({ dashboard, recentEvents, canViewAccess, loading, error,
 
         <section className="panel occupancy-panel">
           <div className="panel-header">
-            <div><p className="section-kicker">CAPACIDAD DEL CLUB</p><h2>Aforo por zona</h2></div>
-            <button className="icon-button small-icon" aria-label="Más opciones de aforo"><MoreHorizontal size={18} /></button>
+            <div><p className="section-kicker">CAPACIDAD DEL CLUB</p><h2>Ocupación estimada</h2></div>
+            {canViewAccess && <span className="table-hint">{occupancy ? `Muestra de las ${occupancySampleTime(occupancy.sampled_at)}` : "Consultando…"}</span>}
           </div>
-          <div className="occupancy-summary"><strong>82<span> / 120</span></strong><span className="occupancy-percent">68%</span></div>
-          <div className="occupancy-track"><span style={{ width: "68%" }} /></div>
-          <p className="occupancy-note"><span className="note-marker" />Dentro de la capacidad recomendada</p>
-          <div className="zone-list">
-            <Zone label="Zona de fuerza" value="38 / 50" percent={76} tone="tone-lime" />
-            <Zone label="Cardio" value="21 / 35" percent={60} tone="tone-coral" />
-            <Zone label="Salones" value="23 / 35" percent={66} tone="tone-blue" />
-          </div>
-          <button className="text-button occupancy-link" onClick={() => onNavigate("Accesos")}>Ver mapa de aforo <ArrowRight size={15} /></button>
+          {canViewAccess
+            ? <OccupancyEstimate occupancy={occupancy} />
+            : <p className="role-empty">Tu perfil no tiene permiso para consultar la ocupación.</p>}
+          {canViewAccess && <button className="text-button occupancy-link" onClick={() => onNavigate("Accesos")}>Ver bitácora de accesos <ArrowRight size={15} /></button>}
         </section>
       </div>
 
@@ -3907,7 +3939,7 @@ function DashboardView({ dashboard, recentEvents, canViewAccess, loading, error,
       </div>
 
       {error && <p className="role-empty" role="alert">{error}</p>}
-      <footer className="page-footer"><span>Centro Fit · Panel operativo</span><span>ACCESOS Y SOCIOS DEL BACKEND · AFORO Y GRÁFICA DE MUESTRA</span></footer>
+      <footer className="page-footer"><span>Centro Fit · Panel operativo</span><span>ACCESOS Y SOCIOS DEL BACKEND · OCUPACIÓN ESTIMADA · GRÁFICA DE MUESTRA</span></footer>
     </>
   );
 }
@@ -3921,8 +3953,27 @@ function Metric({ icon: Icon, label, value, change, detail, trend, tone }: { ico
   );
 }
 
-function Zone({ label, value, percent, tone }: { label: string; value: string; percent: number; tone: string }) {
-  return <div className="zone-row"><div className="zone-label"><span>{label}</span><strong>{value}</strong></div><div className="zone-track"><span className={tone} style={{ width: `${percent}%` }} /></div></div>;
+function occupancySampleTime(value: string): string {
+  return new Intl.DateTimeFormat("es-MX", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
+}
+
+function OccupancyEstimate({ occupancy }: { occupancy: AccessOccupancy | null }) {
+  if (!occupancy) return <p className="role-empty">Consultando la ocupación…</p>;
+  const minutes = Math.round(occupancy.occupancy_window_seconds / 60);
+  const cap = occupancy.max_occupancy;
+  const percent = cap == null ? null : Math.min(100, Math.round((occupancy.inside / cap) * 100));
+  const hint = `Es una estimación: sin registro de salidas, cada entrada cuenta ${minutes} minutos.`;
+  let note = `Dentro del aforo configurado. ${hint}`;
+  if (cap == null) note = `Sin aforo máximo configurado. ${hint}`;
+  else if (occupancy.inside >= cap) note = `El club está en el aforo máximo: el kiosco deniega nuevas entradas. ${hint}`;
+  else if ((percent ?? 0) >= 80) note = `Cerca del aforo máximo. ${hint}`;
+  return (
+    <>
+      <div className="occupancy-summary"><strong>{occupancy.inside}{cap != null && <span> / {cap}</span>}</strong>{percent != null && <span className="occupancy-percent">{percent}%</span>}</div>
+      {percent != null && <div className="occupancy-track"><span style={{ width: `${percent}%` }} /></div>}
+      <p className="occupancy-note"><span className="note-marker" />{note}</p>
+    </>
+  );
 }
 
 function AccessTable({ events, compact = false }: { events: AccessEvent[]; compact?: boolean }) {
@@ -3958,7 +4009,7 @@ function StatusBadge({ state, detail }: { state: AccessState | string; detail?: 
   return <span className={`status-badge ${statusClass}`} title={detail}><i />{state}</span>;
 }
 
-function AccessView({ directory, loading, error, search, onSearch, filter, onFilter, page, onPageChange, onManual, canManual }: { directory: AccessDirectory | null; loading: boolean; error: string; search: string; onSearch: (value: string) => void; filter: "Todos" | AccessState; onFilter: (value: "Todos" | AccessState) => void; page: number; onPageChange: (page: number) => void; onManual: () => void; canManual: boolean }) {
+function AccessView({ directory, loading, error, search, onSearch, filter, onFilter, page, onPageChange, onManual, canManual, occupancy }: { directory: AccessDirectory | null; loading: boolean; error: string; search: string; onSearch: (value: string) => void; filter: "Todos" | AccessState; onFilter: (value: "Todos" | AccessState) => void; page: number; onPageChange: (page: number) => void; onManual: () => void; canManual: boolean; occupancy: AccessOccupancy | null }) {
   const events = (directory?.items ?? []).map(accessEventToDisplay);
   const summary = directory?.summary ?? { total: 0, authorized: 0, denied: 0, manual: 0 };
   const total = directory?.total ?? 0;
@@ -4001,9 +4052,9 @@ function AccessView({ directory, loading, error, search, onSearch, filter, onFil
 
       <div className="access-bottom-grid">
         <section className="panel access-health-panel"><div className="panel-header"><div><p className="section-kicker">ESTADO DE DISPOSITIVOS</p><h2>Lectores y puertas</h2></div></div><div className="device-note"><Wifi size={15} />Los lectores físicos aún no están conectados; la bitácora refleja las decisiones registradas por el sistema.</div></section>
-        <section className="panel occupancy-mini-panel"><div className="panel-header"><div><p className="section-kicker">AFORO GENERAL</p><h2>Ahora mismo</h2></div></div><p className="occupancy-note"><span className="note-marker" />Sin sensores de aforo conectados.</p></section>
+        <section className="panel occupancy-mini-panel"><div className="panel-header"><div><p className="section-kicker">AFORO GENERAL</p><h2>Ahora mismo</h2></div><span className="table-hint">{occupancy ? `Muestra de las ${occupancySampleTime(occupancy.sampled_at)}` : "Consultando…"}</span></div><OccupancyEstimate occupancy={occupancy} /></section>
       </div>
-      <footer className="page-footer"><span>Centro Fit · Control de accesos</span><span>BITÁCORA DEL BACKEND · AFORO Y HARDWARE NO CONECTADOS</span></footer>
+      <footer className="page-footer"><span>Centro Fit · Control de accesos</span><span>BITÁCORA DEL BACKEND · OCUPACIÓN ESTIMADA · HARDWARE NO CONECTADO</span></footer>
     </>
   );
 }

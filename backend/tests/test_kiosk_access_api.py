@@ -1011,6 +1011,112 @@ def test_occupancy_estimate_counts_entries_inside_the_window() -> None:
     engine.dispose()
 
 
+def test_admin_occupancy_endpoint_reads_the_kiosk_estimate(monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        ids = _seed(session)
+        register_user(
+            session,
+            email="trainer@example.com",
+            password="trainer-strong-password",
+            role_codes=("trainer",),
+        )
+        now = datetime.now(timezone.utc)
+
+        def add_event(
+            member_id: UUID,
+            occurred_at: datetime,
+            *,
+            authorized: bool = True,
+            direction: AccessDirection = AccessDirection.ENTRY,
+            reason: AccessReason = AccessReason.ENTRY_ALLOWED,
+            source: str = "reader",
+        ) -> None:
+            record_access_event(
+                session,
+                AccessDecision(
+                    event_id=uuid4(),
+                    member_id=member_id,
+                    authorized=authorized,
+                    reason=reason,
+                    direction=direction,
+                    occurred_at=occurred_at,
+                    offline=False,
+                ),
+                reader_id="Prueba",
+                source=source,
+            )
+
+        add_event(ids["ana"], now - timedelta(minutes=30))
+        add_event(ids["beto"], now - timedelta(hours=4))
+        add_event(
+            ids["carla"],
+            now - timedelta(minutes=2),
+            reason=AccessReason.MANUAL_OVERRIDE,
+            source="manual",
+        )
+        add_event(
+            ids["beto"],
+            now - timedelta(minutes=1),
+            authorized=False,
+            reason=AccessReason.OCCUPANCY_FULL,
+        )
+        add_event(
+            ids["ana"],
+            now - timedelta(minutes=1),
+            direction=AccessDirection.EXIT,
+            reason=AccessReason.EXIT_ALLOWED,
+        )
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            occupancy_path = "/admin/access/occupancy"
+            assert client.get(occupancy_path).status_code == 401
+            reception = _login_staff(client, "reception@example.com", "reception-strong-password")
+            trainer = _login_staff(client, "trainer@example.com", "trainer-strong-password")
+            owner = _login_staff(client, "owner@example.com", "owner-strong-password")
+
+            assert client.get(occupancy_path, headers=trainer).status_code == 403
+
+            initial = client.get(occupancy_path, headers=reception)
+            assert initial.status_code == 200, initial.text
+            body = initial.json()
+            # Ana came in 30 minutes ago and Carla through reception two
+            # minutes ago; Beto's entry is outside the two-hour window, the
+            # denied attempt and the exit never count.
+            assert body["inside"] == 2
+            assert body["max_occupancy"] is None
+            assert body["occupancy_window_seconds"] == 7200
+            assert datetime.fromisoformat(body["sampled_at"]).tzinfo is not None
+
+            updated = client.patch(
+                "/admin/access/settings",
+                headers=owner,
+                json={
+                    "antipassback_seconds": 0,
+                    "max_occupancy": 40,
+                    "occupancy_window_seconds": 600,
+                },
+            )
+            assert updated.status_code == 200, updated.text
+
+            narrowed = client.get(occupancy_path, headers=reception)
+            assert narrowed.status_code == 200, narrowed.text
+            assert narrowed.json()["inside"] == 1
+            assert narrowed.json()["max_occupancy"] == 40
+            assert narrowed.json()["occupancy_window_seconds"] == 600
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
 def test_kiosk_denies_entries_when_the_club_is_at_capacity(monkeypatch) -> None:
     monkeypatch.setenv("PREVIEW_MODE", "true")
     engine = _build_engine()

@@ -61,6 +61,7 @@ from app.modules.access.service import (
     get_access_settings,
     list_access_events,
     plan_access_windows,
+    read_current_occupancy,
     record_access_event,
     record_manual_access,
     replace_plan_access_windows,
@@ -3494,6 +3495,13 @@ class AccessSettingsRequest(BaseModel):
     )
 
 
+class AccessOccupancyResponse(BaseModel):
+    inside: int
+    max_occupancy: int | None
+    occupancy_window_seconds: int
+    sampled_at: datetime
+
+
 class KioskCheckInRequest(BaseModel):
     code: str = Field(min_length=1, max_length=12)
 
@@ -6238,6 +6246,24 @@ def update_access_settings_endpoint(
         occupancy_window_seconds=request.occupancy_window_seconds,
     )
     return _access_settings_response(settings)
+
+
+@app.get(
+    "/admin/access/occupancy",
+    response_model=AccessOccupancyResponse,
+    tags=["access administration"],
+)
+def get_access_occupancy_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("access.read"))],
+) -> AccessOccupancyResponse:
+    occupancy = read_current_occupancy(session)
+    return AccessOccupancyResponse(
+        inside=occupancy.inside,
+        max_occupancy=occupancy.max_occupancy,
+        occupancy_window_seconds=occupancy.occupancy_window_seconds,
+        sampled_at=occupancy.sampled_at,
+    )
 
 
 @app.get(
