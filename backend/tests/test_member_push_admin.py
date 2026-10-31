@@ -253,12 +253,14 @@ def test_push_delivery_queue_api(monkeypatch) -> None:
                 "active_tokens": 1,
             }
             assert payload["total"] == 1
+            assert payload["max_attempts"] == 3
             item = payload["items"][0]
             assert item["member_name"] == "Ana Demo"
             assert item["member_email"] == "ana@example.com"
             assert item["kind"] == "class_reserved"
             assert item["device"] == "…A111"
             assert item["status"] == "pending"
+            assert item["next_attempt_at"] is None
 
             # Reading needs attendance.read; draining and retrying attendance.manage.
             assert client.get(
@@ -287,7 +289,8 @@ def test_push_delivery_queue_api(monkeypatch) -> None:
                 "simulated": 0,
                 "failed": 1,
                 "deactivated": 0,
-                "remaining": 0,
+                "retried": 0,
+                "remaining": 1,
             }
 
             failed_board = client.get(
@@ -298,6 +301,8 @@ def test_push_delivery_queue_api(monkeypatch) -> None:
             assert failed_item["status"] == "failed"
             assert "503" in failed_item["error"]
             assert failed_item["sent_at"] is None
+            # The failed row carries its scheduled automatic retry.
+            assert failed_item["next_attempt_at"] is not None
 
             assert client.post(
                 f"/admin/notifications/push-deliveries/{uuid4()}/retry", headers=owner
@@ -316,6 +321,7 @@ def test_push_delivery_queue_api(monkeypatch) -> None:
             assert retried.json()["attempts"] == 2
             assert retried.json()["error"] is None
             assert retried.json()["sent_at"] is not None
+            assert retried.json()["next_attempt_at"] is None
 
             # A sent row is final; an empty pass is a no-op.
             assert client.post(

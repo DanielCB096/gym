@@ -528,3 +528,25 @@ def test_preview_upgrade_registers_the_email_switch_columns() -> None:
         "SELECT attendance_email_enabled FROM staffing_settings WHERE id = 1"
     ).fetchone()
     assert row == (1,)
+
+
+def test_preview_upgrade_registers_the_push_retry_column() -> None:
+    assert preview_patch.ADDED_COLUMNS["member_push_deliveries"] == {
+        "next_attempt_at": "DATETIME"
+    }
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        'CREATE TABLE "member_push_deliveries" (\n'
+        "\tid CHAR(32) NOT NULL, \n"
+        "\tstatus VARCHAR(16) NOT NULL, \n"
+        "\tPRIMARY KEY (id)\n"
+        ")"
+    )
+    preview_patch.ensure_added_columns(connection, "member_push_deliveries")
+    preview_patch.ensure_added_columns(connection, "member_push_deliveries")
+    columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(member_push_deliveries)")
+    }
+    assert "next_attempt_at" in columns

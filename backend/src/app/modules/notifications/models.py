@@ -370,6 +370,9 @@ class MemberPushDelivery(SQLModel, table=True):
     device may be retired before the pass runs and the row must still say where
     the attempt went. ``status`` follows the same four values as the email queue,
     and the unique pair keeps a replayed notice from queueing twice.
+    ``next_attempt_at`` is the automatic retry the next pass will pick up; it is
+    ``NULL`` while there is nothing scheduled, either because the push left or
+    because the attempts ran out.
     """
 
     __tablename__ = "member_push_deliveries"
@@ -390,6 +393,11 @@ class MemberPushDelivery(SQLModel, table=True):
             "ix_member_push_deliveries_status_created",
             "status",
             "created_at",
+        ),
+        Index(
+            "ix_member_push_deliveries_status_next",
+            "status",
+            "next_attempt_at",
         ),
     )
 
@@ -419,6 +427,9 @@ class MemberPushDelivery(SQLModel, table=True):
     )
     error: str | None = Field(default=None, max_length=500)
     last_attempt_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    next_attempt_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True)
     )
     sent_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))

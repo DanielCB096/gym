@@ -249,6 +249,7 @@ type MemberPushDelivery = {
   error: string | null;
   created_at: string;
   last_attempt_at: string | null;
+  next_attempt_at: string | null;
   sent_at: string | null;
 };
 
@@ -259,6 +260,7 @@ type MemberPushDeliveryBoard = {
   page: number;
   page_size: number;
   pages: number;
+  max_attempts: number;
 };
 
 type StaffingSettingsEvent = {
@@ -5203,13 +5205,13 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
     setPushBusy("send");
     try {
       const response = await fetch("/api/admin/notifications/push-deliveries/send", { method: "POST" });
-      const payload = await response.json().catch(() => ({})) as { detail?: string; attempted?: number; sent?: number; simulated?: number; failed?: number; deactivated?: number };
+      const payload = await response.json().catch(() => ({})) as { detail?: string; attempted?: number; sent?: number; simulated?: number; failed?: number; deactivated?: number; retried?: number };
       if (!response.ok) {
         onToast(payload.detail || "No se pudo enviar la cola de push.");
         return;
       }
       if ((payload.attempted ?? 0) === 0) onToast("No hay push pendientes.");
-      else onToast(`${payload.attempted} intento(s): ${payload.sent} enviado(s), ${payload.simulated} simulado(s), ${payload.failed} con error${(payload.deactivated ?? 0) > 0 ? `, ${payload.deactivated} token(s) retirado(s)` : ""}.`);
+      else onToast(`${payload.attempted} intento(s): ${payload.sent} enviado(s), ${payload.simulated} simulado(s), ${payload.failed} con error${(payload.deactivated ?? 0) > 0 ? `, ${payload.deactivated} token(s) retirado(s)` : ""}${(payload.retried ?? 0) > 0 ? `, ${payload.retried} reintento(s) automático(s)` : ""}.`);
       setRequestsRefresh((value) => value + 1);
     } catch {
       onToast("No se pudo conectar con el backend.");
@@ -5613,7 +5615,7 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
               </div>
             </div>
             <p className="panel-hint">Cada aviso al socio encola un push por dispositivo activo y sale después de que el backend responde, nunca dentro de la transacción que registra el cambio. Un dispositivo que Expo reporta como desinstalado se retira y deja de recibir avisos. En la vista previa el envío queda marcado como simulado.</p>
-            <p className="panel-hint">El token se muestra enmascarado: el panel nunca necesita la dirección completa del dispositivo. Reintentar un push fallido conserva el historial de intentos y no duplica el aviso.</p>
+            <p className="panel-hint">El token se muestra enmascarado: el panel nunca necesita la dirección completa del dispositivo. Un push que falla por un error de transporte se reintenta solo, con esperas de un minuto y luego cinco, hasta tres intentos; la columna Detalle indica cuándo toca el próximo o «Sin reintentos» cuando ya no habrá más. Reintentar a mano sigue disponible y conserva el historial de intentos sin duplicar el aviso.</p>
             <div className="table-toolbar">
               <span className={`status-badge ${pushBoard === null ? "status-neutral" : "status-good"}`}><i />{pushBoard === null ? "Consultando…" : `${pushBoard.counts.active_tokens} dispositivo(s) activos`}</span>
               <span className="table-hint">{pushBoard === null ? "" : `${pushBoard.counts.pending} en cola · ${pushBoard.counts.sent} enviados · ${pushBoard.counts.simulated} simulados · ${pushBoard.counts.failed} con error`}</span>
@@ -5622,7 +5624,7 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
               {pushError ? <tr><td colSpan={8} className="empty-row">{pushError}</td></tr>
                 : pushBoard === null ? <tr><td colSpan={8} className="empty-row">Cargando la cola…</td></tr>
                 : pushBoard.items.length === 0 ? <tr><td colSpan={8} className="empty-row">{pushStatus ? "No hay entregas en ese estado." : "Todavía no hay push encolados."}</td></tr>
-                : pushBoard.items.map((delivery) => <tr key={delivery.id}><td><div className="person-cell"><span className="person-avatar mint">{delivery.member_name.slice(0, 1).toUpperCase()}</span><span><strong>{delivery.member_name}</strong><small>{delivery.member_email ?? "Sin correo"}</small></span></div></td><td><strong>{delivery.title}</strong><small className="staff-request-current">{MEMBER_NOTIFICATION_KIND_LABELS[delivery.kind] ?? delivery.kind}</small></td><td className="time-cell">{delivery.device}</td><td><StatusBadge state={NOTIFICATION_DELIVERY_LABELS[delivery.status]} /></td><td className="time-cell">{delivery.attempts}</td><td className="time-cell">{delivery.last_attempt_at ? formatSessionTime(delivery.last_attempt_at) : "—"}</td><td>{delivery.error ? <small className="request-overdue">{delivery.error}</small> : delivery.sent_at ? <span className="time-cell">{formatSessionTime(delivery.sent_at)}</span> : <span className="table-hint">en espera</span>}</td><td>{delivery.status === "failed" && canManageAttendance ? <button className="button button-secondary" disabled={pushBusy !== null} onClick={() => void retryMemberPush(delivery)}>{pushBusy === delivery.id ? "Reintentando…" : "Reintentar"}</button> : null}</td></tr>)}
+                : pushBoard.items.map((delivery) => <tr key={delivery.id}><td><div className="person-cell"><span className="person-avatar mint">{delivery.member_name.slice(0, 1).toUpperCase()}</span><span><strong>{delivery.member_name}</strong><small>{delivery.member_email ?? "Sin correo"}</small></span></div></td><td><strong>{delivery.title}</strong><small className="staff-request-current">{MEMBER_NOTIFICATION_KIND_LABELS[delivery.kind] ?? delivery.kind}</small></td><td className="time-cell">{delivery.device}</td><td><StatusBadge state={NOTIFICATION_DELIVERY_LABELS[delivery.status]} /></td><td className="time-cell">{delivery.attempts}</td><td className="time-cell">{delivery.last_attempt_at ? formatSessionTime(delivery.last_attempt_at) : "—"}</td><td>{delivery.error ? <small className="request-overdue">{delivery.error}</small> : delivery.sent_at ? <span className="time-cell">{formatSessionTime(delivery.sent_at)}</span> : <span className="table-hint">en espera</span>}{delivery.status === "failed" ? delivery.next_attempt_at ? <small className="staff-request-current">Reintento {formatSessionTime(delivery.next_attempt_at)}</small> : delivery.attempts >= (pushBoard?.max_attempts ?? 0) ? <small className="staff-request-current">Sin reintentos</small> : null : null}</td><td>{delivery.status === "failed" && canManageAttendance ? <button className="button button-secondary" disabled={pushBusy !== null} onClick={() => void retryMemberPush(delivery)}>{pushBusy === delivery.id ? "Reintentando…" : "Reintentar"}</button> : null}</td></tr>)}
             </tbody></table></div>
             <div className="table-bottom">
               <span>{pushBoard?.total ?? 0} entregas registradas</span>

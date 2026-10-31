@@ -221,12 +221,14 @@ def test_an_uninstalled_app_retires_the_token(session: Session, monkeypatch) -> 
 
     assert result.deactivated == 1
     assert result.failed == 1
+    assert result.remaining == 0
     token = session.exec(select(MemberPushToken)).one()
     assert token.active is False
     assert token.deactivated_at is not None
     assert token.deactivated_at.replace(tzinfo=timezone.utc) == NOW
     delivery = session.exec(select(MemberPushDelivery)).one()
     assert delivery.status == "failed"
+    assert delivery.next_attempt_at is None
     assert "ya no está instalada" in (delivery.error or "")
 
 
@@ -253,6 +255,123 @@ def test_a_failed_push_keeps_the_device(session: Session, monkeypatch) -> None:
     assert result.deactivated == 0
     assert session.exec(select(MemberPushToken)).one().active is True
     assert session.exec(select(MemberPushDelivery)).one().status == "failed"
+
+
+def _queue_one_push(session: Session) -> MemberPushDelivery:
+    member = _member(session, email="ana@example.test")
+    register_member_push_token(
+        session, member.id, token=TOKEN_A, platform="ios", now=NOW
+    )
+    create_notification(
+        session,
+        member_id=member.id,
+        kind="class_reserved",
+        title="Reserva confirmada",
+        body="Tienes lugar en Spinning 6am.",
+        now=NOW,
+    )
+    session.commit()
+    return session.exec(select(MemberPushDelivery)).one()
+
+
+def _unreachable(**_kwargs) -> str:
+    raise PushDeliveryFailed("El servicio de notificaciones respondió 503.")
+
+
+def test_a_transport_failure_schedules_the_first_retry(
+    session: Session, monkeypatch
+) -> None:
+    delivery = _queue_one_push(session)
+    monkeypatch.setattr(push_module, "send_expo_push", _unreachable)
+
+    result = send_pending_member_push_deliveries(session, now=NOW)
+
+    assert (result.attempted, result.failed, result.retried) == (1, 1, 0)
+    assert result.remaining == 1
+    session.refresh(delivery)
+    assert delivery.status == "failed"
+    assert delivery.attempts == 1
+    assert delivery.next_attempt_at is not None
+    assert delivery.next_attempt_at.replace(tzinfo=timezone.utc) == NOW + timedelta(
+        minutes=1
+    )
+
+
+def test_a_retry_waits_until_it_is_due(session: Session, monkeypatch) -> None:
+    delivery = _queue_one_push(session)
+    monkeypatch.setattr(push_module, "send_expo_push", _unreachable)
+    send_pending_member_push_deliveries(session, now=NOW)
+
+    early = send_pending_member_push_deliveries(
+        session, now=NOW + timedelta(seconds=30)
+    )
+
+    assert early.attempted == 0
+    assert early.remaining == 1
+    session.refresh(delivery)
+    assert delivery.attempts == 1
+
+
+def test_the_retries_grow_and_stop_after_the_last_attempt(
+    session: Session, monkeypatch
+) -> None:
+    delivery = _queue_one_push(session)
+    monkeypatch.setattr(push_module, "send_expo_push", _unreachable)
+
+    first = send_pending_member_push_deliveries(session, now=NOW)
+    assert (first.attempted, first.retried) == (1, 0)
+    session.refresh(delivery)
+    assert delivery.next_attempt_at.replace(tzinfo=timezone.utc) == NOW + timedelta(
+        minutes=1
+    )
+
+    second = send_pending_member_push_deliveries(
+        session, now=NOW + timedelta(minutes=1)
+    )
+    assert (second.attempted, second.failed, second.retried) == (1, 1, 1)
+    assert second.remaining == 1
+    session.refresh(delivery)
+    assert delivery.attempts == 2
+    assert delivery.next_attempt_at.replace(tzinfo=timezone.utc) == NOW + timedelta(
+        minutes=6
+    )
+
+    third = send_pending_member_push_deliveries(
+        session, now=NOW + timedelta(minutes=6)
+    )
+    assert (third.attempted, third.failed, third.retried) == (1, 1, 1)
+    assert third.remaining == 0
+    session.refresh(delivery)
+    assert delivery.attempts == 3
+    assert delivery.next_attempt_at is None
+
+    # No further pass picks an exhausted row, not even much later.
+    late = send_pending_member_push_deliveries(
+        session, now=NOW + timedelta(hours=1)
+    )
+    assert late.attempted == 0
+    session.refresh(delivery)
+    assert delivery.attempts == 3
+
+
+def test_a_retry_that_works_clears_the_schedule(
+    session: Session, monkeypatch
+) -> None:
+    delivery = _queue_one_push(session)
+    monkeypatch.setattr(push_module, "send_expo_push", _unreachable)
+    send_pending_member_push_deliveries(session, now=NOW)
+
+    monkeypatch.setattr(push_module, "send_expo_push", lambda **_kwargs: "sent")
+    result = send_pending_member_push_deliveries(
+        session, now=NOW + timedelta(minutes=1)
+    )
+
+    assert (result.sent, result.retried) == (1, 1)
+    assert result.remaining == 0
+    session.refresh(delivery)
+    assert delivery.status == "sent"
+    assert delivery.next_attempt_at is None
+    assert delivery.sent_at.replace(tzinfo=timezone.utc) == NOW + timedelta(minutes=1)
 
 
 def _build_engine():

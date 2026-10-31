@@ -2625,6 +2625,7 @@ class MemberPushDeliveryResponse(BaseModel):
     error: str | None
     created_at: datetime
     last_attempt_at: datetime | None
+    next_attempt_at: datetime | None
     sent_at: datetime | None
 
 
@@ -2635,6 +2636,7 @@ class MemberPushDeliveryPageResponse(BaseModel):
     page: int
     page_size: int
     pages: int
+    max_attempts: int
 
 
 class MemberPushDeliveryPassResponse(BaseModel):
@@ -2643,6 +2645,7 @@ class MemberPushDeliveryPassResponse(BaseModel):
     simulated: int
     failed: int
     deactivated: int
+    retried: int
     remaining: int
 
 
@@ -4708,6 +4711,7 @@ def member_push_deliveries(
         page=inbox.page,
         page_size=inbox.page_size,
         pages=inbox.pages,
+        max_attempts=inbox.max_attempts,
     )
 
 
@@ -4727,6 +4731,7 @@ def send_member_push_deliveries(
         simulated=result.simulated,
         failed=result.failed,
         deactivated=result.deactivated,
+        retried=result.retried,
         remaining=result.remaining,
     )
 
@@ -10585,6 +10590,7 @@ def _member_push_delivery_response(
         error=item.error,
         created_at=item.created_at,
         last_attempt_at=item.last_attempt_at,
+        next_attempt_at=item.next_attempt_at,
         sent_at=item.sent_at,
     )
 

@@ -15,12 +15,12 @@ the SMTP transport, so a demo never reaches a real device.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 from uuid import UUID
 
 import httpx
-from sqlalchemy import func, update
+from sqlalchemy import and_, func, or_, update
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
@@ -44,6 +44,10 @@ DEFAULT_TIMEOUT_SECONDS = 15.0
 DELIVERY_STATUSES = ("pending", "sent", "simulated", "failed")
 # Only a failed attempt is retried by hand; pending rows wait for the next pass.
 RETRYABLE_DELIVERY_STATUSES = ("failed",)
+# Attempts include the first try: one original plus two automatic retries. The
+# wait grows so a short outage is ridden out without drowning Expo in traffic.
+MAX_PUSH_ATTEMPTS = 3
+PUSH_RETRY_BACKOFF = (timedelta(minutes=1), timedelta(minutes=5))
 EXPO_TOKEN_PREFIXES = ("ExponentPushToken[", "ExpoPushToken[")
 UNREGISTERED_ERROR = "DeviceNotRegistered"
 
@@ -89,6 +93,7 @@ class MemberPushPass:
     simulated: int
     failed: int
     deactivated: int
+    retried: int
     remaining: int
 
 
@@ -109,6 +114,7 @@ class MemberPushDeliveryItem:
     error: str | None
     created_at: datetime
     last_attempt_at: datetime | None
+    next_attempt_at: datetime | None
     sent_at: datetime | None
 
 
@@ -119,6 +125,7 @@ class MemberPushDeliveryPage:
     page: int
     page_size: int
     pages: int
+    max_attempts: int
 
 
 @dataclass(frozen=True)
@@ -309,11 +316,20 @@ def _ticket(payload: object) -> dict[str, str | None]:
     }
 
 
-def _pending_count(session: Session) -> int:
+def _remaining_count(session: Session) -> int:
+    """Rows a later pass still has work for: untouched or waiting to retry."""
+
     return int(
         session.exec(
             select(func.count(MemberPushDelivery.id)).where(
-                MemberPushDelivery.status == "pending"
+                or_(
+                    MemberPushDelivery.status == "pending",
+                    and_(
+                        MemberPushDelivery.status == "failed",
+                        MemberPushDelivery.attempts < MAX_PUSH_ATTEMPTS,
+                        MemberPushDelivery.next_attempt_at.is_not(None),
+                    ),
+                )
             )
         ).one()
         or 0
@@ -378,6 +394,7 @@ def _deliver(
         # must not stay pending forever.
         delivery.status = "failed"
         delivery.error = "El aviso de la notificación ya no existe."
+        delivery.next_attempt_at = None
         session.add(delivery)
         session.commit()
         return False
@@ -394,6 +411,7 @@ def _deliver(
     except PushTokenUnregistered as error:
         delivery.status = "failed"
         delivery.error = str(error)[:500]
+        delivery.next_attempt_at = None
         session.add(delivery)
         _deactivate_token(
             session,
@@ -408,19 +426,54 @@ def _deliver(
         delivery.error = str(error)[:500]
         session.add(delivery)
         session.commit()
+        _schedule_retry(session, delivery, now=now)
         return False
     except Exception as error:  # noqa: BLE001 - one bad push must not stop the pass
         delivery.status = "failed"
         delivery.error = (str(error).strip() or error.__class__.__name__)[:500]
         session.add(delivery)
         session.commit()
+        _schedule_retry(session, delivery, now=now)
         return False
     delivery.status = status
     delivery.error = None
+    delivery.next_attempt_at = None
     delivery.sent_at = now
     session.add(delivery)
     session.commit()
     return False
+
+
+def _schedule_retry(
+    session: Session,
+    delivery: MemberPushDelivery,
+    *,
+    now: datetime,
+) -> None:
+    """Queue the next automatic attempt while attempts remain."""
+
+    if delivery.attempts >= MAX_PUSH_ATTEMPTS:
+        delivery.next_attempt_at = None
+        session.add(delivery)
+        session.commit()
+        return
+    delay = PUSH_RETRY_BACKOFF[
+        min(delivery.attempts - 1, len(PUSH_RETRY_BACKOFF) - 1)
+    ]
+    delivery.next_attempt_at = now + delay
+    session.add(delivery)
+    session.commit()
+
+
+def _retry_due(now: datetime):
+    """A failed row whose automatic retry is already due."""
+
+    return and_(
+        MemberPushDelivery.status == "failed",
+        MemberPushDelivery.attempts < MAX_PUSH_ATTEMPTS,
+        MemberPushDelivery.next_attempt_at.is_not(None),
+        MemberPushDelivery.next_attempt_at <= now,
+    )
 
 
 def send_pending_member_push_deliveries(
@@ -429,22 +482,32 @@ def send_pending_member_push_deliveries(
     limit: int = DEFAULT_SEND_BATCH_LIMIT,
     now: datetime | None = None,
 ) -> MemberPushPass:
-    """Send the oldest pending pushes, at most ``limit`` per pass."""
+    """Send the oldest pending pushes and the retries that are due, at most ``limit``."""
 
     occurred = _as_utc(now or utc_now())
     batch = max(1, min(limit, MAX_SEND_BATCH_LIMIT))
     rows = list(
         session.exec(
             select(MemberPushDelivery)
-            .where(MemberPushDelivery.status == "pending")
+            .where(
+                or_(
+                    MemberPushDelivery.status == "pending",
+                    _retry_due(occurred),
+                )
+            )
             .order_by(MemberPushDelivery.created_at, MemberPushDelivery.id)
             .limit(batch)
         ).all()
     )
-    attempted = sent = simulated = failed = deactivated = 0
+    attempted = sent = simulated = failed = deactivated = retried = 0
     for delivery in rows:
-        if not _claim(session, delivery, from_status="pending", now=occurred):
+        was_failed = delivery.status == "failed"
+        if not _claim(
+            session, delivery, from_status=delivery.status, now=occurred
+        ):
             continue
+        if was_failed:
+            retried += 1
         if _deliver(session, delivery, now=occurred):
             deactivated += 1
         attempted += 1
@@ -460,7 +523,8 @@ def send_pending_member_push_deliveries(
         simulated=simulated,
         failed=failed,
         deactivated=deactivated,
-        remaining=_pending_count(session),
+        retried=retried,
+        remaining=_remaining_count(session),
     )
 
 
@@ -581,6 +645,7 @@ def list_member_push_deliveries(
         page=page,
         page_size=page_size,
         pages=pages,
+        max_attempts=MAX_PUSH_ATTEMPTS,
     )
 
 
@@ -618,6 +683,11 @@ def _delivery_item(
             if delivery.last_attempt_at is not None
             else None
         ),
+        next_attempt_at=(
+            _as_utc(delivery.next_attempt_at)
+            if delivery.next_attempt_at is not None
+            else None
+        ),
         sent_at=(
             _as_utc(delivery.sent_at) if delivery.sent_at is not None else None
         ),
@@ -637,10 +707,12 @@ __all__ = [
     "EXPO_PUSH_URL",
     "InvalidPushPlatform",
     "InvalidPushToken",
+    "MAX_PUSH_ATTEMPTS",
     "MemberPushDeliveryCounts",
     "MemberPushDeliveryItem",
     "MemberPushDeliveryPage",
     "MemberPushPass",
+    "PUSH_RETRY_BACKOFF",
     "PushDeliveryFailed",
     "PushDeliveryNotFound",
     "PushDeliveryRetryNotAllowed",

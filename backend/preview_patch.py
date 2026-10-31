@@ -84,6 +84,7 @@ ADDED_COLUMNS = {
         "cancellation_requested_at": "DATETIME",
         "cancellation_checked_at": "DATETIME",
     },
+    "member_push_deliveries": {"next_attempt_at": "DATETIME"},
 }
 
 # New RBAC rows for features added after the preview database was seeded.
@@ -680,6 +681,11 @@ def main(reset_maintenance: bool) -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS "
                 "ix_staff_notification_deliveries_message_id "
                 "ON staff_notification_deliveries (message_id)"
+            )
+        if "member_push_deliveries" in tables:
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS ix_member_push_deliveries_status_next "
+                "ON member_push_deliveries (status, next_attempt_at)"
             )
 
         seed_preview_permissions(connection)

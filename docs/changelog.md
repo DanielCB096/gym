@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-30 · Avisos: reintento automático del push del socio
+
+- **Backoff por fila**: `member_push_deliveries` gana `next_attempt_at` (migración `20261031_0068`, columna más índice `(status, next_attempt_at)`); un fallo de transporte programa el siguiente intento a un minuto y después a cinco, hasta tres intentos en total (`MAX_PUSH_ATTEMPTS`). Al agotarlos la fila queda `failed` sin reintento programado; un éxito limpia la fecha. `DeviceNotRegistered` no se reprograma y retira el token.
+- **La pasada toma lo vencido**: `send_pending_member_push_deliveries` selecciona `pending` o `failed` con `next_attempt_at <= now` y `attempts` disponible, mantiene el reclamo compare-and-set por fila y publica `retried`. `remaining` cuenta pendientes y reintentos por vencer.
+- **API y panel**: cada entrega publica `next_attempt_at`, la página `max_attempts` (3) y la pasada `retried`; la tarjeta «PUSH DEL SOCIO» muestra «Reintento HH:MM» bajo el error o «Sin reintentos» cuando ya no habrá más, y el aviso del envío resume los reintentos automáticos. El reintento manual sigue disponible sobre cualquier fila `failed`, esté o no programada.
+- **Pruebas**: 4 casos nuevos en `test_member_push.py` (programación, espera hasta el vencimiento, escalera de tres intentos y éxito en el reintento), ampliación del flujo HTTP de `test_member_push_admin.py` (`next_attempt_at`, `max_attempts`, `retried` y reintento manual sobre una fila programada) y 1 de `test_preview_patch.py`. Suite en **331 pruebas**: 326 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Verificación**: en la vista previa, dos entregas sintéticas `failed` de Andrés Torres —una agotada con 3 intentos y otra programada un minuto antes— mostraron «Sin reintentos» y «Reintento 30-oct, 21:26»; «Enviar pendientes» simuló solo la vencida (`attempts` 2 y `next_attempt_at` vacío) y el aviso resumió «1 intento(s): 0 enviado(s), 1 simulado(s), 0 con error, 1 reintento(s) automático(s).»; la consola no mostró errores de la tarjeta. Se borraron las entregas, los avisos, el token y la cuenta temporal de gerencia, y se detuvo el backend de vista previa.
+- **Documentación**: ADR-054, modelo de datos, plan de pruebas, deuda técnica, README, README del backend, traspaso e índice.
+
 ## 2026-10-30 · Avisos: cola de push del socio en el panel
 
 - **API de la cola**: `GET /admin/notifications/push-deliveries` (`attendance.read`) lista las `member_push_deliveries` más recientes primero, con el socio y el aviso resueltos, filtro por estado, paginación de 20 (máximo 100) y los conteos por estado más `active_tokens`. El token del dispositivo viaja **enmascarado** (`…A111`): el panel nunca recibe la dirección completa de Expo.
