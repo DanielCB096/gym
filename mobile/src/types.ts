@@ -323,6 +323,35 @@ export type MemberPaymentPage = {
   total_paid_cents: number;
 };
 
+export type MemberCheckoutPlan = {
+  id: string;
+  name: string;
+  duration_days: number;
+  price_cents: number;
+  currency: string;
+};
+
+export type MemberCheckoutPlanList = {
+  checkout_enabled: boolean;
+  eligible: boolean;
+  items: MemberCheckoutPlan[];
+  pending_checkout: MemberPendingCheckout | null;
+};
+
+export type MemberPendingCheckout = {
+  plan: MemberCheckoutPlan;
+  idempotency_key: string;
+  checkout_url: string | null;
+};
+
+export type MemberHostedCheckout = {
+  membership_id: string;
+  payment_attempt_id: string;
+  status: string;
+  checkout_url: string | null;
+  idempotent_replay: boolean;
+};
+
 export type MemberNotification = {
   id: string;
   kind: string;

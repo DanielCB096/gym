@@ -33,6 +33,8 @@ La primera integración debe permitir cobrar una membresía sin almacenar datos 
 ## Estado de implementación
 
 - Implementados `POST /member/membership/checkout`, el adaptador `HostedPayment` para tarjeta en sandbox y la migración `20261031_0075_hosted_membership_checkout.py`, con `provider_order_id` y `checkout_url` separados de la futura referencia del cargo.
+- La app obtiene planes pagados con `GET /member/membership/plans` y abre el enlace de checkout alojado desde la pantalla de pagos. La lista se oculta si sandbox no está configurado o si el socio ya tiene una membresía no terminal; renovar y cambiar de plan siguen fuera del flujo en línea.
+- La misma respuesta incluye el checkout pendiente del socio autenticado, con plan, clave idempotente y URL guardada, para reabrirlo o reintentar la creación después de cerrar la app. La consulta no crea una orden ni expone intentos de otros socios.
 - Cada intento queda ligado a una sola membresía pendiente, obtiene importe y moneda del plan, y usa su UUID como clave idempotente en Conekta. La llamada de orden crea/recupera un checkout; no registra pago confirmado ni activa acceso.
 - Implementado `POST /webhooks/conekta/membership`: valida RSA-SHA256 del `Digest` y el cuerpo original, `livemode=false`, tipo/estado aplicable, orden, importe, moneda y referencia del cargo antes de llamar `process_verified_webhook`. El procesamiento idempotente registra pago y activa la membresía en una sola transacción.
 - Los eventos pendientes/no aplicables se ignoran. Los eventos pagados de orden/cargo se procesan; los rechazos reconocidos marcan fallido el intento sin activar acceso. Una discrepancia de método, importe o moneda queda guardada como evento `failed` con `rejected_*` para revisión y responde `409`.

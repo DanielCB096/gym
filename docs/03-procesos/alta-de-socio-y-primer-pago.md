@@ -27,6 +27,8 @@ G --> H[Enviar confirmación]
 
 El socio autenticado puede iniciar `POST /member/membership/checkout` con `plan_id` y `Idempotency-Key`. El backend crea un checkout alojado de Conekta para tarjeta en sandbox, tomando precio y moneda del plan, y devuelve `checkout_url`. Reutilizar la misma clave devuelve el mismo checkout o reintenta la misma orden; no crea un segundo intento. Se requiere `CONEKTA_MODE=sandbox` y configurar credenciales y URL de retorno HTTPS por entorno.
 
+Al consultar `GET /member/membership/plans`, el socio también recupera su checkout pendiente, si existe. La respuesta incluye el plan, la clave idempotente y la URL ya guardada (si la orden aún no la tiene, la app puede reintentar con la misma clave). Esto permite continuar después de cerrar o reiniciar la app; el dato está acotado al socio autenticado y no cambia la elegibilidad para iniciar otra membresía.
+
 La creación del checkout y el retorno a la app no confirman el pago. Conekta notifica el resultado en `POST /webhooks/conekta/membership`; el backend verifica la firma `Digest`, `livemode=false`, el ID de orden, importe, moneda y estado antes de procesarlo idempotentemente. Solo eventos pagados verificados crean `Payment` y activan la membresía. Un rechazo mantiene el intento fallido y una discrepancia queda registrada para revisión sin activar el acceso. El endpoint requiere `CONEKTA_WEBHOOK_PUBLIC_KEY` de sandbox. No se permite producción ni se habilitan SPEI/efectivo en el checkout actual.
 
 ## Reglas clave

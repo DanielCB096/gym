@@ -2461,6 +2461,27 @@ class MemberHostedCheckoutResponse(BaseModel):
     idempotent_replay: bool
 
 
+class MemberCheckoutPlanResponse(BaseModel):
+    id: UUID
+    name: str
+    duration_days: int
+    price_cents: int
+    currency: str
+
+
+class MemberPendingCheckoutResponse(BaseModel):
+    plan: MemberCheckoutPlanResponse
+    idempotency_key: str
+    checkout_url: str | None
+
+
+class MemberCheckoutPlanListResponse(BaseModel):
+    checkout_enabled: bool
+    eligible: bool
+    items: list[MemberCheckoutPlanResponse]
+    pending_checkout: MemberPendingCheckoutResponse | None
+
+
 class MemberAccountResponse(BaseModel):
     charges_cents: int
     credits_cents: int
@@ -4481,6 +4502,91 @@ def create_member_hosted_checkout(
         status=result.status,
         checkout_url=result.checkout_url,
         idempotent_replay=result.idempotent_replay,
+    )
+
+
+@app.get(
+    "/member/membership/plans",
+    response_model=MemberCheckoutPlanListResponse,
+    tags=["member self-service"],
+)
+def list_member_checkout_plans(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberCheckoutPlanListResponse:
+    try:
+        ConektaCheckoutSettings.from_env()
+    except ConektaCheckoutConfigurationError:
+        checkout_enabled = False
+    else:
+        checkout_enabled = True
+
+    eligible = (
+        session.exec(
+            select(Membership.id)
+            .where(
+                Membership.member_id == member.member_id,
+                Membership.status.in_(
+                    ("pending_payment", "active", "frozen", "suspended")
+                ),
+            )
+            .limit(1)
+        ).first()
+        is None
+    )
+    plans = (
+        session.exec(
+            select(Plan)
+            .where(
+                Plan.is_active.is_(True),
+                Plan.price_cents > 0,
+            )
+            .order_by(Plan.name, Plan.id)
+        ).all()
+        if eligible and checkout_enabled
+        else []
+    )
+    pending_checkout_row = session.exec(
+        select(PaymentAttempt, Plan)
+        .join(Membership, PaymentAttempt.membership_id == Membership.id)
+        .join(Plan, Membership.plan_id == Plan.id)
+        .where(
+            Membership.member_id == member.member_id,
+            Membership.status == "pending_payment",
+            PaymentAttempt.provider == "conekta",
+            PaymentAttempt.status == "pending",
+        )
+        .order_by(PaymentAttempt.requested_at.desc())
+        .limit(1)
+    ).first()
+    return MemberCheckoutPlanListResponse(
+        checkout_enabled=checkout_enabled,
+        eligible=eligible,
+        items=[
+            MemberCheckoutPlanResponse(
+                id=plan.id,
+                name=plan.name,
+                duration_days=plan.duration_days,
+                price_cents=plan.price_cents,
+                currency=plan.currency,
+            )
+            for plan in plans
+        ],
+        pending_checkout=(
+            MemberPendingCheckoutResponse(
+                plan=MemberCheckoutPlanResponse(
+                    id=pending_checkout_row[1].id,
+                    name=pending_checkout_row[1].name,
+                    duration_days=pending_checkout_row[1].duration_days,
+                    price_cents=pending_checkout_row[1].price_cents,
+                    currency=pending_checkout_row[1].currency,
+                ),
+                idempotency_key=pending_checkout_row[0].idempotency_key,
+                checkout_url=pending_checkout_row[0].checkout_url,
+            )
+            if pending_checkout_row is not None
+            else None
+        ),
     )
 
 

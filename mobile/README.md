@@ -1,6 +1,6 @@
 # App móvil del socio
 
-Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, el **código rotativo de entrada al club**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, la **carga y consulta de fotos de progreso con consentimiento**, los **pagos y el estado de cuenta** (solo lectura), las **facturas del socio** con descarga de PDF y XML y **solicitud de factura** de sus propias compras y cobros, y la **bandeja de avisos del gimnasio**; no incluye todavía pago en línea.
+Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, el **código rotativo de entrada al club**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, la **carga y consulta de fotos de progreso con consentimiento**, los **pagos y el estado de cuenta**, el **primer pago de membresía mediante checkout alojado de Conekta exclusivamente en sandbox**, las **facturas del socio** con descarga de PDF y XML y **solicitud de factura** de sus propias compras y cobros, y la **bandeja de avisos del gimnasio**. No permite renovaciones, guardar tarjetas ni cobros productivos.
 
 ## Alcance implementado
 
@@ -49,6 +49,9 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
   - saldo de la cuenta, con aviso para saldo a favor o deuda, conteo de cargos y abonos, importe pagado en membresías y fecha de corte;
   - pagos de membresía con importe, plan, periodo, método y nota;
   - movimientos de cuenta en orden descendente, con importe con signo, saldo después del movimiento, referencia y método;
+  - planes activos y pagados para la primera inscripción, con checkout de tarjeta abierto en el navegador seguro de Conekta solo cuando el backend está configurado para sandbox;
+  - idempotencia al reintentar la creación; el checkout pendiente se recupera del backend para reabrirlo o reintentarlo incluso después de reiniciar la app; al volver, la app actualiza los datos pero nunca considera el retorno del navegador como confirmación de pago (el webhook verificado del backend es la autoridad);
+  - renovaciones y cambios de plan siguen atendiéndose en recepción; esta pantalla no guarda ni procesa datos de tarjeta;
   - aviso cuando el historial supera los 100 movimientos que devuelve el backend;
   - estados vacíos, mensajes de error y actualización manual con deslizamiento.
 - Pantalla de facturas con:

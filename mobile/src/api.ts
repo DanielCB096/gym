@@ -9,9 +9,11 @@ import type {
   MemberBillableOriginPage,
   MemberClassPage,
   MemberClassReservation,
+  MemberCheckoutPlanList,
   MemberFiscalProfile,
   MemberGoal,
   MemberGoalInput,
+  MemberHostedCheckout,
   MemberInvoicePage,
   MemberInvoiceRequestInput,
   MemberInvoiceRequestResult,
@@ -52,12 +54,16 @@ type RequestOptions = {
   body?: unknown;
   form?: FormData;
   token?: string;
+  headers?: Record<string, string>;
 };
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  const headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    ...options.headers,
+  };
   if (options.form === undefined && options.body !== undefined) {
     headers["Content-Type"] = "application/json";
   }
@@ -293,6 +299,23 @@ export function deleteMemberProgressPhoto(token: string, photoId: string): Promi
 export function getMemberPayments(token: string, pageSize = 20): Promise<MemberPaymentPage> {
   return request<MemberPaymentPage>(`/member/payments?page=1&page_size=${pageSize}`, {
     token,
+  });
+}
+
+export function getMemberCheckoutPlans(token: string): Promise<MemberCheckoutPlanList> {
+  return request<MemberCheckoutPlanList>("/member/membership/plans", { token });
+}
+
+export function createMemberCheckout(
+  token: string,
+  planId: string,
+  idempotencyKey: string,
+): Promise<MemberHostedCheckout> {
+  return request<MemberHostedCheckout>("/member/membership/checkout", {
+    method: "POST",
+    token,
+    body: { plan_id: planId },
+    headers: { "Idempotency-Key": idempotencyKey },
   });
 }
 

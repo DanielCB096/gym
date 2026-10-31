@@ -62,19 +62,34 @@ def test_member_can_create_only_idempotent_sandbox_checkout(
 
     SQLModel.metadata.create_all(engine)
     email = "checkout-member@example.com"
+    other_email = "another-member@example.com"
     with Session(engine) as session:
         member = Member(first_name="Ana", last_name="Demo", email=email, status="pending")
+        other_member = Member(
+            first_name="Luis",
+            last_name="Demo",
+            email=other_email,
+            status="pending",
+        )
         plan = Plan(
             code=f"CHECKOUT-{uuid4().hex[:8].upper()}",
             name="Mensual",
             duration_days=30,
             price_cents=50000,
         )
-        session.add_all([member, plan])
+        session.add_all([member, other_member, plan])
         session.flush()
         session.add(
             MemberConsent(
                 member_id=member.id,
+                consent_type="privacy_notice",
+                document_version="v1",
+                accepted_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            MemberConsent(
+                member_id=other_member.id,
                 consent_type="privacy_notice",
                 document_version="v1",
                 accepted_at=datetime.now(timezone.utc),
@@ -113,6 +128,30 @@ def test_member_can_create_only_idempotent_sandbox_checkout(
     try:
         with TestClient(app) as client:
             headers = _member_token(client, email)
+            plans = client.get("/member/membership/plans", headers=headers)
+            assert plans.status_code == 200, plans.text
+            assert plans.json()["checkout_enabled"] is True
+            assert plans.json()["eligible"] is True
+            assert plans.json()["items"] == [
+                {
+                    "id": str(plan_id),
+                    "name": "Mensual",
+                    "duration_days": 30,
+                    "price_cents": 50000,
+                    "currency": "MXN",
+                }
+            ]
+            assert plans.json()["pending_checkout"] is None
+            monkeypatch.delenv("CONEKTA_SANDBOX_API_KEY")
+            unavailable = client.get("/member/membership/plans", headers=headers)
+            assert unavailable.status_code == 200, unavailable.text
+            assert unavailable.json() == {
+                "checkout_enabled": False,
+                "eligible": True,
+                "items": [],
+                "pending_checkout": None,
+            }
+            monkeypatch.setenv("CONEKTA_SANDBOX_API_KEY", "test-api-key")
             first = client.post(
                 "/member/membership/checkout",
                 headers={**headers, "Idempotency-Key": "member-checkout-key-1"},
@@ -129,6 +168,28 @@ def test_member_can_create_only_idempotent_sandbox_checkout(
             assert replay.json()["idempotent_replay"] is True
             assert first.json()["membership_id"] == replay.json()["membership_id"]
             assert len(calls) == 1
+            resumed = client.get("/member/membership/plans", headers=headers)
+            assert resumed.json() == {
+                "checkout_enabled": True,
+                "eligible": False,
+                "items": [],
+                "pending_checkout": {
+                    "plan": {
+                        "id": str(plan_id),
+                        "name": "Mensual",
+                        "duration_days": 30,
+                        "price_cents": 50000,
+                        "currency": "MXN",
+                    },
+                    "idempotency_key": "member-checkout-key-1",
+                    "checkout_url": "https://pay.conektame.io/link/sandbox_1",
+                },
+            }
+            other_headers = _member_token(client, other_email)
+            other_plans = client.get("/member/membership/plans", headers=other_headers)
+            assert other_plans.status_code == 200, other_plans.text
+            assert other_plans.json()["eligible"] is True
+            assert other_plans.json()["pending_checkout"] is None
 
             with Session(engine) as session:
                 membership = session.get(Membership, UUID(first.json()["membership_id"]))

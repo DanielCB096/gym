@@ -26,6 +26,10 @@
 
 ## 2026-10-31 · Pagos: primer checkout sandbox de membresía (ADR-066)
 
+- Se añadieron `GET /member/membership/plans` y la selección de planes pagados desde «Pagos y estado de cuenta». El backend solo ofrece planes cuando el checkout está configurado en sandbox y el socio no tiene una membresía no terminal.
+- La app abre el checkout alojado de Conekta en el navegador y recupera del backend la clave idempotente y URL del intento pendiente, incluso tras reiniciar. Al regresar, actualiza la pantalla y aclara que solo el webhook firmado confirma el pago.
+- La consulta recupera el checkout pendiente del socio autenticado, incluida la clave idempotente y la URL guardada, para reabrirlo o reintentar después de reiniciar la app; no crea órdenes ni expone intentos de otros socios.
+- La pantalla no maneja datos de tarjeta ni habilita renovaciones, cambios de plan o modo productivo. La prueba de API de checkout ahora valida también el catálogo y su bloqueo después de crear la membresía pendiente.
 - Se integró el checkout alojado de Conekta para el primer pago de una membresía en sandbox: el importe viene del plan, se conserva la orden y su URL, y el webhook verifica la firma RSA-SHA256, el importe y la moneda antes de activar la membresía de forma idempotente. Producción y cargos reales siguen fuera de alcance.
 - La migración `20261031_0075` se encadena después de `20261031_0076` para conservar una sola cabeza Alembic. Se agregaron la prueba de checkout, webhook, relay HTTP y el procedimiento local de sandbox.
 - Se reforzaron además las regresiones de recepción de compras, rechazo de asistencia premium sin forma de pago y errores de cron; la cobertura SMTP quedó aislada y sin conexiones externas.

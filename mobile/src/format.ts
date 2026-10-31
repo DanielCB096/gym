@@ -173,9 +173,9 @@ export function formatDay(value: string): string {
   return `${Number(match[3])} ${month} ${match[1]}`;
 }
 
-export function formatMoney(cents: number): string {
+export function formatMoney(cents: number, currency = "MXN"): string {
   const sign = cents < 0 ? "-" : "";
-  return `${sign}$${(Math.abs(cents) / 100).toFixed(2)} MXN`;
+  return `${sign}$${(Math.abs(cents) / 100).toFixed(2)} ${currency}`;
 }
 
 const PHOTO_ANGLE_LABELS: Record<string, string> = {

@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AppState,
   ActivityIndicator,
+  Linking,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -9,7 +11,13 @@ import {
   View,
 } from "react-native";
 
-import { ApiError, getMemberAccount, getMemberPayments } from "../api";
+import {
+  ApiError,
+  createMemberCheckout,
+  getMemberAccount,
+  getMemberCheckoutPlans,
+  getMemberPayments,
+} from "../api";
 import { describeError } from "../errors";
 import {
   formatDate,
@@ -20,7 +28,12 @@ import {
   paymentMethodLabel,
 } from "../format";
 import { colors, radius, sharedStyles, spacing } from "../theme";
-import type { MemberAccount, MemberPaymentPage } from "../types";
+import type {
+  MemberAccount,
+  MemberCheckoutPlan,
+  MemberCheckoutPlanList,
+  MemberPaymentPage,
+} from "../types";
 
 type Props = {
   token: string;
@@ -31,9 +44,19 @@ type Props = {
 export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
   const [payments, setPayments] = useState<MemberPaymentPage | null>(null);
   const [account, setAccount] = useState<MemberAccount | null>(null);
+  const [checkoutPlans, setCheckoutPlans] = useState<MemberCheckoutPlanList | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
+  const [startingCheckoutPlanId, setStartingCheckoutPlanId] = useState<string | null>(null);
+  const [pendingCheckout, setPendingCheckout] = useState<{
+    plan: MemberCheckoutPlan;
+    idempotencyKey: string;
+    checkoutUrl: string | null;
+  } | null>(null);
+  const checkoutOpenedRef = useRef(false);
 
   const load = useCallback(
     async (mode: "initial" | "refresh") => {
@@ -47,6 +70,25 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
         setPayments(nextPayments);
         setAccount(nextAccount);
         setError(null);
+        try {
+          const nextCheckoutPlans = await getMemberCheckoutPlans(token);
+          setCheckoutPlans(nextCheckoutPlans);
+          setPendingCheckout(
+            nextCheckoutPlans.pending_checkout
+              ? {
+                  plan: nextCheckoutPlans.pending_checkout.plan,
+                  idempotencyKey: nextCheckoutPlans.pending_checkout.idempotency_key,
+                  checkoutUrl: nextCheckoutPlans.pending_checkout.checkout_url,
+                }
+              : null,
+          );
+          setCheckoutError(null);
+        } catch (checkoutLoadError) {
+          if (checkoutLoadError instanceof ApiError && checkoutLoadError.status === 401) {
+            throw checkoutLoadError;
+          }
+          setCheckoutError(describeError(checkoutLoadError));
+        }
       } catch (loadError) {
         if (loadError instanceof ApiError && loadError.status === 401) {
           onSessionExpired();
@@ -64,6 +106,68 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
   useEffect(() => {
     void load("initial");
   }, [load]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active" && checkoutOpenedRef.current) {
+        checkoutOpenedRef.current = false;
+        setCheckoutNotice(
+          "Regresaste del checkout. El gimnasio confirmará el pago cuando reciba el aviso seguro de Conekta; desliza hacia abajo para actualizar.",
+        );
+        void load("refresh");
+      }
+    });
+    return () => subscription.remove();
+  }, [load]);
+
+  async function openCheckout(plan: MemberCheckoutPlan) {
+    if (startingCheckoutPlanId) {
+      return;
+    }
+    setStartingCheckoutPlanId(plan.id);
+    setCheckoutError(null);
+    setCheckoutNotice(null);
+    const existing = pendingCheckout?.plan.id === plan.id ? pendingCheckout : null;
+    const checkout = existing ?? {
+      plan,
+      idempotencyKey: `member-checkout-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      checkoutUrl: null,
+    };
+    setPendingCheckout(checkout);
+    try {
+      let checkoutUrl = checkout.checkoutUrl;
+      if (!checkoutUrl) {
+        const result = await createMemberCheckout(
+          token,
+          plan.id,
+          checkout.idempotencyKey,
+        );
+        checkoutUrl = result.checkout_url;
+        if (!checkoutUrl) {
+          throw new Error("Conekta no devolvió un enlace para continuar el pago.");
+        }
+        setPendingCheckout({ ...checkout, checkoutUrl });
+      }
+      checkoutOpenedRef.current = true;
+      await Linking.openURL(checkoutUrl);
+      setCheckoutNotice(
+        "Se abrió el checkout seguro de Conekta. La app no recibe ni guarda los datos de tu tarjeta. El pago solo se confirma cuando el gimnasio recibe y valida el aviso de Conekta.",
+      );
+    } catch (checkoutStartError) {
+      checkoutOpenedRef.current = false;
+      if (checkoutStartError instanceof ApiError && checkoutStartError.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      setCheckoutError(
+        checkoutStartError instanceof ApiError && checkoutStartError.status === 503
+          ? "El pago en línea no está disponible en este momento. Consulta en recepción."
+          : describeError(checkoutStartError),
+      );
+    } finally {
+      setStartingCheckoutPlanId(null);
+    }
+  }
 
   const balance = account?.balance_cents ?? 0;
 
@@ -105,7 +209,132 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
           <Text style={sharedStyles.error}>{error}</Text>
         </View>
       ) : null}
-
+      {checkoutPlans ? (
+        <View style={sharedStyles.card}>
+          <Text style={styles.sectionTitle}>Inscripción con pago en línea</Text>
+          <Text style={sharedStyles.body}>
+            Paga una primera membresía con tarjeta en el checkout seguro de Conekta.
+            La app nunca recibe ni guarda los datos de tu tarjeta.
+          </Text>
+          {pendingCheckout ? (
+            <View style={styles.checkoutPlan}>
+              <Text style={styles.rowTitle}>{pendingCheckout.plan.name}</Text>
+              <Text style={sharedStyles.hint}>
+                {formatMoney(
+                  pendingCheckout.plan.price_cents,
+                  pendingCheckout.plan.currency,
+                )} ·{" "}
+                {pendingCheckout.plan.duration_days} días
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={
+                  startingCheckoutPlanId === pendingCheckout.plan.id
+                    ? `Abriendo checkout para ${pendingCheckout.plan.name}`
+                    : pendingCheckout.checkoutUrl
+                      ? `Volver a abrir checkout de ${pendingCheckout.plan.name}`
+                      : `Reintentar la creación del checkout de ${pendingCheckout.plan.name}`
+                }
+                accessibilityState={{ disabled: startingCheckoutPlanId !== null }}
+                disabled={startingCheckoutPlanId !== null}
+                onPress={() => void openCheckout(pendingCheckout.plan)}
+                style={({ pressed }) => [
+                  sharedStyles.primaryButton,
+                  pressed && startingCheckoutPlanId === null
+                    ? sharedStyles.primaryButtonPressed
+                    : null,
+                  startingCheckoutPlanId !== null
+                    ? sharedStyles.primaryButtonDisabled
+                    : null,
+                ]}
+              >
+                {startingCheckoutPlanId === pendingCheckout.plan.id ? (
+                  <ActivityIndicator color={colors.accentText} />
+                ) : (
+                  <Text style={sharedStyles.primaryButtonText}>
+                    {pendingCheckout.checkoutUrl
+                      ? "Volver al checkout"
+                      : "Reintentar checkout"}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          ) : !checkoutPlans.checkout_enabled ? (
+            <Text style={sharedStyles.hint}>
+              El pago en línea no está habilitado en este momento. Consulta en recepción.
+            </Text>
+          ) : !checkoutPlans.eligible ? (
+            <Text style={sharedStyles.hint}>
+              Ya tienes una membresía activa o un pago en proceso. El pago en línea está
+              disponible solo para una primera inscripción; para renovar o cambiar tu
+              plan, consulta en recepción.
+            </Text>
+          ) : checkoutPlans.items.length === 0 ? (
+            <Text style={sharedStyles.hint}>
+              No hay planes disponibles para inscripción en línea.
+            </Text>
+          ) : (
+            checkoutPlans.items.map((plan) => {
+              const isStarting = startingCheckoutPlanId === plan.id;
+              const disabled = startingCheckoutPlanId !== null;
+              return (
+                <View key={plan.id} style={styles.checkoutPlan}>
+                  <View style={styles.rowHeading}>
+                    <Text style={styles.rowTitle}>{plan.name}</Text>
+                    <Text style={styles.rowAmount}>
+                      {formatMoney(plan.price_cents, plan.currency)}
+                    </Text>
+                  </View>
+                  <Text style={sharedStyles.hint}>
+                    {plan.duration_days} días · {plan.currency}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      isStarting
+                        ? `Abriendo checkout para ${plan.name}`
+                        : `Pagar ${plan.name} por ${formatMoney(
+                            plan.price_cents,
+                            plan.currency,
+                          )}`
+                    }
+                    accessibilityState={{ disabled }}
+                    disabled={disabled}
+                    onPress={() => void openCheckout(plan)}
+                    style={({ pressed }) => [
+                      sharedStyles.primaryButton,
+                      pressed && !disabled ? sharedStyles.primaryButtonPressed : null,
+                      disabled ? sharedStyles.primaryButtonDisabled : null,
+                    ]}
+                  >
+                    {isStarting ? (
+                      <ActivityIndicator color={colors.accentText} />
+                    ) : (
+                      <Text style={sharedStyles.primaryButtonText}>Continuar al pago</Text>
+                    )}
+                  </Pressable>
+                </View>
+              );
+            })
+          )}
+          {checkoutError ? (
+            <Text accessibilityRole="alert" style={sharedStyles.error}>
+              {checkoutError}
+            </Text>
+          ) : null}
+          {checkoutNotice ? (
+            <Text accessibilityLiveRegion="polite" style={sharedStyles.hint}>
+              {checkoutNotice}
+            </Text>
+          ) : null}
+        </View>
+      ) : checkoutError ? (
+        <View style={styles.errorBanner}>
+          <Text accessibilityRole="alert" style={sharedStyles.error}>
+            No se pudieron consultar las opciones de pago en línea: {checkoutError}
+          </Text>
+        </View>
+      ) : null}
       {loading && !account ? (
         <View style={styles.loading}>
           <ActivityIndicator color={colors.accent} />
@@ -305,6 +534,12 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 18,
     fontWeight: "800",
+  },
+  checkoutPlan: {
+    borderTopColor: colors.border,
+    borderTopWidth: 1,
+    gap: spacing.sm,
+    paddingTop: spacing.md,
   },
   row: {
     borderTopColor: colors.border,

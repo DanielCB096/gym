@@ -182,6 +182,8 @@ El plan ya guarda su **límite diario de entradas** (`plans.daily_entry_limit`, 
 
 ## 14. Historial de cambios
 
+- 2026-10-31: `GET /member/membership/plans` también recupera el checkout pendiente propio (plan, clave idempotente y URL) para reabrirlo o reintentarlo después de reiniciar la app.
+- 2026-10-31: la app del socio obtiene los planes de primera inscripción desde `GET /member/membership/plans` y abre el checkout alojado de Conekta. La disponibilidad queda restringida a sandbox y a socios sin membresía no terminal; el retorno de la app no confirma el pago.
 - 2026-10-28: **límite diario de entradas por plan** (`plans.daily_entry_limit`, migración `20261028_0043`, ADR-025). `PATCH /admin/plans/{plan_id}` con `settings.manage` fija o retira el límite; el kiosco lo aplica por día del club contando entradas autorizadas (también las manuales). No cambia el cobro, la vigencia ni las reglas de membresía.
 - 2026-10-31: **webhook Conekta en sandbox**: `POST /webhooks/conekta/membership` valida `Digest`, `livemode`, orden, importe, moneda y eventos de pago; confirma el pago y activa la membresía de forma idempotente. Las discrepancias quedan auditadas como evento fallido. No habilita producción ni recurrencia.
 - 2026-10-27: **consulta de pagos de membresía desde la app del socio** (`GET /member/payments`, solo lectura, paginada y acotada a la sesión), sin migración ni cambios en el cobro manual. El estado de cuenta de la tienda se expone por separado en `GET /member/account`.
