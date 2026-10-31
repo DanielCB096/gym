@@ -1309,6 +1309,33 @@ def _assert_slot_free(
         )
 
 
+def _assert_room_free(
+    session: Session,
+    *,
+    room_id: UUID,
+    starts_at: datetime,
+    ends_at: datetime,
+    exclude_id: UUID | None = None,
+) -> None:
+    # Locking the room row serializes two bookings of the same room on engines
+    # with row locks; SQLite drops the clause, as everywhere else in the API.
+    session.exec(
+        select(PhysioRoom).where(PhysioRoom.id == room_id).with_for_update()
+    ).first()
+    statement = select(PhysioAppointment.id).where(
+        PhysioAppointment.room_id == room_id,
+        PhysioAppointment.status != "cancelled",
+        PhysioAppointment.starts_at < ends_at,
+        PhysioAppointment.ends_at > starts_at,
+    )
+    if exclude_id is not None:
+        statement = statement.where(PhysioAppointment.id != exclude_id)
+    if session.exec(statement).first() is not None:
+        raise PhysioSlotConflict(
+            "El consultorio ya tiene una cita que se encima con ese horario"
+        )
+
+
 def _validate_therapist(session: Session, therapist_id: UUID) -> Employee:
     therapist = session.get(Employee, therapist_id)
     if therapist is None or therapist.status != "active":
@@ -1373,6 +1400,13 @@ def create_physio_appointment(
         starts_at=start,
         ends_at=end,
     )
+    if resolved_room_id is not None:
+        _assert_room_free(
+            session,
+            room_id=resolved_room_id,
+            starts_at=start,
+            ends_at=end,
+        )
     pack = _resolve_pack_for(
         session,
         member_id=member.id,
@@ -1454,6 +1488,19 @@ def move_physio_appointment(
     if therapist_employee_id is not None:
         _validate_therapist(session, new_therapist)
 
+    # Resolve where the appointment will live before validating, so the room
+    # that will actually be stored is the one checked for a double booking.
+    target_room_id = appointment.room_id
+    selected_room: PhysioRoom | None = None
+    if room_id is not UNSET:
+        if room_id is None:
+            target_room_id = None
+        else:
+            selected_room = _require_room(session, room_id)
+            target_room_id = selected_room.id
+    elif room is not UNSET:
+        target_room_id = None
+
     _assert_slot_free(
         session,
         therapist_id=new_therapist,
@@ -1461,6 +1508,14 @@ def move_physio_appointment(
         ends_at=new_end,
         exclude_id=appointment.id,
     )
+    if target_room_id is not None:
+        _assert_room_free(
+            session,
+            room_id=target_room_id,
+            starts_at=new_start,
+            ends_at=new_end,
+            exclude_id=appointment.id,
+        )
     # Moving re-picks the pack: a pack that expired before the new date cannot
     # cover it, and another one may be valid.
     pack = _resolve_pack_for(
@@ -1479,8 +1534,7 @@ def move_physio_appointment(
             appointment.room_id = None
             if room is UNSET:
                 appointment.room = None
-        else:
-            selected_room = _require_room(session, room_id)
+        elif selected_room is not None:
             appointment.room_id = selected_room.id
             appointment.room = selected_room.name
     elif room is not UNSET:

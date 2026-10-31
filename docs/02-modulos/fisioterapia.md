@@ -47,7 +47,7 @@ Tres permisos nuevos, que llevan la matriz a 36: `physio.read` (consultar catál
 
 ### Flujo principal: agendar una cita
 1. Recepción abre la agenda del día, elige socio, servicio, fisioterapeuta y horario.
-2. El sistema calcula el fin con la duración del servicio, valida que el fisioterapeuta no tenga otra cita encimada y que el socio no esté inactivo.
+2. El sistema calcula el fin con la duración del servicio, valida que el fisioterapeuta no tenga otra cita encimada, que el consultorio elegido no esté ocupado en ese intervalo y que el socio no esté inactivo.
 3. Si el socio tiene un paquete con crédito y la cita cae dentro de su vigencia, la cita queda ligada a ese paquete; si no, queda como **sesión suelta por cobrar al asistir** y la agenda lo advierte.
 4. Al guardar, el socio recibe en su bandeja el aviso de la cita con día, hora y fisioterapeuta (incremento 2).
 
@@ -65,7 +65,7 @@ Tres permisos nuevos, que llevan la matriz a 36: `physio.read` (consultar catál
 ### Flujo alterno: mover o cancelar
 1. El socio llama o pasa a recepción; no puede hacerlo desde la app.
 2. Recepción mueve la cita a otro horario o la cancela antes de que empiece.
-3. Mover valida de nuevo el traslape y la vigencia del paquete; cancelar libera el horario. En ambos casos el socio recibe el aviso correspondiente (incremento 2).
+3. Mover valida de nuevo el traslape del fisioterapeuta, la vigencia del paquete y la disponibilidad del consultorio destino; cancelar libera el horario y la sala. En ambos casos el socio recibe el aviso correspondiente (incremento 2).
 
 ### Flujo de cierre del día
 1. Al terminar la jornada, recepción pulsa «Cerrar el día».
@@ -119,9 +119,9 @@ Tres permisos nuevos, que llevan la matriz a 36: `physio.read` (consultar catál
 - **Cancelar y mover solo antes del inicio.** Después, la cita se cierra como asistencia o inasistencia.
 - **El cobro exige turno de caja abierto** y la forma de pago; sin turno responde `409` y la cita queda pendiente. Vale igual para el paquete y para la sesión suelta.
 - **Un socio inactivo no puede comprar ni agendar**; un socio con membresía vencida sí, porque la fisioterapia es un servicio aparte y no se condiciona a la membresía.
-- **Una cita no puede encimarse con otra del mismo fisioterapeuta.** Se valida en el servicio y se protege con un índice único sobre el inicio exacto; el traslape parcial de dos recepcionistas simultáneas es una deuda conocida, igual que en el resto de la agenda.
+- **Una cita no puede encimarse con otra del mismo fisioterapeuta ni con otra del mismo consultorio.** La agenda compara intervalos completos (no solo el inicio) y el consultorio del catálogo se valida como recurso reservable: si otra cita no cancelada usa la misma sala en un horario que se cruza, el alta o el movimiento se rechaza con `409` («El consultorio ya tiene una cita que se encima con ese horario»). Cancelar libera la sala. La validación bloquea la fila del consultorio para serializar dos agendamientos simultáneos, garantía que es de PostgreSQL porque en SQLite el bloqueo es no-op; no hay índice único porque un intervalo no se expresa como columnas únicas. Las salas escritas a mano (texto libre sin `room_id`) siguen fuera de la comprobación.
 - **La doble marca no duplica**: la cita se lee con `SELECT ... FOR UPDATE` y el paquete también. La garantía es de PostgreSQL —en SQLite, que usan la vista previa y las pruebas, el bloqueo es no-op—, así que la carrera se comprueba con una prueba opt-in contra `TEST_POSTGRES_URL`.
-- **El consultorio tiene catálogo, pero no se reserva como recurso.** La cita puede apuntar a un consultorio del catálogo o usar el predeterminado del fisioterapeuta; el sistema no impide que dos citas compartan sala, porque el cuello de botella es el fisioterapeuta.
+- **El consultorio del catálogo es un recurso reservable.** La cita puede apuntar a un consultorio del catálogo o usar el predeterminado del fisioterapeuta, y dos citas no pueden ocupar la misma sala en horarios que se cruzan, aunque sean de fisioterapeutas distintos. El sistema no declara capacidad por sala (una cita a la vez), no tiene horario propio del consultorio y no valida las salas escritas a mano; el cuello de botella sigue siendo el fisioterapeuta.
 - **No hay reembolso del paquete.** El cobro de la sesión suelta sí se puede devolver por la ruta de servicios de caja (ADR-034), que se generaliza para aceptar el vínculo con la cita.
 - **Extender el paquete solo mueve la vigencia.** Suma entre 1 y 366 días desde la fecha de vencimiento si aún no vence, o desde hoy si ya venció; no toca créditos ni la venta. Exige `physio.adjust` y un motivo obligatorio, y queda en `physio_pack_adjustments` con actor y fecha.
 - **Anular el paquete retira los créditos restantes sin devolver dinero.** Es una corrección administrativa (venta equivocada o cortesía): las sesiones que quedaban se registran como anuladas, y toda cita futura cubierta por el paquete se cancela con su aviso al socio. Un paquete anulado no se extiende ni se anula dos veces; uno sin créditos restantes tampoco se anula.
@@ -207,7 +207,7 @@ Los cinco salen del reporte del consultorio:
 ## 12. Criterios de aceptación
 
 - recepción vende un paquete de dos sesiones en una sola exhibición y el sistema muestra el 20 % de ahorro y los dos créditos
-- agendar fuera de la vigencia del paquete o encima de otra cita se rechaza con un mensaje claro
+- agendar fuera de la vigencia del paquete, encima de otra cita del fisioterapeuta o en un consultorio ya ocupado se rechaza con un mensaje claro, y mover una cita revalida el consultorio destino
 - marcar «Asistió» en una cita con paquete descuenta exactamente un crédito y no crea venta
 - marcar «Asistió» en una sesión suelta crea una venta de servicio en el turno abierto con la forma de pago elegida
 - marcar «No asistió» no crea venta ni descuenta crédito
@@ -227,7 +227,9 @@ Los cinco salen del reporte del consultorio:
 
 **Verificación en navegador del incremento 3 (2026-10-30).** Sobre la vista previa se recorrieron la asistencia que cobra la sesión suelta, la corrección a inasistencia que reembolsa, la nueva marcación que crea otra venta dejando la anterior reembolsada, la venta, extensión y anulación del paquete —esta última cancela la cita futura con su aviso y no devuelve dinero—, la pestaña Reporte con sus tarjetas y la exportación CSV, y la app del socio con los avisos de fisioterapia. Esa pasada destapó tres correcciones: la búsqueda de socios ahora separa el término por palabras —«Carla Mendez» encuentra aunque nombre y apellido estén en columnas distintas—, la tarjeta de ocupación formatea minutos en vez de redondear a horas, y `preview_patch.py` recupera el tramo de `CHECK` de 14 a 17 tipos que faltaba, con pruebas de regresión para la búsqueda y el script de vista previa. La suite queda en 259 pruebas (254 pasan y 5 se omiten).
 
-Lo que sigue sin cubrirse: la devolución del paquete y la reserva desde la app siguen fuera de alcance, y el consultorio todavía no impide que dos citas compartan sala.
+**Consultorio reservable implementado el 2026-10-31 (ADR-069).** El consultorio del catálogo dejó de ser un dato descriptivo y pasó a validarse como recurso: al crear o mover una cita, el servicio rechaza con `409` si otra cita no cancelada usa la misma sala en un intervalo que se cruza, sin importar el fisioterapeuta. La comprobación lee la fila del consultorio con `with_for_update()` para serializar dos agendamientos simultáneos en PostgreSQL (no-op en SQLite) y se aplica al consultorio que se va a guardar, excluyendo la propia cita al moverla. Cancelar libera la sala; las salas de texto libre sin `room_id` quedan fuera. No hay migración ni cambio de contrato: la regla vive en `physio.service` y reutiliza el `409` que ya traducía `PhysioSlotConflict`. La prueba `test_rooms_cannot_double_book_the_same_hour` cubre el alta con choque entre dos fisioterapeutas, otra sala y otro horario permitidos, el movimiento a una sala ocupada y a otra libre, conservar la sala al mover la hora, la liberación al cancelar y la sala de texto libre.
+
+Lo que sigue sin cubrirse: la devolución del paquete y la reserva desde la app siguen fuera de alcance; el consultorio no declara capacidad ni horario propio, no hay prueba opt-in de concurrencia de la sala contra PostgreSQL y el reporte sigue estimando la ocupación por fisioterapeuta, no por sala.
 
 ### Incrementos previstos
 
@@ -237,6 +239,7 @@ Lo que sigue sin cubrirse: la devolución del paquete y la reserva desde la app 
 
 ## 14. Historial de cambios
 
+- 2026-10-31: consultorio como recurso reservable (ADR-069) —el alta y el movimiento de una cita rechazan con `409` el traslape de la misma sala del catálogo, con bloqueo de fila en PostgreSQL, sin migración ni cambio de contrato—; prueba nueva en `test_physio_api.py`.
 - 2026-10-30: incremento 3 implementado —consultorios y especialidades con el perfil del fisioterapeuta, extensión y anulación del paquete con `physio.adjust` y bitácora, `room_id` en la cita, recordatorio de 24 horas, reporte del consultorio con exportación CSV y migración `20261030_0058_physio_control.py`—; pantalla de reporte, acciones de ajuste y siete pruebas nuevas.
 - 2026-10-29: incremento 2 implementado —`GET /member/physio`, pantalla «Fisioterapia» de la app con su tarjeta en el inicio, los tres avisos de la cita (`physio_appointment_scheduled`, `physio_appointment_cancelled`, `physio_appointment_rescheduled`), migración `20261029_0057_physio_notifications.py` que amplía el `CHECK` de tipos y prueba de extremo a extremo del portal.
 - 2026-10-29: incremento 1 implementado —tablas, columna en `sales`, permisos, servicio, catorce endpoints, BFF, página «Fisioterapia» con Agenda, Paquetes y Catálogo, seed de vista previa y nueve pruebas—; el panel envía siempre la forma de pago al marcar para poder cobrar una cita cuyo paquete se agotó antes de la visita.

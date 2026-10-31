@@ -90,7 +90,7 @@ TICKET_MANTENIMIENTO ||--o{ HISTORIAL_MANTENIMIENTO : documenta
 - `Rutina` mantiene su relación con socio y entrenador.
 - `Empleado`, `Usuario`, `Rol`, `Permiso`, `AsistenciaEmpleado`, `Nomina` y entidades relacionadas soportan personal, autorización y nómina.
 - `Equipo`, `TicketMantenimiento` e `HistorialMantenimiento` registran disponibilidad, atención y costos técnicos.
-- `ServicioFisioterapia`, `OfertaFisioterapia`, `PaqueteFisioterapia` y `CitaFisioterapia` modelan el consultorio: catálogo con precio suelto, paquete prepagado con créditos y vigencia, y cita con fisioterapeuta, consultorio, horario y estado; el cobro de una sesión suelta se liga a su cita por `sales.physio_appointment_id`. `ConsultorioFisioterapia`, `EspecialidadFisioterapia` y `PerfilFisioterapeuta` describen la sala y al terapeuta, y `AjustePaqueteFisioterapia` deja bitácora de las extensiones y anulaciones.
+- `ServicioFisioterapia`, `OfertaFisioterapia`, `PaqueteFisioterapia` y `CitaFisioterapia` modelan el consultorio: catálogo con precio suelto, paquete prepagado con créditos y vigencia, y cita con fisioterapeuta, consultorio, horario y estado; el cobro de una sesión suelta se liga a su cita por `sales.physio_appointment_id`. `ConsultorioFisioterapia`, `EspecialidadFisioterapia` y `PerfilFisioterapeuta` describen la sala y al terapeuta —desde ADR-069 la sala es un recurso reservable que no admite dos citas cruzadas—, y `AjustePaqueteFisioterapia` deja bitácora de las extensiones y anulaciones.
 
 ## Relaciones importantes
 
@@ -248,7 +248,7 @@ El incremento 1 del módulo 10 (ADR-039) agrega cuatro tablas con la migración 
 | una cita puede estar cubierta por un paquete o cobrarse suelta | `pack_id` es anulable y se reasigna si al asistir el ligado ya no tenía crédito; el cobro suelto se reconoce por `sales.physio_appointment_id` y el SKU `FISIO` |
 | una venta de paquete origina créditos | `physio_packs.sale_id` es único y no hay columna inversa en `sales`: el paquete se ajusta (extiende o anula) pero no se reembolsa |
 | todo ajuste del paquete deja rastro | `physio_pack_adjustments` guarda tipo, días, motivo y actor; el paquete no se edita en sitio y una anulación nunca borra la venta |
-| la cita apunta al consultorio del catálogo | `room_id` es opcional y se resuelve al predeterminado del fisioterapeuta; `room` conserva el nombre como foto y el consultorio no se reserva como recurso |
+| la cita apunta al consultorio del catálogo | `room_id` es opcional y se resuelve al predeterminado del fisioterapeuta; `room` conserva el nombre como foto; el consultorio es recurso reservable: dos citas no canceladas no comparten sala en intervalos que se cruzan, con la fila bloqueada en PostgreSQL (no-op en SQLite) y sin validar las salas de texto libre |
 | un crédito se consume una sola vez | `sessions_used` se incrementa bajo `SELECT ... FOR UPDATE` de la cita y del paquete, con la garantía de PostgreSQL (no-op en SQLite) y prueba opt-in |
 | dos citas del mismo fisioterapeuta no comparten inicio | lo impide el índice único parcial; el traslape parcial se valida en el servicio, no en la base |
 | los precios de la oferta son una foto | `list_price_cents` y `price_cents` se congelan al crear la oferta y no se recalculan si cambia el precio suelto |

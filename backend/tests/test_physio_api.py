@@ -410,6 +410,129 @@ def test_booking_links_the_pack_and_rejects_overlaps() -> None:
         app.dependency_overrides.clear()
 
 
+def test_rooms_cannot_double_book_the_same_hour() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        member_id = _add_member(session, first="Ana")
+        other_id = _add_member(session, first="Beto")
+        therapist_id = _add_therapist(session)
+        second_therapist = _add_therapist(session, first="Luis")
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            service, _ = _catalog(client, manager)
+            room_a = client.post(
+                "/admin/physio/rooms", headers=manager, json={"name": "Sala A"}
+            )
+            assert room_a.status_code == 201, room_a.text
+            room_b = client.post(
+                "/admin/physio/rooms", headers=manager, json={"name": "Sala B"}
+            )
+            assert room_b.status_code == 201, room_b.text
+            room_a_id = room_a.json()["id"]
+            room_b_id = room_b.json()["id"]
+
+            start = datetime.now(timezone.utc) + timedelta(days=1)
+            start = start.replace(hour=15, minute=0, second=0, microsecond=0)
+
+            def book(member, therapist, when: datetime, room_id: str | None):
+                payload = {
+                    "member_id": str(member),
+                    "service_id": service["id"],
+                    "therapist_employee_id": str(therapist),
+                    "starts_at": when.isoformat(),
+                }
+                if room_id is None:
+                    payload["room"] = "Sala A"
+                else:
+                    payload["room_id"] = room_id
+                return client.post(
+                    "/admin/physio/appointments", headers=reception, json=payload
+                )
+
+            first = book(member_id, therapist_id, start, room_a_id)
+            assert first.status_code == 201, first.text
+            assert first.json()["room_id"] == room_a_id
+            assert first.json()["room"] == "Sala A"
+
+            # Another therapist at the same hour still cannot use the room.
+            clash = book(
+                other_id, second_therapist, start + timedelta(minutes=10), room_a_id
+            )
+            assert clash.status_code == 409, clash.text
+            assert "consultorio" in clash.json()["detail"]
+
+            # Another room, or the same room at another hour, is fine.
+            other_room = book(
+                other_id, second_therapist, start + timedelta(minutes=10), room_b_id
+            )
+            assert other_room.status_code == 201, other_room.text
+            later = book(other_id, second_therapist, start + timedelta(hours=1), room_a_id)
+            assert later.status_code == 201, later.text
+
+            # Moving revalidates the room that will actually be stored.
+            moved_clash = client.patch(
+                f"/admin/physio/appointments/{other_room.json()['id']}",
+                headers=reception,
+                json={"room_id": room_a_id},
+            )
+            assert moved_clash.status_code == 409, moved_clash.text
+            assert "consultorio" in moved_clash.json()["detail"]
+            moved = client.patch(
+                f"/admin/physio/appointments/{other_room.json()['id']}",
+                headers=reception,
+                json={
+                    "room_id": room_a_id,
+                    "starts_at": (start + timedelta(hours=2)).isoformat(),
+                },
+            )
+            assert moved.status_code == 200, moved.text
+            assert moved.json()["room_id"] == room_a_id
+
+            # Keeping the same room while moving an hour later is allowed.
+            kept = client.patch(
+                f"/admin/physio/appointments/{moved.json()['id']}",
+                headers=reception,
+                json={"starts_at": (start + timedelta(hours=2, minutes=5)).isoformat()},
+            )
+            assert kept.status_code == 200, kept.text
+            assert kept.json()["room_id"] == room_a_id
+
+            # Cancelling frees the room for the same hour.
+            cancelled = client.post(
+                f"/admin/physio/appointments/{first.json()['id']}/cancel",
+                headers=reception,
+            )
+            assert cancelled.status_code == 200, cancelled.text
+            freed = book(
+                other_id, second_therapist, start + timedelta(minutes=10), room_a_id
+            )
+            assert freed.status_code == 201, freed.text
+
+            # Legacy free-text rooms have no catalog id, so they stay outside
+            # the check; the panel sends room_id for catalog rooms.
+            free_text = client.post(
+                "/admin/physio/appointments",
+                headers=reception,
+                json={
+                    "member_id": str(member_id),
+                    "service_id": service["id"],
+                    "therapist_employee_id": str(therapist_id),
+                    "starts_at": (start + timedelta(hours=3)).isoformat(),
+                    "room": "Sala A",
+                },
+            )
+            assert free_text.status_code == 201, free_text.text
+            assert free_text.json()["room_id"] is None
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_out_of_validity_appointment_falls_back_to_a_single_session() -> None:
     engine = _build_engine()
     SQLModel.metadata.create_all(engine)

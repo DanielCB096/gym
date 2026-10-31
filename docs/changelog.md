@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-31 · Fisioterapia: el consultorio como recurso reservable
+
+- Se añadió `_assert_room_free` en `physio.service`: al crear o mover una cita, si otra cita no cancelada usa el mismo consultorio del catálogo en un intervalo que se cruza, responde `409` («El consultorio ya tiene una cita que se encima con ese horario»), sin importar el fisioterapeuta.
+- La validación lee la fila del consultorio con `SELECT ... FOR UPDATE` (efectiva en PostgreSQL, no-op en SQLite), se aplica al consultorio que se va a guardar —la sala actual si no se cambia, la elegida si llega `room_id`, ninguna si se quita—, excluye la propia cita al moverla y no compara las salas escritas a mano sin `room_id`. Cancelar libera la sala.
+- Prueba nueva `test_rooms_cannot_double_book_the_same_hour` en `test_physio_api.py`: choque entre dos fisioterapeutas en la misma sala, otra sala y otro horario permitidos, movimiento a sala ocupada y a sala libre, conservar la sala al mover la hora, liberación al cancelar y sala de texto libre. La suite filtrada queda en **443 pruebas (438 pasan y 5 de concurrencia se omiten sin `TEST_POSTGRES_URL`)**. Sin migración ni cambio de contrato; documentado en ADR-069.
+- Verificado contra el backend de vista previa sobre una copia desechable de la base (puerto 8010, cuenta temporal de dueño): los diez pasos de alta, choque, salidas válidas, movimiento, liberación al cancelar y sala de texto libre respondieron lo esperado, con limpieza total al terminar; `gym_preview.db` no se tocó.
+
 ## 2026-10-31 · Accesos: ocupación estimada en vivo para recepción
 
 - Se añadió `GET /admin/access/occupancy` (permiso `access.read`), que publica la estimación que ya aplica el kiosco: `inside`, `max_occupancy`, `occupancy_window_seconds` y `sampled_at`, calculados por `read_current_occupancy` con la misma política y ventana de `access_settings` y sin crear la fila cuando no existe.
