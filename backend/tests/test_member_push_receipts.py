@@ -10,6 +10,7 @@ endpoint that runs the pass by hand.
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from uuid import UUID
 
 import httpx
 import pytest
@@ -21,12 +22,16 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.main import app, get_session
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.memberships.models import Member
+from app.modules.notifications import delivery as delivery_module
 from app.modules.notifications import push as push_module
 from app.modules.notifications import push_receipts as receipts_module
+from app.modules.notifications.delivery import email_message_for_notice
 from app.modules.notifications.models import (
     MemberPushDelivery,
     MemberPushDeliveryReceipt,
     MemberPushToken,
+    StaffNotification,
+    StaffNotificationDelivery,
 )
 from app.modules.notifications.push import (
     register_member_push_token,
@@ -89,6 +94,23 @@ def _sent_delivery(
 
 def _receipts(session: Session) -> list[MemberPushDeliveryReceipt]:
     return list(session.exec(select(MemberPushDeliveryReceipt)).all())
+
+
+def _staff_accounts(session: Session) -> dict[str, UUID]:
+    """Owner, reception and trainer: the first two operate the push queue."""
+
+    ensure_default_access_control(session)
+    accounts: dict[str, UUID] = {}
+    for role in ("owner", "reception", "trainer"):
+        user = register_user(
+            session,
+            email=f"{role}@example.com",
+            password=f"{role}-strong-password",
+            role_codes=(role,),
+            now=NOW,
+        )
+        accounts[role] = user.id
+    return accounts
 
 
 def test_the_send_keeps_the_ticket_expo_answers(monkeypatch) -> None:
@@ -173,6 +195,7 @@ def test_a_delivered_receipt_is_stored_once(session: Session, monkeypatch) -> No
 
 
 def test_an_error_receipt_retires_the_device(session: Session, monkeypatch) -> None:
+    _staff_accounts(session)
     member, _ = _sent_delivery(session)
     monkeypatch.setattr(
         receipts_module,
@@ -196,6 +219,70 @@ def test_an_error_receipt_retires_the_device(session: Session, monkeypatch) -> N
     assert token.member_id == member.id
     assert token.active is False
     assert token.deactivated_at is not None
+    # The device leaving the store is not a delivery failure worth a notice.
+    assert session.exec(select(StaffNotification)).all() == []
+
+
+def test_a_delivered_receipt_does_not_alert_the_staff(
+    session: Session, monkeypatch
+) -> None:
+    _staff_accounts(session)
+    _sent_delivery(session)
+    monkeypatch.setattr(
+        receipts_module,
+        "fetch_expo_receipts",
+        lambda ids: {TICKET: ExpoReceipt(status="ok", code=None, message=None)},
+    )
+
+    sync_member_push_receipts(session, now=NOW + timedelta(minutes=1))
+
+    assert session.exec(select(StaffNotification)).all() == []
+
+
+def test_an_error_receipt_alerts_the_accounts_that_operate_the_queue(
+    session: Session, monkeypatch
+) -> None:
+    accounts = _staff_accounts(session)
+    _, delivery = _sent_delivery(session)
+    monkeypatch.setattr(
+        receipts_module,
+        "fetch_expo_receipts",
+        lambda ids: {
+            TICKET: ExpoReceipt(
+                status="error",
+                code="MessageTooBig",
+                message="The message was too large.",
+            )
+        },
+    )
+
+    result = sync_member_push_receipts(session, now=NOW + timedelta(minutes=1))
+
+    assert result.errors == 1
+    notices = list(session.exec(select(StaffNotification)).all())
+    assert {row.user_id for row in notices} == {
+        accounts["owner"],
+        accounts["reception"],
+    }
+    assert {row.kind for row in notices} == {"member_push_receipt_failed"}
+    assert all(row.ref_id == delivery.id for row in notices)
+    assert all("Ana Demo" in row.body for row in notices)
+    assert all("«Push del socio»" in row.body for row in notices)
+    assert all("MessageTooBig" in row.body for row in notices)
+    assert all(
+        row.dedupe_key
+        == f"member_push_receipt_failed:{delivery.id}:{row.user_id}"
+        for row in notices
+    )
+
+    emails = list(session.exec(select(StaffNotificationDelivery)).all())
+    assert {row.recipient for row in emails} == {
+        "owner@example.com",
+        "reception@example.com",
+    }
+    subject, body = email_message_for_notice(notices[0])
+    assert subject.startswith("[Avisos] ")
+    assert "Push del socio" in body
 
 
 def test_an_unanswered_ticket_waits_before_asking_again(session: Session, monkeypatch) -> None:
@@ -225,6 +312,7 @@ def test_an_unanswered_ticket_waits_before_asking_again(session: Session, monkey
 
 
 def test_a_ticket_past_24_hours_expires_without_asking(session: Session, monkeypatch) -> None:
+    _staff_accounts(session)
     _, delivery = _sent_delivery(session, sent_at=NOW - timedelta(hours=25))
 
     def offline(ids):
@@ -240,9 +328,12 @@ def test_a_ticket_past_24_hours_expires_without_asking(session: Session, monkeyp
     assert "24 horas" in (receipt.detail or "")
     session.refresh(delivery)
     assert delivery.expo_ticket_id == TICKET
+    # No answer is not an error: nobody gets a notice.
+    assert session.exec(select(StaffNotification)).all() == []
 
 
 def test_preview_defers_without_contacting_expo(session: Session, monkeypatch) -> None:
+    _staff_accounts(session)
     _sent_delivery(session)
     monkeypatch.setattr(receipts_module, "preview_mode", lambda: True)
 
@@ -257,6 +348,7 @@ def test_preview_defers_without_contacting_expo(session: Session, monkeypatch) -
     assert result.checked == 0
     assert result.pending == 1
     assert _receipts(session) == []
+    assert session.exec(select(StaffNotification)).all() == []
 
 
 def test_the_preview_argument_defers_without_the_environment_flag(
@@ -426,3 +518,63 @@ def test_the_panel_runs_the_pass_and_shows_the_receipt(monkeypatch) -> None:
             assert repeated.json()["checked"] == 0
     finally:
         app.dependency_overrides.pop(get_session, None)
+
+
+def test_the_panel_flushes_the_error_alert_email(monkeypatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "test-push-receipts-secret")
+    monkeypatch.delenv("PREVIEW_MODE", raising=False)
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as seed:
+        ensure_default_access_control(seed)
+        register_user(
+            seed,
+            email="owner@example.com",
+            password="owner-correct-horse-battery",
+            role_codes=("owner",),
+        )
+        _sent_delivery(seed, sent_at=datetime.now(timezone.utc))
+
+    posted: list[dict[str, object]] = []
+
+    def fake_send_email(**kwargs):
+        posted.append(kwargs)
+        return "sent"
+
+    monkeypatch.setattr(delivery_module, "send_email", fake_send_email)
+    monkeypatch.setattr(
+        receipts_module,
+        "fetch_expo_receipts",
+        lambda ids: {
+            TICKET: ExpoReceipt(
+                status="error",
+                code="MessageTooBig",
+                message="The message was too large.",
+            )
+        },
+    )
+
+    def override_session() -> Iterator[Session]:
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            owner = _login(client, "owner@example.com", "owner-correct-horse-battery")
+            synced = client.post(
+                "/admin/notifications/push-deliveries/receipts", headers=owner
+            )
+            assert synced.status_code == 200, synced.text
+            assert synced.json()["errors"] == 1
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+
+    # The post-response hook drained the alert the pass had just queued.
+    assert [row["recipient"] for row in posted] == ["owner@example.com"]
+    assert str(posted[0]["subject"]).startswith("[Avisos] ")
+    with Session(engine) as check:
+        emails = list(check.exec(select(StaffNotificationDelivery)).all())
+        assert len(emails) == 1
+        assert emails[0].status == "sent"
+    engine.dispose()

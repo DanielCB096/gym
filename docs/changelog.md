@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-31 · Avisos: un acuse de push con error avisa al personal
+
+- **Un tipo nuevo para un fallo que era invisible**: `STAFF_NOTIFICATION_KINDS` y `ck_staff_notifications_kind` suman `member_push_receipt_failed` (migración `20261031_0073_member_push_receipt_failed_kind.py` y el salto encadenado en `preview_patch.py`). La pasada de acuses escribe el aviso a las cuentas con `attendance.manage` cuando Expo responde `error` y el código no es `DeviceNotRegistered`, con el socio, el título del aviso y el código y mensaje recortados, deduplicado por `(entrega, cuenta)` y con `ref_id` a la entrega. `ok`, `expired` y el dispositivo desinstalado siguen en silencio.
+- **El acuse se guarda antes de alertar**: la pasada confirma los acuses y después crea los avisos, así que un problema al alertar no cuesta la respuesta que Expo ya dio. Cada alerta se confirma por su cuenta, como en ADR-055.
+- **Correo y panel**: la alerta viaja con el prefijo `[Avisos]`, la ubicación de la tarjeta «Push del socio» y el mismo interruptor de club que el resto del correo del personal. `POST /admin/notifications/push-deliveries/receipts` drena la cola tras la respuesta y `sync_push_receipts.py` la drena al terminar su corrida; el panel rotula el tipo «Avisos · acuse con error».
+- **Pruebas**: 3 casos nuevos y 3 ampliados en `test_member_push_receipts.py` —la audiencia con `attendance.manage` y el correo de la alerta, el silencio de `ok`/`expired`/`DeviceNotRegistered` y el drenado tras el endpoint del panel—. Suite en **427 pruebas**: 422 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Documentación**: ADR-064, modelo de datos, módulo de avisos del socio, módulo de personal y roles, despliegue, plan de pruebas, deuda técnica, traspaso y este changelog.
+
 ## 2026-10-31 · Operación: el cron de mantenimiento se instala desde el repositorio
 
 - **Un bloque en lugar de tres líneas a mano**: `backend/ops_cron.py` genera las entradas de `purge_access_data.py`, `purge_email_receipts.py` y `sync_push_receipts.py` delimitadas por `# BEGIN gimnasio-ops` / `# END gimnasio-ops`. `--print` (por defecto) las muestra sin tocar nada, `--install` reemplaza solo ese tramo del crontab y conserva las demás entradas, y `--uninstall` lo retira. Reinstalar es idempotente: cambiar la contraseña de la base o mover la carpeta se resuelve reinstalando en vez de editando a mano.

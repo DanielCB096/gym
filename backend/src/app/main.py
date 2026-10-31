@@ -4885,6 +4885,7 @@ def retry_member_push_delivery_endpoint(
 def sync_member_push_receipts_endpoint(
     _: Annotated[AuthenticatedUser, Depends(require_api_permission("attendance.manage"))],
     session: SessionDependency,
+    flush: AttendanceEmailFlush,
 ) -> MemberPushReceiptPassResponse:
     try:
         result = sync_member_push_receipts(session)

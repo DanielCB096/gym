@@ -300,6 +300,20 @@ CHECK_UPGRADES = {
             "'attendance_request_rejected', 'attendance_request_overdue', "
             "'member_push_failed'))",
         ),
+        (
+            "CONSTRAINT ck_staff_notifications_kind CHECK (kind IN "
+            "('workout_pending_review', 'maintenance_ticket_assigned', "
+            "'kiosk_token_expiring', 'attendance_corrected', 'attendance_voided', "
+            "'attendance_request_pending', 'attendance_request_approved', "
+            "'attendance_request_rejected', 'attendance_request_overdue', "
+            "'member_push_failed'))",
+            "CONSTRAINT ck_staff_notifications_kind CHECK (kind IN "
+            "('workout_pending_review', 'maintenance_ticket_assigned', "
+            "'kiosk_token_expiring', 'attendance_corrected', 'attendance_voided', "
+            "'attendance_request_pending', 'attendance_request_approved', "
+            "'attendance_request_rejected', 'attendance_request_overdue', "
+            "'member_push_failed', 'member_push_receipt_failed'))",
+        ),
     ),
     "staffing_settings": (),
     "staff_attendance_events": (

@@ -11,9 +11,11 @@ In production point it at the real database with ``DATABASE_URL`` (or
     DATABASE_URL=postgresql+psycopg://... python sync_push_receipts.py
 
 Expo keeps a receipt for 24 hours; a ticket older than that without an answer is
-recorded as ``expired``. The panel's «Consultar acuses» button runs the same pass
-by hand. Preview mode never queues a real ticket, so the run reports
-``deferred`` and touches nothing.
+recorded as ``expired``. An ``error`` answer queues a staff alert for the
+accounts that operate the queue, and this run drains those emails before it
+exits. The panel's «Consultar acuses» button runs the same pass by hand. Preview
+mode never queues a real ticket, so the run reports ``deferred`` and touches
+nothing.
 """
 
 import argparse
@@ -26,6 +28,9 @@ from sqlalchemy import create_engine  # noqa: E402
 from sqlmodel import SQLModel, Session  # noqa: E402
 
 from app.modules import identity, memberships, notifications  # noqa: E402,F401
+from app.modules.notifications.delivery import (  # noqa: E402
+    send_pending_staff_notification_emails_from_engine,
+)
 from app.modules.notifications.push_receipts import (  # noqa: E402
     DEFAULT_RECEIPT_BATCH,
     MAX_RECEIPT_BATCH,
@@ -97,6 +102,10 @@ def main(argv: list[str] | None = None) -> int:
             except PushReceiptsFailed as error:
                 print(f"Error al consultar los acuses: {error}", file=sys.stderr)
                 return 1
+        if not result.deferred:
+            # An error receipt may have queued a staff alert; the script has no
+            # response to hang the post-request drain on, so it drains here.
+            send_pending_staff_notification_emails_from_engine(engine)
     finally:
         engine.dispose()
 

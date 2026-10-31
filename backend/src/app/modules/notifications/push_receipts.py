@@ -13,6 +13,11 @@ recorded as ``expired`` instead of being asked forever, and a ticket answered
 "not yet" is asked again only after a wait, because a tight loop would spend
 requests without moving the answer. Preview mode never queues a ticket, so a
 demo has nothing to ask about and the pass returns ``deferred``.
+
+An ``error`` receipt is work nobody sees: the inbox holds the notice, the phone
+never rang. The pass writes a staff notice for the accounts that operate the
+queue, except when Expo only says the device is gone — that is the expected
+retirement of an uninstalled app, not a delivery failure.
 """
 
 from dataclasses import dataclass
@@ -25,7 +30,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.mailer import preview_mode
+from app.modules.memberships.models import Member
 from app.modules.notifications.models import (
+    MemberNotification,
     MemberPushDelivery,
     MemberPushDeliveryReceipt,
     MemberPushToken,
@@ -44,6 +51,8 @@ RECEIPT_EXPIRY = timedelta(hours=24)
 RECEIPT_RECHECK = timedelta(minutes=15)
 UNREGISTERED_ERROR = "DeviceNotRegistered"
 MAX_DETAIL_CHARS = 500
+# The receipt alert goes to the same accounts that operate the push queue.
+RECEIPT_ALERT_PERMISSION = "attendance.manage"
 
 
 class PushReceiptsFailed(Exception):
@@ -177,6 +186,7 @@ def sync_member_push_receipts(
     )
 
     delivered = errors = expired = deactivated = 0
+    failed_receipts: list[tuple[MemberPushDelivery, ExpoReceipt]] = []
     askable: list[MemberPushDelivery] = []
     for delivery in rows:
         sent_at = delivery.sent_at
@@ -217,7 +227,13 @@ def sync_member_push_receipts(
             errors += 1
             if answer.code == UNREGISTERED_ERROR:
                 deactivated += _retire_token(session, delivery, now=occurred)
+            else:
+                failed_receipts.append((delivery, answer))
     session.commit()
+
+    # Receipts are stored first: an alert must never cost the answer Expo gave.
+    for delivery, answer in failed_receipts:
+        _alert_receipt_error(session, delivery, answer, now=occurred)
 
     return PushReceiptPass(
         checked=len(rows),
@@ -298,6 +314,57 @@ def _detail(answer: ExpoReceipt) -> str:
     if code and message:
         return f"{code}: {message}"
     return code or message or "El servicio reportó un error al entregar el aviso."
+
+
+def _alert_receipt_error(
+    session: Session,
+    delivery: MemberPushDelivery,
+    answer: ExpoReceipt,
+    *,
+    now: datetime,
+) -> None:
+    """Tell the accounts that operate the queue the phone did not get the push.
+
+    The key names the delivery *and* the account, so the notice is written once
+    per pair even if a later pass reaches the same ticket again.
+    """
+
+    # Late imports: the identity and inbox services sit above this module.
+    from app.modules.identity.service import user_ids_with_permission
+    from app.modules.notifications.service import create_staff_notification
+
+    notice = session.get(MemberNotification, delivery.notification_id)
+    member = session.get(Member, delivery.member_id)
+    who = (
+        f"{member.first_name} {member.last_name}".strip()
+        if member is not None
+        else "Un socio"
+    )
+    label = _clip(notice.title if notice is not None else "un aviso", 80)
+    reason = _clip(_detail(answer), 160).rstrip(".")
+    body = (
+        f"Expo reportó un error al entregar el aviso «{label}» a {_clip(who, 60)}: "
+        f"{reason}. Revísalo en la tarjeta «Push del socio» de la pestaña Equipo."
+    )
+    for user_id in user_ids_with_permission(
+        session, RECEIPT_ALERT_PERMISSION, now=now
+    ):
+        create_staff_notification(
+            session,
+            user_id=user_id,
+            kind="member_push_receipt_failed",
+            title="Acuse de push con error",
+            body=body,
+            ref_id=delivery.id,
+            dedupe_key=f"member_push_receipt_failed:{delivery.id}:{user_id}",
+            now=now,
+        )
+    session.commit()
+
+
+def _clip(value: str, limit: int) -> str:
+    text = " ".join(value.split())
+    return text if len(text) <= limit else f"{text[: limit - 1].rstrip()}…"
 
 
 def _timeout() -> float:

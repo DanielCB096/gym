@@ -49,6 +49,7 @@ SUBJECT_PREFIXES = {
     "maintenance_ticket_assigned": "[Mantenimiento] ",
     "kiosk_token_expiring": "[Kiosco] ",
     "member_push_failed": "[Avisos] ",
+    "member_push_receipt_failed": "[Avisos] ",
 }
 DEFAULT_NOTICE_LOCATION = "Puedes revisarlo en la pestaña Personal del panel del club."
 NOTICE_LOCATIONS = {
@@ -56,6 +57,10 @@ NOTICE_LOCATIONS = {
     "maintenance_ticket_assigned": "Puedes revisarlo en la pestaña Mantenimiento del panel del club.",
     "kiosk_token_expiring": "Puedes rotarlo en la página Kiosco del panel del club.",
     "member_push_failed": (
+        "Puedes revisarlo en la tarjeta «Push del socio» de la pestaña Equipo "
+        "del panel del club."
+    ),
+    "member_push_receipt_failed": (
         "Puedes revisarlo en la tarjeta «Push del socio» de la pestaña Equipo "
         "del panel del club."
     ),

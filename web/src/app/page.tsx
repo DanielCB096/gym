@@ -15826,6 +15826,7 @@ const STAFF_NOTIFICATION_KIND_LABELS: Record<string, string> = {
   maintenance_ticket_assigned: "Mantenimiento · ticket asignado",
   kiosk_token_expiring: "Kiosco · vencimiento del token",
   member_push_failed: "Avisos · push sin entregar",
+  member_push_receipt_failed: "Avisos · acuse con error",
 };
 
 const MEMBER_NOTIFICATION_KIND_LABELS: Record<string, string> = {
