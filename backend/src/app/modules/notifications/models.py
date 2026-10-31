@@ -24,7 +24,7 @@ points at, so the audience is resolved employee → account when the notice is
 emitted.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -36,6 +36,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Time,
     UniqueConstraint,
     Uuid,
     func,
@@ -194,6 +195,51 @@ class MemberNotificationPreference(SQLModel, table=True):
     push_enabled: bool = Field(
         default=True,
         sa_column=Column(Boolean, nullable=False, server_default=text("true")),
+    )
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
+class MemberNotificationSetting(SQLModel, table=True):
+    """The member's own silence window for pushes, one row per member.
+
+    The club's window (``MEMBER_PUSH_QUIET_START``/``_END``) silences everyone
+    at once; this is the member's own, in the club's time zone, and only holds
+    back the phone: the notice is still written and counted. Both hours live in
+    the same row and go together — a half-configured window is rejected by the
+    CHECK — and an equal pair would silence nothing, so it is rejected too.
+    A member without a row has no personal window.
+    """
+
+    __tablename__ = "member_notification_settings"
+    __table_args__ = (
+        CheckConstraint(
+            "(quiet_start IS NULL AND quiet_end IS NULL) OR "
+            "(quiet_start IS NOT NULL AND quiet_end IS NOT NULL "
+            "AND quiet_start <> quiet_end)",
+            name="ck_member_notification_settings_quiet_pair",
+        ),
+        UniqueConstraint(
+            "member_id",
+            name="uq_member_notification_settings_member",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    member_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("members.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    quiet_start: time | None = Field(
+        default=None, sa_column=Column(Time(), nullable=True)
+    )
+    quiet_end: time | None = Field(
+        default=None, sa_column=Column(Time(), nullable=True)
     )
     updated_at: datetime = Field(
         default_factory=utc_now,

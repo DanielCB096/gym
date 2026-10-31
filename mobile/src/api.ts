@@ -389,6 +389,17 @@ export function updateMemberNotificationPreferences(
   });
 }
 
+export function updateMemberNotificationQuietHours(
+  token: string,
+  quietHours: { start: string; end: string } | null,
+): Promise<MemberNotificationPreferences> {
+  return request<MemberNotificationPreferences>("/member/notification-preferences", {
+    method: "PATCH",
+    token,
+    body: { quiet_hours: quietHours },
+  });
+}
+
 export function registerMemberPushToken(
   token: string,
   pushToken: string,

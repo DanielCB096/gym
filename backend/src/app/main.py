@@ -483,15 +483,21 @@ from app.modules.notifications.receipts import (
 from app.modules.notifications.models import MemberPushToken
 from app.modules.notifications.preferences import (
     MemberNotificationPreferenceItem,
+    MemberQuietHours,
     PreferenceMemberNotFound,
+    PreferenceQuietHoursError,
     UnknownNotificationCategory,
+    get_member_quiet_hours,
+    is_quiet_now,
     list_member_preferences,
     update_member_preferences,
+    update_member_quiet_hours,
 )
 from app.modules.notifications.push import (
     InvalidPushPlatform,
     InvalidPushToken,
     MemberPushDeliveryItem,
+    MemberPushQuietWindow,
     PushDeliveryNotFound,
     PushDeliveryRetryNotAllowed,
     PushError,
@@ -2534,8 +2540,23 @@ class MemberNotificationPreferenceResponse(BaseModel):
     updated_at: datetime | None
 
 
+class MemberNotificationQuietHoursResponse(BaseModel):
+    start: str
+    end: str
+    active: bool
+    updated_at: datetime | None
+
+
+class MemberClubQuietHoursResponse(BaseModel):
+    start: str
+    end: str
+    active: bool
+
+
 class MemberNotificationPreferencesResponse(BaseModel):
     items: list[MemberNotificationPreferenceResponse]
+    quiet_hours: MemberNotificationQuietHoursResponse | None = None
+    club_quiet_hours: MemberClubQuietHoursResponse | None = None
 
 
 class MemberNotificationPreferenceChange(BaseModel):
@@ -2543,8 +2564,14 @@ class MemberNotificationPreferenceChange(BaseModel):
     push_enabled: bool
 
 
+class MemberNotificationQuietHoursUpdate(BaseModel):
+    start: str = Field(min_length=1, max_length=5)
+    end: str = Field(min_length=1, max_length=5)
+
+
 class MemberNotificationPreferencesUpdateRequest(BaseModel):
-    categories: list[MemberNotificationPreferenceChange] = Field(min_length=1)
+    categories: list[MemberNotificationPreferenceChange] = Field(default_factory=list)
+    quiet_hours: MemberNotificationQuietHoursUpdate | None = None
 
 
 class MemberPushTokenRequest(BaseModel):
@@ -4547,8 +4574,12 @@ def member_notification_preferences(
     member: Annotated[AuthenticatedMember, Depends(get_current_member)],
     session: SessionDependency,
 ) -> MemberNotificationPreferencesResponse:
+    now = datetime.now(timezone.utc)
     return _member_preferences_response(
-        list_member_preferences(session, member.member_id)
+        list_member_preferences(session, member.member_id),
+        get_member_quiet_hours(session, member.member_id),
+        member_push_quiet_window(now),
+        now=now,
     )
 
 
@@ -4562,6 +4593,24 @@ def member_notification_preferences_update(
     member: Annotated[AuthenticatedMember, Depends(get_current_member)],
     session: SessionDependency,
 ) -> MemberNotificationPreferencesResponse:
+    fields = request.model_fields_set
+    categories_given = "categories" in fields
+    quiet_given = "quiet_hours" in fields
+    if categories_given and quiet_given:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Envía las categorías o el horario de silencio, no ambos en la misma petición.",
+        )
+    if not categories_given and not quiet_given:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Envía al menos una categoría o un horario de silencio.",
+        )
+    if categories_given and not request.categories:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Envía al menos una categoría.",
+        )
     changes: dict[str, bool] = {}
     for change in request.categories:
         if change.category in changes:
@@ -4571,8 +4620,21 @@ def member_notification_preferences_update(
             )
         changes[change.category] = change.push_enabled
     try:
-        items = update_member_preferences(session, member.member_id, changes)
+        if quiet_given:
+            payload = request.quiet_hours
+            update_member_quiet_hours(
+                session,
+                member.member_id,
+                payload.start if payload is not None else None,
+                payload.end if payload is not None else None,
+            )
+        if changes:
+            update_member_preferences(session, member.member_id, changes)
     except UnknownNotificationCategory as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    except PreferenceQuietHoursError as error:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
         ) from error
@@ -4580,7 +4642,13 @@ def member_notification_preferences_update(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
         ) from error
-    return _member_preferences_response(items)
+    now = datetime.now(timezone.utc)
+    return _member_preferences_response(
+        list_member_preferences(session, member.member_id),
+        get_member_quiet_hours(session, member.member_id),
+        member_push_quiet_window(now),
+        now=now,
+    )
 
 
 @app.post(
@@ -10679,7 +10747,12 @@ def _member_notification_response(item: MemberNotificationItem) -> MemberNotific
 
 def _member_preferences_response(
     items: list[MemberNotificationPreferenceItem],
+    quiet: MemberQuietHours | None = None,
+    club: MemberPushQuietWindow | None = None,
+    *,
+    now: datetime | None = None,
 ) -> MemberNotificationPreferencesResponse:
+    moment = now or datetime.now(timezone.utc)
     return MemberNotificationPreferencesResponse(
         items=[
             MemberNotificationPreferenceResponse(
@@ -10688,7 +10761,24 @@ def _member_preferences_response(
                 updated_at=item.updated_at,
             )
             for item in items
-        ]
+        ],
+        quiet_hours=(
+            MemberNotificationQuietHoursResponse(
+                start=quiet.start.strftime("%H:%M"),
+                end=quiet.end.strftime("%H:%M"),
+                active=is_quiet_now(quiet, moment),
+                updated_at=quiet.updated_at,
+            )
+            if quiet is not None
+            else None
+        ),
+        club_quiet_hours=(
+            MemberClubQuietHoursResponse(
+                start=club.start, end=club.end, active=club.active
+            )
+            if club is not None
+            else None
+        ),
     )
 
 

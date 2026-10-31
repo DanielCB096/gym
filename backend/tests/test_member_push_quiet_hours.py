@@ -22,6 +22,7 @@ from app.modules.identity.service import ensure_default_access_control, register
 from app.modules.memberships.models import Member
 from app.modules.notifications import push as push_module
 from app.modules.notifications.models import MemberPushDelivery
+from app.modules.notifications.preferences import update_member_quiet_hours
 from app.modules.notifications.push import (
     MemberPushQuietWindow,
     PushDeliveryFailed,
@@ -277,6 +278,172 @@ def test_the_window_tells_the_panel_where_it_stands(monkeypatch) -> None:
 
     _quiet_window(monkeypatch, start=None, end=None)
     assert member_push_quiet_window(now=INSIDE) is None
+
+
+def _member_push(
+    session: Session, *, email: str, token: str, title: str = "Reserva confirmada"
+) -> MemberPushDelivery:
+    member = Member(
+        first_name="Ana", last_name="Demo", email=email, status="active"
+    )
+    session.add(member)
+    session.commit()
+    session.refresh(member)
+    register_member_push_token(
+        session, member.id, token=token, platform="ios", now=NOW
+    )
+    create_notification(
+        session,
+        member_id=member.id,
+        kind="class_reserved",
+        title=title,
+        body="Tienes lugar en Spinning 6am.",
+        now=NOW,
+    )
+    session.commit()
+    return session.exec(
+        select(MemberPushDelivery).where(
+            MemberPushDelivery.member_id == member.id
+        )
+    ).one()
+
+
+def _sent_calls(monkeypatch) -> list[dict[str, object]]:
+    calls: list[dict[str, object]] = []
+
+    def spy(**kwargs) -> PushSendResult:
+        calls.append(kwargs)
+        return SENT
+
+    monkeypatch.setattr(push_module, "send_expo_push", spy)
+    return calls
+
+
+def test_a_personal_window_holds_only_that_members_push(
+    session: Session, monkeypatch
+) -> None:
+    _quiet_window(monkeypatch, start=None, end=None)
+    ana = _member_push(session, email="ana@example.test", token=TOKEN_A)
+    beto = _member_push(
+        session, email="beto@example.test", token="ExponentPushToken[bbbBBB222]"
+    )
+    session.refresh(ana)
+    session.refresh(beto)
+    update_member_quiet_hours(session, ana.member_id, "22:00", "07:00", now=NOW)
+    calls = _sent_calls(monkeypatch)
+
+    result = send_pending_member_push_deliveries(session, now=INSIDE)
+
+    assert len(calls) == 1
+    assert (result.attempted, result.sent, result.remaining) == (1, 1, 1)
+    assert result.deferred is False
+    session.refresh(ana)
+    session.refresh(beto)
+    assert (ana.status, ana.attempts) == ("pending", 0)
+    assert beto.status == "sent"
+
+
+def test_the_silenced_row_goes_out_after_its_window_ends(
+    session: Session, monkeypatch
+) -> None:
+    _quiet_window(monkeypatch, start=None, end=None)
+    ana = _member_push(session, email="ana@example.test", token=TOKEN_A)
+    session.refresh(ana)
+    update_member_quiet_hours(session, ana.member_id, "22:00", "07:00", now=NOW)
+    calls = _sent_calls(monkeypatch)
+
+    send_pending_member_push_deliveries(session, now=INSIDE)
+    session.refresh(ana)
+    assert ana.status == "pending"
+
+    result = send_pending_member_push_deliveries(session, now=AFTER)
+    assert (result.sent, result.remaining) == (1, 0)
+    assert len(calls) == 1
+    session.refresh(ana)
+    assert ana.status == "sent"
+
+
+def test_a_silenced_member_does_not_take_the_batch_slot(
+    session: Session, monkeypatch
+) -> None:
+    """The filter is in the query: a silenced head row cannot starve the rest."""
+
+    _quiet_window(monkeypatch, start=None, end=None)
+    ana = _member_push(session, email="ana@example.test", token=TOKEN_A)
+    _member_push(
+        session, email="beto@example.test", token="ExponentPushToken[bbbBBB222]"
+    )
+    session.refresh(ana)
+    update_member_quiet_hours(session, ana.member_id, "22:00", "07:00", now=NOW)
+    calls = _sent_calls(monkeypatch)
+
+    result = send_pending_member_push_deliveries(session, limit=1, now=INSIDE)
+
+    assert len(calls) == 1
+    assert (result.sent, result.remaining) == (1, 1)
+
+
+def test_the_manual_send_brings_the_silenced_rows_too(
+    session: Session, monkeypatch
+) -> None:
+    _quiet_window(monkeypatch, start=None, end=None)
+    ana = _member_push(session, email="ana@example.test", token=TOKEN_A)
+    session.refresh(ana)
+    update_member_quiet_hours(session, ana.member_id, "22:00", "07:00", now=NOW)
+    calls = _sent_calls(monkeypatch)
+
+    result = send_pending_member_push_deliveries(
+        session, override_quiet_hours=True, now=INSIDE
+    )
+
+    assert len(calls) == 1
+    assert (result.sent, result.remaining) == (1, 0)
+    session.refresh(ana)
+    assert ana.status == "sent"
+
+
+def test_preview_ignores_the_personal_window(session: Session, monkeypatch) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    _quiet_window(monkeypatch, start=None, end=None)
+    ana = _member_push(session, email="ana@example.test", token=TOKEN_A)
+    session.refresh(ana)
+    update_member_quiet_hours(session, ana.member_id, "22:00", "07:00", now=NOW)
+
+    result = send_pending_member_push_deliveries(session, now=INSIDE)
+
+    assert (result.simulated, result.remaining) == (1, 0)
+    session.refresh(ana)
+    assert ana.status == "simulated"
+
+
+def test_the_personal_window_wraps_midnight_and_stacks_with_the_club_one(
+    session: Session, monkeypatch
+) -> None:
+    # The club is silent at night; this member also silences their mornings.
+    _quiet_window(monkeypatch, start="22:00", end="07:00")
+    ana = _member_push(session, email="ana@example.test", token=TOKEN_A)
+    beto = _member_push(
+        session, email="beto@example.test", token="ExponentPushToken[bbbBBB222]"
+    )
+    session.refresh(ana)
+    session.refresh(beto)
+    update_member_quiet_hours(session, ana.member_id, "09:00", "17:00", now=NOW)
+    calls = _sent_calls(monkeypatch)
+
+    # 00:30 local: the club window already holds the whole pass back.
+    after_midnight = datetime(2026, 11, 1, 6, 30, tzinfo=timezone.utc)
+    club_pass = send_pending_member_push_deliveries(session, now=after_midnight)
+    assert club_pass.deferred is True
+    assert calls == []
+
+    # 11:00 local: the club sends, but only to the member outside their window.
+    morning = send_pending_member_push_deliveries(session, now=NOW)
+    assert len(calls) == 1
+    assert (morning.sent, morning.remaining) == (1, 1)
+    session.refresh(ana)
+    session.refresh(beto)
+    assert ana.status == "pending"
+    assert beto.status == "sent"
 
 
 def _build_engine():

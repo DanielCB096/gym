@@ -10,11 +10,16 @@ Waiting means two things: a ``pending`` row that no pass has attempted yet, and
 a ``failed`` row whose automatic retry is scheduled. The first is deleted (it
 never happened); the second is left as history but loses its ``next_attempt_at``,
 so the panel still sees the failed attempt while the member stops being rung.
+
+The member can also pick their own silence window, in the club's time zone. It
+is not a category switch: nothing is cancelled, the waiting pushes simply do not
+leave while that member's clock is inside the window, and the next pass after it
+sends them. The club's window still silences everyone, so the two stack.
 """
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from uuid import UUID
 
 from sqlalchemy import delete, update
@@ -26,9 +31,11 @@ from app.modules.notifications.models import (
     NOTIFICATION_CATEGORY_BY_KIND,
     MemberNotification,
     MemberNotificationPreference,
+    MemberNotificationSetting,
     MemberPushDelivery,
     utc_now,
 )
+from app.timezone import to_club_timezone
 
 
 class PreferenceError(Exception):
@@ -43,10 +50,21 @@ class PreferenceMemberNotFound(PreferenceError):
     pass
 
 
+class PreferenceQuietHoursError(PreferenceError):
+    pass
+
+
 @dataclass(frozen=True)
 class MemberNotificationPreferenceItem:
     category: str
     push_enabled: bool
+    updated_at: datetime | None
+
+
+@dataclass(frozen=True)
+class MemberQuietHours:
+    start: time
+    end: time
     updated_at: datetime | None
 
 
@@ -166,6 +184,100 @@ def is_push_enabled(session: Session, member_id: UUID, kind: str) -> bool:
         )
     ).first()
     return row is None or row.push_enabled
+
+
+def _parse_quiet_hour(value: str, *, field: str) -> time:
+    text = (value or "").strip()
+    try:
+        return datetime.strptime(text, "%H:%M").time()
+    except ValueError as error:
+        raise PreferenceQuietHoursError(
+            f"La hora de {field} debe tener el formato HH:MM (00:00-23:59); "
+            f"recibí {text!r}."
+        ) from error
+
+
+def get_member_quiet_hours(
+    session: Session, member_id: UUID
+) -> MemberQuietHours | None:
+    """The member's own window, or ``None`` when they never set one."""
+
+    row = session.exec(
+        select(MemberNotificationSetting).where(
+            MemberNotificationSetting.member_id == member_id
+        )
+    ).first()
+    if row is None or row.quiet_start is None or row.quiet_end is None:
+        return None
+    return MemberQuietHours(
+        start=row.quiet_start,
+        end=row.quiet_end,
+        updated_at=_as_utc(row.updated_at),
+    )
+
+
+def update_member_quiet_hours(
+    session: Session,
+    member_id: UUID,
+    start: str | None,
+    end: str | None,
+    *,
+    now: datetime | None = None,
+) -> MemberQuietHours | None:
+    """Set or clear the member's own silence window.
+
+    The two hours go together: clearing both removes the row, and sending only
+    one is rejected because a half window would look like silence while still
+    ringing. Equal hours would silence nothing, so they are rejected too.
+    """
+
+    if session.get(Member, member_id) is None:
+        raise PreferenceMemberNotFound("El socio no existe")
+    only_one = (start is None) != (end is None)
+    if only_one:
+        raise PreferenceQuietHoursError(
+            "La hora de inicio y la de fin se envían juntas: pon las dos o "
+            "quita las dos."
+        )
+    row = session.exec(
+        select(MemberNotificationSetting).where(
+            MemberNotificationSetting.member_id == member_id
+        )
+    ).first()
+    if start is None or end is None:
+        if row is not None:
+            session.delete(row)
+            session.commit()
+        return None
+    quiet_start = _parse_quiet_hour(start, field="inicio")
+    quiet_end = _parse_quiet_hour(end, field="fin")
+    if quiet_start == quiet_end:
+        raise PreferenceQuietHoursError(
+            "La hora de inicio y la de fin deben ser distintas: con la misma "
+            "hora no habría silencio."
+        )
+    occurred = _as_utc(now or utc_now())
+    if row is None:
+        row = MemberNotificationSetting(member_id=member_id)
+    row.quiet_start = quiet_start
+    row.quiet_end = quiet_end
+    row.updated_at = occurred
+    session.add(row)
+    session.commit()
+    return get_member_quiet_hours(session, member_id)
+
+
+def is_quiet_now(quiet: MemberQuietHours, moment: datetime) -> bool:
+    """Whether this window silences the member's phone at ``moment``.
+
+    The hours are interpreted in the club's time zone, like the club window, so
+    the member and the panel agree on what "22:00" means.
+    """
+
+    local = to_club_timezone(_as_utc(moment)).time()
+    if quiet.start < quiet.end:
+        return quiet.start <= local < quiet.end
+    return local >= quiet.start or local < quiet.end
 
 
 def _cancel_waiting_pushes(

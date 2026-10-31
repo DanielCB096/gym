@@ -356,8 +356,23 @@ export type MemberNotificationPreference = {
   updated_at: string | null;
 };
 
+export type MemberNotificationQuietHours = {
+  start: string;
+  end: string;
+  active: boolean;
+  updated_at: string | null;
+};
+
+export type MemberClubQuietHours = {
+  start: string;
+  end: string;
+  active: boolean;
+};
+
 export type MemberNotificationPreferences = {
   items: MemberNotificationPreference[];
+  quiet_hours: MemberNotificationQuietHours | null;
+  club_quiet_hours: MemberClubQuietHours | null;
 };
 
 export type MemberPushPlatform = "ios" | "android";

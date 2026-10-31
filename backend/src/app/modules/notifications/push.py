@@ -31,6 +31,7 @@ from app.modules.notifications.models import (
     MAX_PUSH_TOKEN_CHARS,
     PUSH_PLATFORMS,
     MemberNotification,
+    MemberNotificationSetting,
     MemberPushDelivery,
     MemberPushDeliveryReceipt,
     MemberPushToken,
@@ -635,6 +636,37 @@ def _in_quiet_window(start: time, end: time, moment: time) -> bool:
     return moment >= start or moment < end
 
 
+def _outside_personal_window(moment: time):
+    """Rows whose member is not inside their own silence window.
+
+    The outer join leaves NULLs for members without a window; the ``id IS NULL``
+    branch keeps those rows instead of letting ``NOT`` turn into NULL and drop
+    them. Filtering here (instead of skipping rows in Python) also keeps a
+    silenced member from occupying the batch and starving the rest of the queue.
+    """
+
+    inside = and_(
+        MemberNotificationSetting.quiet_start.is_not(None),
+        or_(
+            and_(
+                MemberNotificationSetting.quiet_start
+                < MemberNotificationSetting.quiet_end,
+                MemberNotificationSetting.quiet_start <= moment,
+                moment < MemberNotificationSetting.quiet_end,
+            ),
+            and_(
+                MemberNotificationSetting.quiet_start
+                > MemberNotificationSetting.quiet_end,
+                or_(
+                    MemberNotificationSetting.quiet_start <= moment,
+                    moment < MemberNotificationSetting.quiet_end,
+                ),
+            ),
+        ),
+    )
+    return or_(MemberNotificationSetting.id.is_(None), ~inside)
+
+
 def send_pending_member_push_deliveries(
     session: Session,
     *,
@@ -648,15 +680,17 @@ def send_pending_member_push_deliveries(
     during the silence window this pass does not contact the push service, so a
     notice queued at night waits until the window ends — the first pass after
     it sends it, and the due retries are already covered by ``next_attempt_at``
-    being in the past. The panel's manual send and the manual retry are
-    deliberate operator decisions and take ``override_quiet_hours``/their own
-    path instead of waiting. Preview mode ignores the window: a simulation
-    never rings a phone, so a demo keeps showing a complete flow.
+    being in the past. The member's own window is checked per row: it holds
+    back only that member's pushes, which are simply not part of the batch. The
+    panel's manual send and the manual retry are deliberate operator decisions
+    and bypass both windows; preview mode ignores them too, because a simulation
+    never rings a phone.
     """
 
     occurred = _as_utc(now or utc_now())
     batch = max(1, min(limit, MAX_SEND_BATCH_LIMIT))
-    if not override_quiet_hours and not preview_mode():
+    respect_windows = not override_quiet_hours and not preview_mode()
+    if respect_windows:
         window = parse_push_quiet_window()
         if window is not None and _in_quiet_window(
             window[0], window[1], to_club_timezone(occurred).time()
@@ -672,19 +706,26 @@ def send_pending_member_push_deliveries(
                 deferred=True,
             )
 
-    rows = list(
-        session.exec(
-            select(MemberPushDelivery)
-            .where(
-                or_(
-                    MemberPushDelivery.status == "pending",
-                    _retry_due(occurred),
-                )
+    query = (
+        select(MemberPushDelivery)
+        .where(
+            or_(
+                MemberPushDelivery.status == "pending",
+                _retry_due(occurred),
             )
-            .order_by(MemberPushDelivery.created_at, MemberPushDelivery.id)
-            .limit(batch)
-        ).all()
+        )
+        .order_by(MemberPushDelivery.created_at, MemberPushDelivery.id)
+        .limit(batch)
     )
+    if respect_windows:
+        query = (
+            query.outerjoin(
+                MemberNotificationSetting,
+                MemberNotificationSetting.member_id == MemberPushDelivery.member_id,
+            )
+            .where(_outside_personal_window(to_club_timezone(occurred).time()))
+        )
+    rows = list(session.exec(query).all())
     attempted = sent = simulated = failed = deactivated = retried = 0
     for delivery in rows:
         was_failed = delivery.status == "failed"

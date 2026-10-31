@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
@@ -17,6 +18,7 @@ import {
   markAllMemberNotificationsRead,
   markMemberNotificationRead,
   updateMemberNotificationPreferences,
+  updateMemberNotificationQuietHours,
 } from "../api";
 import { describeError } from "../errors";
 import { formatDateTime, notificationKindLabel } from "../format";
@@ -27,11 +29,15 @@ import {
 import { PUSH_PROBE_ENABLED, scheduleLocalPushProbe } from "../pushProbe";
 import { colors, radius, sharedStyles, spacing } from "../theme";
 import type {
+  MemberClubQuietHours,
   MemberNotification,
   MemberNotificationCategory,
   MemberNotificationPage,
   MemberNotificationPreference,
+  MemberNotificationQuietHours,
 } from "../types";
+
+const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 const DESTINATION_LABELS: Record<NotificationDestination, string> = {
   home: "el inicio",
@@ -78,6 +84,13 @@ export function NotificationsScreen({
   const [preferences, setPreferences] = useState<
     MemberNotificationPreference[] | null
   >(null);
+  const [quietHours, setQuietHours] =
+    useState<MemberNotificationQuietHours | null>(null);
+  const [clubQuietHours, setClubQuietHours] =
+    useState<MemberClubQuietHours | null>(null);
+  const [quietStart, setQuietStart] = useState("");
+  const [quietEnd, setQuietEnd] = useState("");
+  const [quietBusy, setQuietBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -99,6 +112,10 @@ export function NotificationsScreen({
         ]);
         setInbox(next);
         setPreferences(prefs.items);
+        setQuietHours(prefs.quiet_hours);
+        setClubQuietHours(prefs.club_quiet_hours);
+        setQuietStart(prefs.quiet_hours?.start ?? "");
+        setQuietEnd(prefs.quiet_hours?.end ?? "");
         onUnreadChange(next.unread_total);
         setError(null);
       } catch (loadError) {
@@ -242,6 +259,53 @@ export function NotificationsScreen({
     } finally {
       setPreferenceBusy(null);
     }
+  }
+
+  async function saveQuietHours(payload: { start: string; end: string } | null) {
+    setQuietBusy(true);
+    try {
+      const updated = await updateMemberNotificationQuietHours(token, payload);
+      setPreferences(updated.items);
+      setQuietHours(updated.quiet_hours);
+      setClubQuietHours(updated.club_quiet_hours);
+      setQuietStart(updated.quiet_hours?.start ?? "");
+      setQuietEnd(updated.quiet_hours?.end ?? "");
+      setNotice(
+        payload
+          ? `Silencio de ${payload.start} a ${payload.end}: en ese tramo tu teléfono no suena. Los avisos te esperan en la bandeja.`
+          : "Quitamos tu horario de silencio: tu teléfono vuelve a sonar cuando llegue un aviso.",
+      );
+      setError(null);
+    } catch (quietError) {
+      if (quietError instanceof ApiError && quietError.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      setError(describeError(quietError));
+    } finally {
+      setQuietBusy(false);
+    }
+  }
+
+  async function handleSaveQuietHours() {
+    if (quietBusy) {
+      return;
+    }
+    const start = quietStart.trim();
+    const end = quietEnd.trim();
+    if (!start && !end) {
+      await saveQuietHours(null);
+      return;
+    }
+    if (!TIME_PATTERN.test(start) || !TIME_PATTERN.test(end)) {
+      setError("Escribe las horas como HH:MM, por ejemplo 22:00 y 07:00.");
+      return;
+    }
+    if (start === end) {
+      setError("La hora de inicio y la de fin deben ser distintas.");
+      return;
+    }
+    await saveQuietHours({ start, end });
   }
 
   async function handleScheduleProbe() {
@@ -426,6 +490,93 @@ export function NotificationsScreen({
         </View>
       ) : null}
 
+      {preferences ? (
+        <View style={sharedStyles.card}>
+          <Text style={sharedStyles.label}>Tu horario de silencio</Text>
+        <Text style={sharedStyles.body}>
+          Elige una franja en la que no quieras que suene el teléfono, en la hora
+          del gimnasio. Los avisos no se pierden: se guardan en tu bandeja y el
+          teléfono vuelve a sonar cuando la franja termina.
+        </Text>
+        <Text style={sharedStyles.hint}>
+          {quietHours
+            ? quietHours.active
+              ? `Ahora mismo está en silencio: tu teléfono no sonará hasta las ${quietHours.end}.`
+              : `En silencio de ${quietHours.start} a ${quietHours.end}.`
+            : "Sin horario propio: tu teléfono suena a cualquier hora."}
+        </Text>
+        {clubQuietHours ? (
+          <Text style={sharedStyles.hint}>
+            {clubQuietHours.active
+              ? `El gimnasio también mantiene el silencio hasta las ${clubQuietHours.end}.`
+              : `El gimnasio también silencia de ${clubQuietHours.start} a ${clubQuietHours.end}.`}
+          </Text>
+        ) : null}
+        <View style={styles.quietRow}>
+          <View style={styles.quietField}>
+            <Text style={styles.quietLabel}>Desde</Text>
+            <TextInput
+              accessibilityLabel="Hora de inicio del silencio"
+              value={quietStart}
+              onChangeText={setQuietStart}
+              placeholder="22:00"
+              placeholderTextColor={colors.textMuted}
+              maxLength={5}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!quietBusy}
+              style={sharedStyles.input}
+            />
+          </View>
+          <View style={styles.quietField}>
+            <Text style={styles.quietLabel}>Hasta</Text>
+            <TextInput
+              accessibilityLabel="Hora de fin del silencio"
+              value={quietEnd}
+              onChangeText={setQuietEnd}
+              placeholder="07:00"
+              placeholderTextColor={colors.textMuted}
+              maxLength={5}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!quietBusy}
+              style={sharedStyles.input}
+            />
+          </View>
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Guardar horario de silencio"
+          disabled={quietBusy}
+          onPress={() => void handleSaveQuietHours()}
+          style={({ pressed }) => [
+            sharedStyles.primaryButton,
+            quietBusy && sharedStyles.primaryButtonDisabled,
+            pressed && sharedStyles.primaryButtonPressed,
+          ]}
+        >
+          <Text style={sharedStyles.primaryButtonText}>
+            {quietBusy ? "Guardando…" : "Guardar horario"}
+          </Text>
+        </Pressable>
+        {quietHours ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Quitar horario de silencio"
+            disabled={quietBusy}
+            onPress={() => void saveQuietHours(null)}
+            style={({ pressed }) => [
+              sharedStyles.secondaryButton,
+              quietBusy && sharedStyles.primaryButtonDisabled,
+              pressed && sharedStyles.secondaryButtonPressed,
+            ]}
+          >
+            <Text style={sharedStyles.secondaryButtonText}>Quitar horario</Text>
+          </Pressable>
+        ) : null}
+        </View>
+      ) : null}
+
       {PUSH_PROBE_ENABLED ? (
         <View style={sharedStyles.card}>
           <Text style={sharedStyles.label}>Prueba de arranque en frío</Text>
@@ -538,6 +689,20 @@ const styles = StyleSheet.create({
   preferenceCopy: {
     flex: 1,
     gap: 2,
+  },
+  quietRow: {
+    flexDirection: "row",
+    gap: spacing.md,
+    marginTop: spacing.sm,
+  },
+  quietField: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  quietLabel: {
+    color: colors.textMuted,
+    fontSize: 13,
+    fontWeight: "700",
   },
   preferenceTitle: {
     color: colors.text,
