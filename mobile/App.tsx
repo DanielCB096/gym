@@ -1,8 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, SafeAreaView, StyleSheet, Text, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 
-import { ApiError, getMemberProfile, getUnreadNotificationCount, logoutMember } from "./src/api";
+import {
+  ApiError,
+  getMemberProfile,
+  getUnreadNotificationCount,
+  logoutMember,
+  markMemberNotificationRead,
+} from "./src/api";
 import { describeError } from "./src/errors";
 import { AccessCodeScreen } from "./src/screens/AccessCodeScreen";
 import { ClassesScreen } from "./src/screens/ClassesScreen";
@@ -18,7 +24,13 @@ import { ProgressPhotosScreen } from "./src/screens/ProgressPhotosScreen";
 import { RoutineDetailScreen } from "./src/screens/RoutineDetailScreen";
 import { RoutinesScreen } from "./src/screens/RoutinesScreen";
 import { clearToken, loadToken, saveToken } from "./src/storage";
-import { registerPushForSession, unregisterPushForSession } from "./src/push";
+import {
+  registerPushForSession,
+  subscribePushTaps,
+  unregisterPushForSession,
+  type PushTap,
+} from "./src/push";
+import { notificationDestination } from "./src/notificationRouting";
 import { colors } from "./src/theme";
 import type { MemberLoginResult, MemberProfile } from "./src/types";
 
@@ -51,6 +63,8 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(null);
+  const tokenRef = useRef<string | null>(null);
+  const pendingPushRef = useRef<PushTap | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -68,10 +82,11 @@ export default function App() {
         if (!active) {
           return;
         }
+        tokenRef.current = stored;
         setToken(stored);
         setProfile(next);
         setFallbackName(next.first_name);
-        setStage("home");
+        setStage(takePendingStage(stored));
         void refreshUnreadNotifications(stored);
         void registerPushForSession(stored);
       } catch (error) {
@@ -80,6 +95,7 @@ export default function App() {
         }
         if (error instanceof ApiError && error.status === 401) {
           await clearToken();
+          pendingPushRef.current = null;
           setLoginNotice("Tu sesión expiró. Vuelve a entrar.");
         } else {
           setLoginError(describeError(error));
@@ -100,6 +116,47 @@ export default function App() {
     }
   }
 
+  function openPushTap(tap: PushTap, activeToken: string): Stage {
+    const destination = notificationDestination(tap.kind ?? "");
+    if (destination !== "notifications" && tap.notificationId) {
+      void markMemberNotificationRead(activeToken, tap.notificationId)
+        .then(() => refreshUnreadNotifications(activeToken))
+        .catch(() => {
+          // The notice stays unread; the inbox fixes it when it is opened.
+        });
+    }
+    return destination;
+  }
+
+  function takePendingStage(activeToken: string): Stage {
+    const pending = pendingPushRef.current;
+    pendingPushRef.current = null;
+    return pending ? openPushTap(pending, activeToken) : "home";
+  }
+
+  useEffect(() => {
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void subscribePushTaps((tap) => {
+      const activeToken = tokenRef.current;
+      if (!activeToken) {
+        pendingPushRef.current = tap;
+        return;
+      }
+      setStage(openPushTap(tap, activeToken));
+    }).then((cleanup) => {
+      if (active) {
+        dispose = cleanup;
+      } else {
+        cleanup();
+      }
+    });
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, []);
+
   function handleCodeRequested(nextEmail: string, nextPreviewCode: string | null) {
     setEmail(nextEmail);
     setPreviewCode(nextPreviewCode);
@@ -109,11 +166,12 @@ export default function App() {
   }
 
   async function handleAuthenticated(result: MemberLoginResult) {
+    tokenRef.current = result.access_token;
     setToken(result.access_token);
     setFallbackName(result.member.first_name);
     setHomeError(null);
     await saveToken(result.access_token);
-    setStage("home");
+    setStage(takePendingStage(result.access_token));
     void refreshUnreadNotifications(result.access_token);
     void registerPushForSession(result.access_token);
     try {
@@ -121,6 +179,8 @@ export default function App() {
       setProfile(next);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
+        tokenRef.current = null;
+        pendingPushRef.current = null;
         await clearToken();
         setToken(null);
         setStage("email");
@@ -144,6 +204,8 @@ export default function App() {
       await refreshUnreadNotifications(token);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
+        tokenRef.current = null;
+        pendingPushRef.current = null;
         await clearToken();
         setToken(null);
         setProfile(null);
@@ -159,6 +221,8 @@ export default function App() {
 
   async function handleLogout() {
     const activeToken = token;
+    tokenRef.current = null;
+    pendingPushRef.current = null;
     await clearToken();
     setToken(null);
     setProfile(null);
@@ -227,6 +291,8 @@ export default function App() {
   }
 
   async function handleSessionExpired() {
+    tokenRef.current = null;
+    pendingPushRef.current = null;
     await clearToken();
     setToken(null);
     setProfile(null);
@@ -357,6 +423,8 @@ export default function App() {
             onOpenInvoices={() => setStage("invoices")}
             onOpenClasses={() => setStage("classes")}
             onOpenPhysio={() => setStage("physio")}
+            onOpenRoutines={() => setStage("routines")}
+            onOpenHome={() => setStage("home")}
           />
         ) : null}
       </SafeAreaView>

@@ -26,7 +26,7 @@ La bandeja del socio guarda cada aviso con su texto congelado, pero solo habla c
 - **Ventana at-least-once.** El intento se confirma antes de llamar a Expo, así que un corte entre la aceptación y el `commit` puede repetir el push. No hay deduplicación en el dispositivo.
 - **Sin reintento ni backoff.** Un `failed` es definitivo y se ve en la base; no hay tarjeta de push en el panel ni botón de reintento, a diferencia del correo.
 - **El acuse del push no existe.** Se guarda el ticket de Expo (`sent`), no su recibo de entrega; saber si el teléfono lo mostró requeriría el receipt id de Expo y otra cola.
-- **El payload es informativo.** El `data` lleva `notification_id`, `kind` y `ref_id` para que la app pueda abrir la pantalla correcta, pero este corte no toca la navegación al tocar la notificación.
+- **El payload habilita la navegación.** El `data` lleva `notification_id`, `kind` y `ref_id`; ADR-060 usa `kind` para abrir la pantalla correspondiente al tocar la notificación y `notification_id` para marcarla leída. `ref_id` sigue sin usarse para abrir un detalle concreto.
 - **La vista previa no toca dispositivos.** `PREVIEW_MODE` marca las entregas como `simulated`, igual que el transporte SMTP.
 
 ## Referencias
@@ -38,4 +38,4 @@ La bandeja del socio guarda cada aviso con su texto congelado, pero solo habla c
 - `backend/alembic/versions/20261031_0067_member_push_deliveries.py`
 - `backend/tests/test_member_push.py`
 - `mobile/src/push.ts`, `mobile/src/api.ts`, `mobile/App.tsx`, `mobile/app.json`
-- `docs/05-decisiones/ADR-016-notificaciones-del-socio.md`, `ADR-049-envio-y-reintento-de-la-cola-de-correos-de-asistencia.md`
+- `docs/05-decisiones/ADR-016-notificaciones-del-socio.md`, `ADR-049-envio-y-reintento-de-la-cola-de-correos-de-asistencia.md`, `ADR-060-navegacion-al-tocar-la-notificacion-push.md`

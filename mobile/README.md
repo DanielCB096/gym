@@ -60,7 +60,7 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
   - contador «Tienes N avisos sin leer.» o «Estás al día.»;
   - lista del más reciente al más antiguo con etiqueta de tipo (Membresía, Clase, Clase cancelada, Clase movida, Meta cumplida, Meta ajustada, Meta cancelada, Entrenamiento, Equipo), título, cuerpo y fecha con hora;
   - no leídos marcados con borde y punto de color, leídos atenúados;
-  - toque sobre un aviso para marcarlo como leído (inmediato, sin recargar la lista);
+  - toque sobre un aviso para marcarlo como leído (inmediato, sin recargar la lista) y abrir su pantalla: Facturas, Clases, Fisioterapia, Rutinas o el inicio; un tipo desconocido se queda en la bandeja;
   - «Marcar todas como leídas», visible solo cuando hay pendientes, con confirmación de cuántos se marcaron;
   - aviso cuando los pendientes superan los 30 de la primera página;
   - estados vacíos, mensajes de error y actualización manual con deslizamiento.
@@ -183,11 +183,13 @@ La app no ofrece PPD: envía siempre la forma derivada del cobro con método PUE
 ## Flujo de avisos
 
 1. `GET /member/notifications?page=1&page_size=30` devuelve la bandeja del socio con `total`, `pages` y `unread_total`; los avisos los generan los eventos del club (revisión de un entrenamiento, meta cumplida, meta ajustada o cancelada por el personal, reserva confirmada —en la app o en recepción—, lugar liberado en lista de espera, recordatorio de la clase próxima, vencimiento próximo de la membresía, equipo de la rutina que queda fuera de servicio y estado de una factura: timbrada, fallida o cancelada).
-2. `POST /member/notifications/{id}/read` marca uno (idempotente) y `POST /member/notifications/read-all` marca todos devolviendo `{"updated": n}`. Los avisos `invoice_stamped`/`invoice_failed`/`invoice_cancelled` se etiquetan «Factura» y, al tocarlos, la app los marca leídos y abre la pantalla de Facturas; los de clase (`class_reserved`, `class_reminder`, `class_waitlist_promoted`, `class_cancelled` y `class_rescheduled`) se etiquetan «Clase», «Clase cancelada» o «Clase movida» y abren la pantalla **Clases**. El resto solo cambia el estado de lectura.
+2. `POST /member/notifications/{id}/read` marca uno (idempotente) y `POST /member/notifications/read-all` marca todos devolviendo `{"updated": n}`. Cada aviso abre la pantalla que corresponde según `notificationDestination` (ADR-060): los `invoice_*` van a Facturas, los de clase a Clases, los `physio_*` a Fisioterapia, los de rutina, metas y equipo a Rutinas y `membership_expiring` al inicio. Un tipo que la app no conoce se queda en la bandeja para no perderlo.
 3. `GET /member/notifications/unread-count` alimenta la insignia de la pantalla de inicio; se consulta al restaurar la sesión, al iniciar sesión, al actualizar el perfil y al salir de la bandeja.
 4. Al abrir la bandeja el backend evalúa el vencimiento de la membresía (≤ 7, ≤ 3 o ≤ 1 días) y la clase próxima (≤ 24 h y ≤ 2 h), y crea el recordatorio de cada ventana una sola vez, deduplicado por `dedupe_key`.
 
 La app **no** crea, edita ni borra avisos. El aviso queda en la bandeja y, desde ADR-052, cada aviso nuevo —salvo los recordatorios perezosos— también encola un push al teléfono; la app registra su token al restaurar la sesión y lo revoca al salir. Desde ADR-059 la misma pantalla muestra una tarjeta con seis interruptores de push por categoría: apagarlos solo deja de sonar el teléfono, la bandeja conserva todo. Un fallo al consultar el contador se ignora en silencio porque la bandeja muestra el conteo real al abrirla.
+
+Desde ADR-060, tocar el push abre la misma pantalla que el aviso en la bandeja. `subscribePushTaps` escucha el toque en nativo y lee una sola vez el aviso que lanzó la app, así que un remontaje no vuelve a navegar; si todavía no hay sesión, el destino espera a que el socio entre o a que se restaure el token, y se descarta al cerrar sesión o al vencerla. El aviso que navega se marca leído enseguida, sin esperar a la pantalla. En Expo web no hay respuestas de notificación y la navegación se prueba desde la bandeja.
 
 Límites del backend: 5 solicitudes por correo cada 15 minutos, 5 intentos por código, código de un solo uso y sesiones revocables. Los tokens y los códigos se guardan solo como hash.
 
@@ -195,7 +197,7 @@ Límites del backend: 5 solicitudes por correo cada 15 minutos, 5 intentos por c
 
 ```text
 mobile/
-├── App.tsx                 # máquina de estados restoring → email → code → home → classes → routines → routineDetail → progressPhotos → payments → invoices → invoiceRequest → notifications
+├── App.tsx                 # máquina de estados restoring → email → code → home → accessCode → classes → physio → routines → routineDetail → progressPhotos → payments → invoices → invoiceRequest → notifications
 ├── index.ts                # registro de Expo
 ├── app.json                # nombre, slug, tema y plugin de SecureStore
 └── src/
@@ -203,6 +205,8 @@ mobile/
     ├── config.ts           # URL del backend y timeout
     ├── errors.ts           # mensajes en español para el usuario
     ├── format.ts           # fechas, dinero y estados en es-MX
+    ├── notificationRouting.ts # mapa único de tipo de aviso a pantalla, compartido por la bandeja y el push (ADR-060)
+    ├── push.ts             # registro y retiro del token de Expo, y toque del push (ADR-052, ADR-060)
     ├── storage.ts          # token en SecureStore (no persistente en web)
     ├── theme.ts            # colores y estilos compartidos
     ├── types.ts            # contratos de la API
@@ -230,7 +234,7 @@ mobile/
 - El aviso de equipo fuera de servicio solo se ve en el detalle del plan, donde el ejercicio afectado queda marcado con su `equipment_status`; la app no tiene pantalla de equipos, así que el socio no puede consultar el estado desde otro lugar ni hay aviso cuando el equipo vuelve a estar operativo.
 - Pago en línea y detalle de la venta detrás de cada cargo (hoy se consulta el movimiento). Las facturas se descargan y se solicitan desde la app, pero la lista pide solo la primera página (20), no hay historial de descargas, la solicitud no se timbra desde la app, no se puede elegir PPD ni se avisa cuando cambia el estado de la factura.
 - Cobro del precio extra de las clases premium desde la app.
-- Push del socio: existe desde ADR-052 con reintento automático (ADR-054) y preferencias por categoría (ADR-059). Quedan la navegación al tocar la notificación, el horario de silencio, la preferencia por dispositivo y el push del personal; los recordatorios diferidos siguen viéndose solo al abrir la bandeja.
+- Push del socio: existe desde ADR-052 con reintento automático (ADR-054), preferencias por categoría (ADR-059) y navegación al tocar el aviso (ADR-060), que abre la pantalla que lo contiene pero no el detalle de la reserva, la factura o la meta. Quedan el horario de silencio, la preferencia por dispositivo y el push del personal; los recordatorios diferidos siguen viéndose solo al abrir la bandeja.
 - Rotación de tokens, cierre de sesiones por inactividad y MFA opcional.
 - Persistencia del token en la vista web (hoy se pierde al recargar) y almacenamiento seguro nativo con biometría.
 - Deep links, iconos y splash definitivos, y publicación en tiendas.

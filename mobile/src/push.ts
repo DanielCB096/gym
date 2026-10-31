@@ -1,4 +1,5 @@
 import Constants from "expo-constants";
+import type { NotificationResponse } from "expo-notifications";
 import { Platform } from "react-native";
 
 import { registerMemberPushToken, revokeMemberPushToken } from "./api";
@@ -7,6 +8,11 @@ import type { MemberPushPlatform } from "./types";
 type PushRegistration = {
   token: string;
   platform: MemberPushPlatform;
+};
+
+export type PushTap = {
+  notificationId: string | null;
+  kind: string | null;
 };
 
 // One installation registers once per session; the backend transfers a device
@@ -61,6 +67,51 @@ export async function registerPushForSession(accessToken: string): Promise<void>
   } catch {
     // The inbox in the app keeps working without push permissions or network.
   }
+}
+
+function tapFromResponse(response: NotificationResponse): PushTap | null {
+  const data = response.notification.request.content.data ?? {};
+  const kind = typeof data.kind === "string" ? data.kind : null;
+  const rawId = data.notification_id;
+  const notificationId = typeof rawId === "string" ? rawId : null;
+  if (!kind && !notificationId) {
+    return null;
+  }
+  return { kind, notificationId };
+}
+
+// Native only: the web preview has no notification responses. The tap that
+// launched the app is read once from the last response and cleared so a later
+// remount does not navigate again.
+export async function subscribePushTaps(
+  onTap: (tap: PushTap) => void,
+): Promise<() => void> {
+  if (!devicePlatform()) {
+    return () => {};
+  }
+  let notifications: typeof import("expo-notifications");
+  try {
+    notifications = await import("expo-notifications");
+  } catch {
+    return () => {};
+  }
+  const subscription = notifications.addNotificationResponseReceivedListener(
+    (response) => {
+      const tap = tapFromResponse(response);
+      if (tap) {
+        onTap(tap);
+      }
+    },
+  );
+  const last = notifications.getLastNotificationResponse();
+  if (last) {
+    notifications.clearLastNotificationResponse();
+    const tap = tapFromResponse(last);
+    if (tap) {
+      onTap(tap);
+    }
+  }
+  return () => subscription.remove();
 }
 
 export async function unregisterPushForSession(accessToken: string): Promise<void> {

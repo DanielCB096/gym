@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-31 · Avisos: navegación al tocar la notificación push
+
+- **Un mapa de tipos a pantalla**: `notificationRouting.ts` decide el destino de los 18 tipos —facturas, clases, fisioterapia, rutinas, inicio— y devuelve la bandeja para cualquier tipo desconocido. La bandeja y el push comparten el mapa, así que tocar el aviso en cualquiera de los dos abre lo mismo.
+- **La bandeja amplía sus destinos**: los avisos de rutinas, equipo y membresía ya no solo se marcan leídos; abren Rutinas o Inicio, con su `accessibilityLabel` y el texto de ayuda actualizados.
+- **El toque del push**: `subscribePushTaps` escucha las respuestas de `expo-notifications` solo en iOS/Android, lee una vez la respuesta que abrió la app y la borra para no repetir la navegación. En web no se registra nada.
+- **Sesión y lectura**: un toque sin sesión queda pendiente y se abre al restaurar o iniciar sesión; cerrar sesión, expirar o cambiar de cuenta lo descarta. El aviso se marca leído con el endpoint idempotente y se refresca la insignia, salvo cuando el destino es la propia bandeja.
+- **Corrección de la insignia**: al tocar un aviso que navega, el contador se actualizaba dentro de un updater que se descartaba al desmontar la bandeja; ahora se aplica antes de navegar.
+- **Verificación**: `tsc --noEmit` limpio, los 18 tipos y el desconocido probados sobre el módulo puro, y en la vista previa las seis rutas (clases, fisioterapia, facturas, inicio, rutinas por equipo y por entrenamiento) con la insignia bajando de 5 a 0. La suite del backend no cambia: **372 pruebas**, 367 pasan y 5 se omiten.
+- **Documentación**: ADR-060, ADR-052, ADR-053, deuda técnica, plan de pruebas, README, módulo de avisos del socio, README de la app, traspaso y este changelog.
+
 ## 2026-10-31 · Avisos: preferencias del socio por tipo
 
 - **Seis categorías para 18 tipos**: `membership`, `classes`, `training`, `billing`, `equipment` y `physio` agrupan los avisos del socio con un mapa exhaustivo (`NOTIFICATION_CATEGORY_BY_KIND`) que una prueba vigila. Las categorías viven en el código; el club no las configura.

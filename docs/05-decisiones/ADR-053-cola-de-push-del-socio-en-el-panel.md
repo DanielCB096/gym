@@ -23,7 +23,7 @@ ADR-052 dejó la cola de push escrita con cada aviso, pero sin pantalla y sin re
 - **No hay reintento automático ni backoff.** Una fila fallida espera a que alguien pulse «Reintentar»; no hay un programador que la reprograme ni un máximo de intentos distinto del que impone la pasada (que solo toma `pending`).
 - **Sigue sin haber acuse del push.** Se conserva el ticket de Expo, no su recibo de entrega, así que `sent` no prueba que el teléfono lo mostró.
 - **El enmascarado es de presentación.** El token completo sigue en la base porque la pasada lo necesita; la API y el panel no lo exponen.
-- **Sin navegación al tocar.** Este corte solo agrega visibilidad y reintento; el comportamiento del aviso en el dispositivo no cambia. Las preferencias por tipo llegaron después con ADR-059, y la tarjeta del panel no las muestra ni las puede cambiar.
+- **La navegación del aviso no pasa por el panel.** Este corte solo agrega visibilidad y reintento; el toque en el dispositivo navega desde ADR-060 y las preferencias por tipo llegaron con ADR-059, pero la tarjeta del panel no muestra ni cambia ninguna de las dos.
 - **Un reintento puede duplicar.** La ventana at-least-once de ADR-052 sigue vigente: si el primer intento llegó al teléfono pero el registro quedó en `failed`, reintentar lo repite.
 - **Sin aviso al personal cuando falla un push.** La tarjeta lo muestra, pero nadie recibe un correo o campana por una entrega fallida; el club tendría que abrir la cola.
 

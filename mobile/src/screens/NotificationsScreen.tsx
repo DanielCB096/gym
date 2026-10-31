@@ -20,6 +20,10 @@ import {
 } from "../api";
 import { describeError } from "../errors";
 import { formatDateTime, notificationKindLabel } from "../format";
+import {
+  notificationDestination,
+  type NotificationDestination,
+} from "../notificationRouting";
 import { colors, radius, sharedStyles, spacing } from "../theme";
 import type {
   MemberNotification,
@@ -28,20 +32,14 @@ import type {
   MemberNotificationPreference,
 } from "../types";
 
-const CLASS_KINDS = new Set([
-  "class_reminder",
-  "class_reserved",
-  "class_cancelled",
-  "class_rescheduled",
-  "class_waitlist_promoted",
-]);
-
-const PHYSIO_KINDS = new Set([
-  "physio_appointment_scheduled",
-  "physio_appointment_cancelled",
-  "physio_appointment_rescheduled",
-  "physio_reminder",
-]);
+const DESTINATION_LABELS: Record<NotificationDestination, string> = {
+  home: "el inicio",
+  invoices: "facturas",
+  classes: "clases",
+  physio: "fisioterapia",
+  routines: "rutinas",
+  notifications: "",
+};
 
 const CATEGORY_LABELS: Record<MemberNotificationCategory, string> = {
   membership: "Membresía",
@@ -60,6 +58,8 @@ type Props = {
   onOpenInvoices: () => void;
   onOpenClasses: () => void;
   onOpenPhysio: () => void;
+  onOpenRoutines: () => void;
+  onOpenHome: () => void;
 };
 
 export function NotificationsScreen({
@@ -70,6 +70,8 @@ export function NotificationsScreen({
   onOpenInvoices,
   onOpenClasses,
   onOpenPhysio,
+  onOpenRoutines,
+  onOpenHome,
 }: Props) {
   const [inbox, setInbox] = useState<MemberNotificationPage | null>(null);
   const [preferences, setPreferences] = useState<
@@ -122,18 +124,17 @@ export function NotificationsScreen({
       setBusy(true);
       try {
         const marked = await markMemberNotificationRead(token, item.id);
-        setInbox((current) => {
-          if (!current) {
-            return current;
-          }
-          const unread = Math.max(0, current.unread_total - 1);
-          onUnreadChange(unread);
-          return {
-            ...current,
-            unread_total: unread,
-            items: current.items.map((row) => (row.id === marked.id ? marked : row)),
-          };
-        });
+        const unread = Math.max(0, (inbox?.unread_total ?? 0) - 1);
+        onUnreadChange(unread);
+        setInbox((current) =>
+          current
+            ? {
+                ...current,
+                unread_total: unread,
+                items: current.items.map((row) => (row.id === marked.id ? marked : row)),
+              }
+            : current,
+        );
         setError(null);
       } catch (markError) {
         if (markError instanceof ApiError && markError.status === 401) {
@@ -146,12 +147,24 @@ export function NotificationsScreen({
         setBusy(false);
       }
     }
-    if (item.kind.startsWith("invoice_")) {
-      onOpenInvoices();
-    } else if (CLASS_KINDS.has(item.kind)) {
-      onOpenClasses();
-    } else if (PHYSIO_KINDS.has(item.kind)) {
-      onOpenPhysio();
+    switch (notificationDestination(item.kind)) {
+      case "invoices":
+        onOpenInvoices();
+        break;
+      case "classes":
+        onOpenClasses();
+        break;
+      case "physio":
+        onOpenPhysio();
+        break;
+      case "routines":
+        onOpenRoutines();
+        break;
+      case "home":
+        onOpenHome();
+        break;
+      case "notifications":
+        break;
     }
   }
 
@@ -311,39 +324,38 @@ export function NotificationsScreen({
               Todavía no hay avisos. Aquí verás lo que el gimnasio registre sobre ti.
             </Text>
           ) : (
-            inbox.items.map((item) => (
-              <Pressable
-                key={item.id}
-                accessibilityRole="button"
-                accessibilityLabel={
-                  item.kind.startsWith("invoice_")
-                    ? `Abrir facturas: ${item.title}`
-                    : CLASS_KINDS.has(item.kind)
-                      ? `Abrir clases: ${item.title}`
-                      : PHYSIO_KINDS.has(item.kind)
-                        ? `Abrir fisioterapia: ${item.title}`
-                        : item.read_at
-                          ? `Aviso leído: ${item.title}`
-                          : `Marcar como leído: ${item.title}`
-                }
-                onPress={() => void handleOpen(item)}
-                style={({ pressed }) => [
-                  styles.row,
-                  item.read_at ? styles.rowRead : styles.rowUnread,
-                  pressed && styles.rowPressed,
-                ]}
-              >
-                <View style={styles.rowHeading}>
-                  <View style={styles.pill}>
-                    <Text style={styles.pillText}>{notificationKindLabel(item.kind)}</Text>
+            inbox.items.map((item) => {
+              const destination = notificationDestination(item.kind);
+              return (
+                <Pressable
+                  key={item.id}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    destination === "notifications"
+                      ? item.read_at
+                        ? `Aviso leído: ${item.title}`
+                        : `Marcar como leído: ${item.title}`
+                      : `Abrir ${DESTINATION_LABELS[destination]}: ${item.title}`
+                  }
+                  onPress={() => void handleOpen(item)}
+                  style={({ pressed }) => [
+                    styles.row,
+                    item.read_at ? styles.rowRead : styles.rowUnread,
+                    pressed && styles.rowPressed,
+                  ]}
+                >
+                  <View style={styles.rowHeading}>
+                    <View style={styles.pill}>
+                      <Text style={styles.pillText}>{notificationKindLabel(item.kind)}</Text>
+                    </View>
+                    {!item.read_at ? <View style={styles.unreadDot} /> : null}
                   </View>
-                  {!item.read_at ? <View style={styles.unreadDot} /> : null}
-                </View>
-                <Text style={styles.rowTitle}>{item.title}</Text>
-                <Text style={sharedStyles.body}>{item.body}</Text>
-                <Text style={sharedStyles.hint}>{formatDateTime(item.created_at)}</Text>
-              </Pressable>
-            ))
+                  <Text style={styles.rowTitle}>{item.title}</Text>
+                  <Text style={sharedStyles.body}>{item.body}</Text>
+                  <Text style={sharedStyles.hint}>{formatDateTime(item.created_at)}</Text>
+                </Pressable>
+              );
+            })
           )}
           {inbox && inbox.total > inbox.items.length ? (
             <Text style={sharedStyles.hint}>
@@ -390,9 +402,10 @@ export function NotificationsScreen({
       ) : null}
 
       <Text style={sharedStyles.hint}>
-        Toca un aviso para marcarlo como leído. Los de factura abren Facturas, los de
-        clase abren Clases y los de fisioterapia abren Fisioterapia. Los avisos no se
-        borran: quedan en tu historial. Desliza hacia abajo para actualizar.
+        Toca un aviso para marcarlo como leído. Los de factura abren Facturas; los de
+        clase, Clases; los de fisioterapia, Fisioterapia; los de rutina y equipo,
+        Rutinas; y los de membresía, el inicio. Los avisos no se borran: quedan en tu
+        historial. Desliza hacia abajo para actualizar.
       </Text>
     </ScrollView>
   );
