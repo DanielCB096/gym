@@ -1,8 +1,8 @@
 """The operations cron block installed by ``ops_cron.py``.
 
-The block schedules the two daily purges and the Expo receipts pass, keeps
-unrelated crontab lines untouched, and reinstalling replaces the old block
-instead of adding a second copy.
+The block schedules the two daily purges, the Expo receipts pass and the staff
+push drain, keeps unrelated crontab lines untouched, and reinstalling replaces
+the old block instead of adding a second copy.
 """
 
 from dataclasses import replace
@@ -33,7 +33,7 @@ def _block(**overrides: object) -> str:
     return ops_cron.build_block(replace(BASE, **overrides))
 
 
-def test_block_schedules_the_three_jobs_in_order() -> None:
+def test_block_schedules_the_four_jobs_in_order() -> None:
     lines = _block().splitlines()
     assert lines[0] == ops_cron.BEGIN_MARKER
     assert lines[-1] == ops_cron.END_MARKER
@@ -41,13 +41,17 @@ def test_block_schedules_the_three_jobs_in_order() -> None:
     access = next(line for line in lines if "purge_access_data.py" in line)
     email = next(line for line in lines if "purge_email_receipts.py" in line)
     receipts = next(line for line in lines if "sync_push_receipts.py" in line)
+    staff_push = next(line for line in lines if "flush_staff_push.py" in line)
 
     assert access.startswith("15 3 * * * ")
     assert email.startswith("45 3 * * * ")
     assert receipts.startswith("*/30 * * * * ")
+    assert staff_push.startswith("*/15 * * * * ")
     assert lines.index(access) < lines.index(email)
+    assert lines.index(receipts) < lines.index(staff_push)
     assert "--limit 200" in receipts
-    for line in (access, email, receipts):
+    assert "--limit" not in staff_push
+    for line in (access, email, receipts, staff_push):
         assert "cd " in line
         assert "DATABASE_URL=" in line
         assert ">> " in line
@@ -66,6 +70,7 @@ def test_logs_are_named_per_job() -> None:
     assert "purge-access.log" in block
     assert "purge-email.log" in block
     assert "push-receipts.log" in block
+    assert "staff-push.log" in block
 
 
 def test_daily_schedule_wraps_midnight() -> None:
@@ -82,11 +87,18 @@ def test_receipts_schedule_accepts_steps_and_hourly() -> None:
     assert ops_cron.receipts_schedule(60) == "0 * * * *"
 
 
+def test_staff_push_schedule_accepts_steps_and_hourly() -> None:
+    assert ops_cron.staff_push_schedule(5) == "*/5 * * * *"
+    assert ops_cron.staff_push_schedule(60) == "0 * * * *"
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
         {"receipts_every": 4},
         {"receipts_every": 61},
+        {"staff_push_every": 4},
+        {"staff_push_every": 61},
         {"daily_at": "24:00"},
         {"daily_at": "3:5"},
         {"daily_at": "noche"},
@@ -219,8 +231,10 @@ def test_cli_install_requires_every_script(monkeypatch: pytest.MonkeyPatch, caps
         ]
     )
 
+    error = capsys.readouterr().err
     assert code == 2
-    assert "sync_push_receipts.py" in capsys.readouterr().err
+    assert "sync_push_receipts.py" in error
+    assert "flush_staff_push.py" in error
 
 
 def test_cli_uninstall_removes_only_the_block(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

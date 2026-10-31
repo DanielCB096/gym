@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-31 · Personal: planificador de la cola del push web (ADR-071)
+
+- `backend/flush_staff_push.py` drena las entregas `pending` que un proceso caído dejó sin enviar, con la misma pasada del gancho y el compare-and-set sobre `attempts`; no reintenta las `failed`, que siguen esperando a una persona. Acepta `--preview` (simula sobre `gym_preview.db`), `--database-url` y `--limit` (1 a 100; 20 por defecto); sin URL sale con código 2 y una base inalcanzable con código 1.
+- `ops_cron.py` pasó a cuatro entradas: `flush_staff_push.py` cada 15 minutos por defecto (`--staff-push-every`, de 5 a 59 o 60), con `staff-push.log`, y `--install` exige el script nuevo. Se actualizaron la guía de despliegue, el ADR-063, el README del backend y ADR-070; sin migración.
+- Suite backend completa: **503 pruebas, 498 aprobadas y 5 omitidas** sin `TEST_POSTGRES_URL` (`test_staff_push_flush.py` suma 7 y `test_ops_cron.py` 3).
+
 ## 2026-10-31 · Pagos: primer checkout sandbox de membresía (ADR-066)
 
 - Se integró el checkout alojado de Conekta para el primer pago de una membresía en sandbox: el importe viene del plan, se conserva la orden y su URL, y el webhook verifica la firma RSA-SHA256, el importe y la moneda antes de activar la membresía de forma idempotente. Producción y cargos reales siguen fuera de alcance.

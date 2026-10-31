@@ -1,8 +1,8 @@
 """Install the cron entries that keep the operations data fresh.
 
 The application has no scheduler: the maintenance scripts run from the host's
-cron (ADR-058, ADR-062). This script renders the three entries as one block
-delimited by markers, so reinstalling after moving the app, changing the
+cron (ADR-058, ADR-062, ADR-071). This script renders the four entries as one
+block delimited by markers, so reinstalling after moving the app, changing the
 database password or adjusting the schedule replaces the old block instead of
 duplicating lines, and unrelated crontab entries are left untouched.
 
@@ -30,15 +30,22 @@ END_MARKER = "# END gimnasio-ops"
 
 DEFAULT_DAILY_AT = "03:15"
 DEFAULT_RECEIPTS_EVERY = 30
+DEFAULT_STAFF_PUSH_EVERY = 15
 DEFAULT_PUSH_LIMIT = 200
 MAX_PUSH_LIMIT = 1000
 MIN_RECEIPTS_EVERY = 5
-MAX_RECEIPTS_EVERY = 60
+MIN_STAFF_PUSH_EVERY = 5
+MAX_SCHEDULE_EVERY = 60
 # The purges run one after the other; the second waits this many minutes.
 PURGE_STAGGER_MINUTES = 30
 
 _DAILY_AT = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
-_SCRIPTS = ("purge_access_data.py", "purge_email_receipts.py", "sync_push_receipts.py")
+_SCRIPTS = (
+    "purge_access_data.py",
+    "purge_email_receipts.py",
+    "sync_push_receipts.py",
+    "flush_staff_push.py",
+)
 
 
 class OpsCronError(Exception):
@@ -53,6 +60,7 @@ class OpsCronConfig:
     log_dir: Path
     daily_at: str = DEFAULT_DAILY_AT
     receipts_every: int = DEFAULT_RECEIPTS_EVERY
+    staff_push_every: int = DEFAULT_STAFF_PUSH_EVERY
     push_limit: int = DEFAULT_PUSH_LIMIT
 
 
@@ -63,16 +71,24 @@ def parse_daily_at(value: str) -> tuple[int, int]:
     return int(match.group(1)), int(match.group(2))
 
 
+def _every_schedule(minutes: int, flag: str, minimum: int) -> str:
+    if minimum <= minutes <= 59:
+        return f"*/{minutes} * * * *"
+    if minutes == MAX_SCHEDULE_EVERY:
+        return "0 * * * *"
+    raise ValueError(f"{flag} debe estar entre {minimum} y 59, o 60.")
+
+
 def receipts_schedule(minutes: int) -> str:
     """Cron minute field for the receipts pass."""
 
-    if MIN_RECEIPTS_EVERY <= minutes <= 59:
-        return f"*/{minutes} * * * *"
-    if minutes == 60:
-        return "0 * * * *"
-    raise ValueError(
-        f"--receipts-every debe estar entre {MIN_RECEIPTS_EVERY} y 59, o 60."
-    )
+    return _every_schedule(minutes, "--receipts-every", MIN_RECEIPTS_EVERY)
+
+
+def staff_push_schedule(minutes: int) -> str:
+    """Cron minute field for the staff push drain."""
+
+    return _every_schedule(minutes, "--staff-push-every", MIN_STAFF_PUSH_EVERY)
 
 
 def add_minutes(hour: int, minute: int, offset: int) -> tuple[int, int]:
@@ -81,7 +97,7 @@ def add_minutes(hour: int, minute: int, offset: int) -> tuple[int, int]:
 
 
 def build_block(config: OpsCronConfig) -> str:
-    """Render the marked crontab block for the three maintenance jobs."""
+    """Render the marked crontab block for the four maintenance jobs."""
 
     database_url = config.database_url.strip()
     if not database_url:
@@ -94,6 +110,7 @@ def build_block(config: OpsCronConfig) -> str:
     hour, minute = parse_daily_at(config.daily_at)
     second_hour, second_minute = add_minutes(hour, minute, PURGE_STAGGER_MINUTES)
     receipts = receipts_schedule(config.receipts_every)
+    staff_push = staff_push_schedule(config.staff_push_every)
 
     def command(script: str, extra: str, log_name: str) -> str:
         return (
@@ -107,7 +124,8 @@ def build_block(config: OpsCronConfig) -> str:
         BEGIN_MARKER,
         (
             "# Generado por backend/ops_cron.py: acuses cada "
-            f"{config.receipts_every} min y purgas diarias a las "
+            f"{config.receipts_every} min, push del personal cada "
+            f"{config.staff_push_every} min y purgas diarias a las "
             f"{hour:02d}:{minute:02d} y {second_hour:02d}:{second_minute:02d}."
         ),
         f"{minute} {hour} * * * {command('purge_access_data.py', '', 'purge-access.log')}",
@@ -119,6 +137,7 @@ def build_block(config: OpsCronConfig) -> str:
             f"{receipts} "
             f"{command('sync_push_receipts.py', f' --limit {config.push_limit}', 'push-receipts.log')}"
         ),
+        f"{staff_push} {command('flush_staff_push.py', '', 'staff-push.log')}",
         END_MARKER,
     ]
     return "\n".join(lines) + "\n"
@@ -217,6 +236,7 @@ def _config_from_args(args: argparse.Namespace) -> OpsCronConfig:
         log_dir=Path(args.log_dir) if args.log_dir else app_dir / "logs",
         daily_at=args.daily_at,
         receipts_every=args.receipts_every,
+        staff_push_every=args.staff_push_every,
         push_limit=args.limit,
     )
 
@@ -225,8 +245,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Genera o instala el bloque de cron de las tareas de operación: "
-            "purga de accesos, purga de acuses de correo y consulta de acuses "
-            "del push."
+            "purga de accesos, purga de acuses de correo, consulta de acuses "
+            "del push y envío de la cola del push web del personal."
         )
     )
     action = parser.add_mutually_exclusive_group()
@@ -282,6 +302,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--staff-push-every",
+        type=int,
+        default=DEFAULT_STAFF_PUSH_EVERY,
+        help=(
+            "minutos entre envíos de la cola del push web del personal "
+            f"({MIN_STAFF_PUSH_EVERY} a 59, o 60; por defecto "
+            f"{DEFAULT_STAFF_PUSH_EVERY})"
+        ),
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=DEFAULT_PUSH_LIMIT,
@@ -322,8 +352,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {error}", file=sys.stderr)
         return 1
     print(
-        f"Bloque instalado en el crontab: acuses cada {config.receipts_every} min "
-        f"y purgas diarias desde las {config.daily_at}. Revisa con: crontab -l"
+        f"Bloque instalado en el crontab: acuses cada {config.receipts_every} min, "
+        f"push del personal cada {config.staff_push_every} min y purgas diarias "
+        f"desde las {config.daily_at}. Revisa con: crontab -l"
     )
     return 0
 

@@ -26,6 +26,7 @@ Las tres tareas comparten forma —un script de `backend/`, la misma `DATABASE_U
 - **Instalar exige que los tres scripts existan.** Antes de escribir, `--install` comprueba que `purge_access_data.py`, `purge_email_receipts.py` y `sync_push_receipts.py` estén en `--app-dir`; si falta alguno sale con código 2 y no toca el crontab. Así una carpeta equivocada se detecta al instalar y no a las tres de la mañana.
 - **Sin cron no hay instalación silenciosa.** Si el comando `crontab` no existe (Windows, un contenedor mínimo), el instalador explica que hay que instalar cron o usar `--print` para copiar el bloque en el programador del servidor, y sale con código 1. La vista previa local no programa nada.
 - **La pasada de acuses distingue su propio `--preview`.** El script acepta `--preview` y lo pasa a `sync_member_push_receipts(..., preview=...)`, que antes solo miraba `PREVIEW_MODE`; sin esa opción la corrida de vista previa decía «diferida» sin serlo. La variable de entorno sigue siendo el valor por defecto.
+- **Actualización de ADR-071 (2026-10-31).** El bloque pasó a cuatro entradas: `flush_staff_push.py` drena la cola del push web del personal cada 15 minutos por defecto (`--staff-push-every`, de 5 a 59 o 60) y escribe `staff-push.log`; `--install` exige también ese script. Lo demás de esta decisión no cambia.
 - **Cada tarea sigue siendo idempotente y sin estado compartido.** El cron no coordina nada: si una corrida tarda más que el intervalo, la siguiente corre igual. Las purgas borran lo que ya no aplica (una segunda pasada borra `0`) y la consulta de acuses no reescribe el estado de la entrega, así que una corrida solapada como mucho repite una consulta.
 
 ## Consecuencias y límites
@@ -42,9 +43,9 @@ Las tres tareas comparten forma —un script de `backend/`, la misma `DATABASE_U
 ## Referencias
 
 - `backend/ops_cron.py` (`build_block`, `replace_block`, `remove_block`, `--print`, `--install`, `--uninstall`)
-- `backend/purge_access_data.py`, `backend/purge_email_receipts.py`, `backend/sync_push_receipts.py`
+- `backend/purge_access_data.py`, `backend/purge_email_receipts.py`, `backend/sync_push_receipts.py`, `backend/flush_staff_push.py` (ADR-071)
 - `backend/src/app/modules/notifications/push_receipts.py` (`sync_member_push_receipts(..., preview=...)`)
-- `backend/tests/test_ops_cron.py` (24 pruebas)
+- `backend/tests/test_ops_cron.py` (29 pruebas)
 - `backend/tests/test_member_push_receipts.py` (12 pruebas, incluida la del `preview` explícito)
 - `docs/06-operacion/despliegue.md` (mantenimiento programado)
 - ADR-040 (retención del kiosco), ADR-058 (retención de los acuses del correo), ADR-062 (acuses de entrega del push)

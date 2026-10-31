@@ -27,7 +27,7 @@ La deuda técnica y el estado del proyecto venían anotando «los avisos push de
 - **Sin horario de silencio ni preferencias por tipo o por navegador.** Todos los avisos del personal suenan en cada navegador activo; apagar uno exige desactivar esa suscripción. Un socio silenciado no afecta al personal.
 - **Rotar la clave VAPID invalida todos los navegadores registrados**: las suscripciones viejas fallan con error del servicio de push y hay que volver a activarlas desde cada navegador. No hay aviso previo de la rotación.
 - **El navegador puede perder la suscripción** si el usuario borra los datos del sitio o el servicio de push la revoca; el panel no detecta la pérdida hasta el siguiente envío fallido.
-- **No hay planificador**: la pasada viaja con las peticiones que crean avisos o vacían la cola; un aviso creado por una tarea externa que no dispare el gancho espera al siguiente envío manual o a la siguiente lectura que lo dispare.
+- **El planificador llegó después (ADR-071)**: la pasada viaja con las peticiones que crean avisos o vacían la cola, y las entregas que un proceso caído dejó `pending` se drenan desde el cron con `backend/flush_staff_push.py`; las `failed` siguen esperando a una persona.
 - **Los permisos son de la operación, no del canal**: cualquier cuenta autenticada puede activar su navegador, pero solo `attendance.read` ve la cola y solo `attendance.manage` envía o reintenta. Un entrenador sin esos permisos recibe los avisos que le corresponden y no ve la operación de los demás.
 
 ## Referencias
