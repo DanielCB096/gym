@@ -115,6 +115,16 @@ El perfil `preview` de `eas.json` produce un APK instalable y activa la tarjeta 
 
 El perfil `production` no define `EXPO_PUBLIC_PUSH_TEST` ni `ALLOW_CLEARTEXT`, así que una build de tienda no muestra la tarjeta y no permite HTTP en claro. La escucha del toque y el arranque en frío no se pueden probar en Expo web.
 
+## Push real con FCM
+
+El backend envía al servicio de Expo (`https://exp.host/--/api/v2/push/send`), así que la única configuración de Firebase vive en el cliente y en EAS:
+
+1. En Firebase Console, crea el proyecto y agrega una app Android con el paquete `com.centrofit.socio`. Descarga `google-services.json` y guárdalo **fuera del repositorio** (por ejemplo `C:\Users\PC\firebase\google-services.json`).
+2. En Firebase, **Configuración del proyecto → Cuentas de servicio → Generar nueva clave privada**. Ese JSON es un secreto: nunca se versiona.
+3. Sube `google-services.json` como variable de archivo del entorno `preview` (`GOOGLE_SERVICES_JSON`): `npx eas-cli env:create --environment preview --name GOOGLE_SERVICES_JSON --type file --value <ruta> --visibility sensitive --non-interactive`. `app.config.ts` la usa como `android.googleServicesFile`; sin la variable el build sigue sin push.
+4. Sube la clave de servicio a EAS: panel del proyecto → **Credentials → Android → FCM V1 service account key → Add key**, o `npx eas-cli credentials` (Android → Google Service Account → Upload new key). EAS la guarda y no entra al repositorio.
+5. Rebuild `preview` e instala. Al iniciar sesión la app pide permiso de avisos y registra el token de Expo; un aviso generado por el backend (por ejemplo, reservar una clase) debe llegar al teléfono con la app cerrada.
+
 ## Flujo de acceso
 
 1. `POST /member/auth/request-code` con `{ "email": "..." }` responde `202` siempre (correo desconocido o inactivo incluido) y, solo en vista previa, devuelve `preview_code`.
