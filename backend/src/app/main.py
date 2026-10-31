@@ -504,6 +504,7 @@ from app.modules.notifications.push import (
     retry_member_push_delivery,
     send_pending_member_push_deliveries,
     send_pending_member_push_deliveries_from_engine,
+    validate_push_quiet_window,
 )
 from app.modules.portal.classes import (
     MemberClassItem,
@@ -2673,6 +2674,7 @@ class MemberPushDeliveryPassResponse(BaseModel):
     deactivated: int
     retried: int
     remaining: int
+    deferred: bool
 
 
 class EmailDeliveryReceiptResponse(BaseModel):
@@ -3623,6 +3625,7 @@ def _kiosk_device_response(device: KioskDevice) -> KioskDeviceResponse:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_club_timezone()
+    validate_push_quiet_window()
     if PREVIEW_MODE:
         if engine is None or not DATABASE_URL or not DATABASE_URL.startswith("sqlite"):
             raise RuntimeError("Preview mode requires a SQLite DATABASE_URL")
@@ -4796,7 +4799,9 @@ def send_member_push_deliveries(
     session: SessionDependency,
     flush: AttendanceEmailFlush,
 ) -> MemberPushDeliveryPassResponse:
-    result = send_pending_member_push_deliveries(session)
+    result = send_pending_member_push_deliveries(
+        session, override_quiet_hours=True
+    )
     return MemberPushDeliveryPassResponse(
         attempted=result.attempted,
         sent=result.sent,
@@ -4805,6 +4810,7 @@ def send_member_push_deliveries(
         deactivated=result.deactivated,
         retried=result.retried,
         remaining=result.remaining,
+        deferred=result.deferred,
     )
 
 

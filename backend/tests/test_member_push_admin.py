@@ -293,6 +293,7 @@ def test_push_delivery_queue_api(monkeypatch) -> None:
                 "deactivated": 0,
                 "retried": 0,
                 "remaining": 1,
+                "deferred": False,
             }
 
             failed_board = client.get(

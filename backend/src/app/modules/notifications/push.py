@@ -15,7 +15,7 @@ the SMTP transport, so a demo never reaches a real device.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 import os
 from uuid import UUID
 
@@ -25,6 +25,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
 from app.mailer import preview_mode
+from app.timezone import to_club_timezone
 from app.modules.memberships.models import Member
 from app.modules.notifications.models import (
     MAX_PUSH_TOKEN_CHARS,
@@ -54,6 +55,13 @@ PUSH_RETRY_BACKOFF = (timedelta(minutes=1), timedelta(minutes=5))
 FAILURE_ALERT_PERMISSION = "attendance.manage"
 EXPO_TOKEN_PREFIXES = ("ExponentPushToken[", "ExpoPushToken[")
 UNREGISTERED_ERROR = "DeviceNotRegistered"
+# Silence window: the club can keep the phone from ringing overnight. Two
+# "HH:MM" env vars in club-local time (APP_TIMEZONE), both required; unset, an
+# empty (start == end) or malformed-after-startup-check window means no silence.
+# The automatic pass defers inside the window and retries later; the panel's
+# manual send and the manual retry do not: a person took that decision.
+QUIET_START_ENV = "MEMBER_PUSH_QUIET_START"
+QUIET_END_ENV = "MEMBER_PUSH_QUIET_END"
 
 
 class PushError(Exception):
@@ -99,6 +107,7 @@ class MemberPushPass:
     deactivated: int
     retried: int
     remaining: int
+    deferred: bool = False
 
 
 @dataclass(frozen=True)
@@ -533,16 +542,89 @@ def _retry_due(now: datetime):
     )
 
 
+def _parse_hour_minute(name: str, value: str | None) -> time | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%H:%M").time()
+    except ValueError as error:
+        raise ValueError(
+            f"{name} debe tener el formato HH:MM (00:00-23:59); recibí {text!r}."
+        ) from error
+
+
+def parse_push_quiet_window() -> tuple[time, time] | None:
+    """The club's silence window for member pushes, or ``None`` without one.
+
+    The two variables live together: setting only one is a mistake the
+    operator must fix, because a half-configured window would push at night
+    while looking silenced.
+    """
+
+    start = _parse_hour_minute(QUIET_START_ENV, os.getenv(QUIET_START_ENV))
+    end = _parse_hour_minute(QUIET_END_ENV, os.getenv(QUIET_END_ENV))
+    if (start is None) != (end is None):
+        raise ValueError(
+            f"{QUIET_START_ENV} y {QUIET_END_ENV} se definen juntas: "
+            "pon las dos o quita las dos."
+        )
+    if start is None or end is None or start == end:
+        return None
+    return start, end
+
+
+def validate_push_quiet_window() -> None:
+    """Startup check: a malformed window stops the process instead of leaving the night unsilenced."""
+
+    parse_push_quiet_window()
+
+
+def _in_quiet_window(start: time, end: time, moment: time) -> bool:
+    """A window that crosses midnight (22:00–07:00) wraps around."""
+
+    if start < end:
+        return start <= moment < end
+    return moment >= start or moment < end
+
+
 def send_pending_member_push_deliveries(
     session: Session,
     *,
     limit: int = DEFAULT_SEND_BATCH_LIMIT,
+    override_quiet_hours: bool = False,
     now: datetime | None = None,
 ) -> MemberPushPass:
-    """Send the oldest pending pushes and the retries that are due, at most ``limit``."""
+    """Send the oldest pending pushes and the retries that are due, at most ``limit``.
+
+    The club switch is re-checked here, not only when the push was queued:
+    during the silence window this pass does not contact the push service, so a
+    notice queued at night waits until the window ends — the first pass after
+    it sends it, and the due retries are already covered by ``next_attempt_at``
+    being in the past. The panel's manual send and the manual retry are
+    deliberate operator decisions and take ``override_quiet_hours``/their own
+    path instead of waiting. Preview mode ignores the window: a simulation
+    never rings a phone, so a demo keeps showing a complete flow.
+    """
 
     occurred = _as_utc(now or utc_now())
     batch = max(1, min(limit, MAX_SEND_BATCH_LIMIT))
+    if not override_quiet_hours and not preview_mode():
+        window = parse_push_quiet_window()
+        if window is not None and _in_quiet_window(
+            window[0], window[1], to_club_timezone(occurred).time()
+        ):
+            return MemberPushPass(
+                attempted=0,
+                sent=0,
+                simulated=0,
+                failed=0,
+                deactivated=0,
+                retried=0,
+                remaining=_remaining_count(session),
+                deferred=True,
+            )
+
     rows = list(
         session.exec(
             select(MemberPushDelivery)
@@ -789,6 +871,8 @@ __all__ = [
     "PushError",
     "PushMemberNotFound",
     "PushTokenUnregistered",
+    "QUIET_END_ENV",
+    "QUIET_START_ENV",
     "RETRYABLE_DELIVERY_STATUSES",
     "clean_push_token",
     "deactivate_member_push_token",
@@ -796,9 +880,11 @@ __all__ = [
     "list_member_push_deliveries",
     "mask_push_token",
     "member_push_delivery_counts",
+    "parse_push_quiet_window",
     "register_member_push_token",
     "retry_member_push_delivery",
     "send_expo_push",
     "send_pending_member_push_deliveries",
     "send_pending_member_push_deliveries_from_engine",
+    "validate_push_quiet_window",
 ]

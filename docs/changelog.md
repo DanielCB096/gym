@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-31 · Avisos: horario de silencio del push del socio
+
+- **Una ventana por club, en hora local**: `MEMBER_PUSH_QUIET_START` y `MEMBER_PUSH_QUIET_END` (formato `HH:MM`) se interpretan en `APP_TIMEZONE` —`America/Mexico_City` por defecto— y pueden cruzar medianoche (`22:00`–`07:00`). Sin variables, con las dos iguales o vacías no hay silencio; definir solo una es un error con el nombre de la variable, y el arranque llama a `validate_push_quiet_window()` junto a la comprobación de zona horaria para detener un arranque mal configurado.
+- **La pasada automática pospone, no descarta**: dentro de la ventana `send_pending_member_push_deliveries` no contacta al servicio de push (`deferred: true` en la pasada), las filas quedan como están y la primera pasada posterior envía pendientes y reintentos que vencieron de madrugada. Nada se borra ni cambia de estado.
+- **La decisión del operador no espera**: el envío manual de la tarjeta «Push del socio» manda `override_quiet_hours=True` y el reintento manual va por su propio camino; la respuesta del envío publica `deferred`. La vista previa ignora la ventana: simular nunca suena.
+- **Sin migración**: la ventana vive en la configuración del proceso junto a las demás variables del canal (`RECEIPT_MAX_AGE`, `STAFF_RECEIPT_RETENTION_DAYS`); cambiarla exige reiniciar el backend. El panel todavía no anuncia que hay silencio.
+- **Pruebas**: 13 casos nuevos en `test_member_push_quiet_hours.py` —parseo con y sin cruza de medianoche, configuración a medias, horas mal escritas, diferimiento, fin de ventana, reintento vencido en la noche, envío manual, reintento manual, vista previa, ausencia de ventana y horas después de medianoche—. Suite en **386 pruebas**: 381 pasan y las 5 de PostgreSQL se omiten sin `TEST_POSTGRES_URL`.
+- **Documentación**: ADR-061, deuda técnica, plan de pruebas, README, módulo de avisos del socio, traspaso y este changelog.
+
 ## 2026-10-31 · Avisos: navegación al tocar la notificación push
 
 - **Un mapa de tipos a pantalla**: `notificationRouting.ts` decide el destino de los 18 tipos —facturas, clases, fisioterapia, rutinas, inicio— y devuelve la bandeja para cualquier tipo desconocido. La bandeja y el push comparten el mapa, así que tocar el aviso en cualquiera de los dos abre lo mismo.
