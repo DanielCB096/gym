@@ -10,7 +10,8 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_PUSH_TEST": "true"
+        "EXPO_PUBLIC_PUSH_TEST": "true",
+        "ALLOW_CLEARTEXT": "true"
       }
     },
     "production": {}
