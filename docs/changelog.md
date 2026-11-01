@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-01 · Pruebas: custodia de la higiene de fechas
+
+- Se cerró el **dictamen de fechas** que quedó abierto con la corrección de los dos regresores conocidos: el inventario de `date(...)`, `datetime(...)` y cadenas ISO en `backend/tests` deja **108 fechas literales de 2026 en 32 archivos**, cinco fuera de 2026 (todas intencionales) y **once archivos que mezclan literales con lecturas del reloj real**. La barrida encontró cuatro caducidades más de la misma clase —dos kioscos que se ponían rojos el 2026-11-06 y el 2026-11-08, una ventana de conciliación que caducaba el 2026-11-06 y la siembra del script de purga de bandeja que caducaba el 2027-10-30— y las corrigió.
+- Se añadió `backend/tests/test_date_hygiene_guard.py`, que prohíbe que una misma prueba de siembra con un instante congelado y lea el reloj real. Las tres mezclas ya dictaminadas (dos de `test_attendance_requests.py` y la de `test_routines_api.py`) están en una lista de permitidos que también se vigila a sí misma: una entrada obsoleta, un motivo corto o una clave mal formada fallan.
+- Límite documentado: la custodia ve la mezcla dentro del cuerpo de la función, no cuando el reloj lo lee un auxiliar del mismo archivo; la variante con cierre de auxiliares se midió (12 funciones, once seguras) y quedó fuera por ruido.
+- Validación: suite backend **635 pruebas: 627 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL`. La custodia se verificó por mutación con cinco mutaciones y cinco fallos, incluida la reintroducción del bug de conciliación; los archivos mutados se restauraron byte a byte.
+
+## 2026-11-01 · Cobranza: el enfriamiento del recordatorio acepta su instante
+
+- `send_member_account_reminders` y `send_member_account_statement` en `backend/src/app/modules/inventory/statements.py` reciben `now=`: el mismo instante mide el enfriamiento de siete días y sella la fila nueva de `member_account_statement_delivery`, porque contar con uno y sellar con el otro hacía la frontera irrecorrible desde una prueba. Las rutas y el CLI siguen llamando sin `now` y obtienen el reloj real.
+- `test_collection_reminders_api.py` estrenó la prueba de la frontera: seis días y 23:59:59 dejan el recordatorio en `skipped` con el motivo de los siete días, el séptimo día exacto vuelve a enviarlo y una entrega marcada `failed` no abre el enfriamiento.
+- Validación: suite backend **633 pruebas: 625 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL`; las tres mutaciones que rompen la costura (contar contra el reloj de la sala, sellar con `utc_now()` o no pasar el instante al envío) producen tres fallos.
+
 ## 2026-11-01 · App móvil: actualizar parches de Expo y React Native
 
 - Se actualizó Expo de `58.0.20` a `58.0.22` y React Native de `0.88.0` a `0.88.1`, permaneciendo en el SDK 58. El parche renovó dependencias transitivas y eliminó los dos avisos altos que reportaba `npm audit`; no se forzó ningún downgrade de Expo.
