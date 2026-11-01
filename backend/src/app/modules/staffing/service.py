@@ -596,6 +596,7 @@ def void_attendance_mark(
     commit: bool = True,
     notify_employee: bool = True,
     attendance_request_id: UUID | None = None,
+    now: datetime | None = None,
 ) -> StaffAttendance:
     """Remove a mark that should never have been recorded.
 
@@ -607,6 +608,11 @@ def void_attendance_mark(
 
     ``commit=False`` exists for the request approval, which records the decision
     in the same transaction.
+
+    ``now`` is the instant the annulment is stamped with. The approval passes its
+    own so the decision and the annulment it applies carry one timestamp instead
+    of two reads of the clock; the annulment report filters by that stamp, so a
+    caller that fixes it can pin the window the report will find it in.
     """
     if mark not in VOIDABLE_MARKS:
         raise ValueError("Unsupported attendance mark")
@@ -643,7 +649,7 @@ def void_attendance_mark(
     if shift is None or shift.status != "scheduled" or actor is None or actor.status != "active":
         raise ShiftNotAvailable("Scheduled shift and active user are required")
 
-    now = utc_now()
+    now = _as_utc(now or utc_now())
     if mark == "check_out":
         if record.check_out_at is None:
             raise AttendanceMarkMissing("Attendance has no check-out to void")
@@ -900,6 +906,7 @@ def decide_attendance_request(
     actor_id: UUID,
     decision: str,
     note: str | None = None,
+    now: datetime | None = None,
 ) -> StaffAttendanceRequest:
     """Approve or reject a request; approval applies the change in one transaction.
 
@@ -907,6 +914,10 @@ def decide_attendance_request(
     so the mark's event log stays identical to a change made directly from the
     panel and the decision lands with it or not at all. The pending notices to
     the supervisors close here and the employee is told the outcome.
+
+    One instant is read here and handed to everything this transaction stamps —
+    the annulment event included — so the decision and the change it approves
+    cannot disagree by however long the clock moved between the two reads.
     """
     if decision not in ("approved", "rejected"):
         raise ValueError("Unsupported attendance request decision")
@@ -928,7 +939,7 @@ def decide_attendance_request(
         # themselves; that would turn the request into a self-service edit.
         raise AttendanceRequestNotAllowed("Nobody can decide their own attendance request")
 
-    now = utc_now()
+    now = _as_utc(now or utc_now())
     if decision == "approved":
         reason = f"Solicitud del colaborador: {request.justification}"
         if notes:
@@ -957,6 +968,7 @@ def decide_attendance_request(
                 commit=False,
                 notify_employee=False,
                 attendance_request_id=request.id,
+                now=now,
             )
 
     request.status = decision

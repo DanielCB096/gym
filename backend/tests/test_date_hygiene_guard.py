@@ -40,17 +40,6 @@ FROZEN_ISO = re.compile(r"""\b(?:19|20)\d\d-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3
 # Mezclas ya dictaminadas: la función lee el reloj real y siembra con un instante
 # congelado, y se comprobó que la comparación no depende del calendario.
 ALLOWED: dict[str, str] = {
-    "test_attendance_requests.py::test_approved_void_request_links_the_log_and_the_csv_export": (
-        "El turno se planta contra la constante congelada `START`, pero la ventana del "
-        "reporte mide los eventos de anulación, que sellan `utc_now()` dentro del "
-        "servicio cuando la misma prueba los provoca. La fecha del turno nunca entra "
-        "en la comparación, así que el caso no caduca."
-    ),
-    "test_attendance_requests.py::test_annulment_report_groups_by_operator": (
-        "Igual que la anterior: `list_attendance_annulments` filtra por «ahora ± 1 hora» "
-        "sobre anulaciones selladas por el servicio en la misma corrida, no sobre la "
-        "fecha congelada del turno."
-    ),
     "test_routines_api.py::test_assignments_and_workouts": (
         "`PAST` viaja como payload válido —un pasado siempre es pasado— y `date.today()` "
         "se usa a propósito para probar que un entrenamiento no puede ser anterior a su "
@@ -75,16 +64,33 @@ def _without_comments(source: str) -> list[str]:
 
 
 def _module_frozen_names(lines: list[str]) -> set[str]:
-    """Nombres de módulo que congelan un instante, como `START = datetime(2026, …)`."""
+    """Nombres de módulo que congelan un instante.
+
+    Cuenta el literal directo (`START = datetime(2026, …)`) y todo lo que se
+    derive de él (`VOIDED_AT = START + timedelta(days=30)`): una constante hija
+    sigue siendo la misma fecha congelada con otro nombre. Se itera hasta que no
+    crece porque una hija puede estar escrita antes que su madre.
+    """
     tree = ast.parse("\n".join(lines))
-    names: set[str] = set()
+    assignments: list[tuple[set[str], set[str], bool]] = []
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
         segment = "\n".join(lines[node.lineno - 1 : (node.end_lineno or node.lineno)])
-        if FROZEN_CALL.search(segment) or FROZEN_ISO.search(segment):
-            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
-    return names
+        targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
+        sources = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+        frozen_literal = bool(FROZEN_CALL.search(segment) or FROZEN_ISO.search(segment))
+        assignments.append((targets, sources, frozen_literal))
+
+    names = {name for targets, _, literal in assignments if literal for name in targets}
+    while True:
+        grown = set(names)
+        for targets, sources, _ in assignments:
+            if sources & names:
+                grown |= targets
+        if grown == names:
+            return names
+        names = grown
 
 
 def _body(lines: list[str], function: ast.FunctionDef | ast.AsyncFunctionDef) -> str:

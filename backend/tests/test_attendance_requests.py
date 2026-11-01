@@ -41,6 +41,16 @@ from app.modules.staffing.service import (
 
 START = datetime(2026, 10, 16, 14, 0, tzinfo=timezone.utc)
 
+# El instante al que se sella una anulación cuando la prueba lo fija. La ventana
+# del reporte de anulaciones se mide sobre este sello, no sobre la fecha del
+# turno, así que siembra y lectura quedan ancladas al mismo reloj.
+VOIDED_AT = START + timedelta(days=30)
+
+
+def _aware(value: datetime) -> datetime:
+    """SQLite devuelve ingenuos los `datetime` de columna: los compara UTC."""
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
 
 def seed_employee_with_account(session: Session) -> tuple[Employee, AppUser, AppUser]:
     ensure_default_access_control(session)
@@ -286,6 +296,7 @@ def test_approved_void_request_links_the_log_and_the_csv_export(session: Session
         request_id=request.id,
         actor_id=manager.id,
         decision="approved",
+        now=VOIDED_AT,
     )
     void_event = next(
         event
@@ -295,6 +306,10 @@ def test_approved_void_request_links_the_log_and_the_csv_export(session: Session
     # The applied change points back at the request that asked for it.
     assert void_event.attendance_request_id == request.id
     assert void_event.reason == f"Solicitud del colaborador: {request.justification}"
+    # The annulment carries the decision's instant: one read of the clock for the
+    # whole transaction, not one for the decision and another for the mark it
+    # applies. Read from the row, because the report is filtered by this stamp.
+    assert _aware(void_event.occurred_at) == VOIDED_AT
 
     # A void made straight from the panel keeps the link empty.
     direct = seed_attendance(session, employee.id, manager.id, day_offset=1)
@@ -305,12 +320,17 @@ def test_approved_void_request_links_the_log_and_the_csv_export(session: Session
         request_id=uuid4(),
         mark="check_in",
         reason="Entrada duplicada por el lector",
+        now=VOIDED_AT + timedelta(minutes=5),
     )
 
     report = list_attendance_annulments(
-        session, from_at=datetime.now(timezone.utc) - timedelta(hours=1)
+        session, from_at=VOIDED_AT - timedelta(hours=1)
     )
     assert [item.attendance_request_id for item in report.items] == [None, request.id]
+    assert [_aware(item.occurred_at) for item in report.items] == [
+        VOIDED_AT + timedelta(minutes=5),
+        VOIDED_AT,
+    ]
 
     table = attendance_annulments_export(report, days=30)
     assert table.title.endswith("30 días")
@@ -568,6 +588,7 @@ def test_annulment_report_groups_by_operator(session: Session) -> None:
         request_id=uuid4(),
         mark="check_out",
         reason="La salida era de otro día",
+        now=VOIDED_AT,
     )
 
     second = seed_attendance(session, employee.id, manager.id, late_minutes=2, day_offset=1)
@@ -578,12 +599,16 @@ def test_annulment_report_groups_by_operator(session: Session) -> None:
         request_id=uuid4(),
         mark="check_in",
         reason="Se marcó en el turno equivocado",
+        now=VOIDED_AT + timedelta(minutes=2),
     )
 
-    # The report filters by when the annulment was made, not by the shift date.
-    now = datetime.now(timezone.utc)
+    # The report filters by when the annulment was made, not by the shift date —
+    # and both annulments carry exactly the instant the test handed the service,
+    # so the window below is measured on the same clock as the rows it selects.
     report = list_attendance_annulments(
-        session, from_at=now - timedelta(hours=1), to_at=now + timedelta(hours=1)
+        session,
+        from_at=VOIDED_AT - timedelta(hours=1),
+        to_at=VOIDED_AT + timedelta(hours=1),
     )
     assert report.total == 2
     summary = {row.actor_id: (row.check_ins, row.check_outs, row.total) for row in report.by_operator}
@@ -591,14 +616,18 @@ def test_annulment_report_groups_by_operator(session: Session) -> None:
     assert {row.event_type for row in report.items} == {"attendance_voided", "check_out_voided"}
     assert {row.employee_name for row in report.items} == {"Lucía Mendoza"}
     assert all(row.reason for row in report.items)
+    assert [row.occurred_at for row in report.items] == [
+        VOIDED_AT + timedelta(minutes=2),
+        VOIDED_AT,
+    ]
 
     only_manager = list_attendance_annulments(
-        session, from_at=now - timedelta(hours=1), actor_id=manager.id
+        session, from_at=VOIDED_AT - timedelta(hours=1), actor_id=manager.id
     )
     assert only_manager.total == 1
     assert only_manager.items[0].event_type == "check_out_voided"
 
-    outside = list_attendance_annulments(session, from_at=now + timedelta(days=3))
+    outside = list_attendance_annulments(session, from_at=VOIDED_AT + timedelta(days=3))
     assert outside.total == 0 and outside.by_operator == []
 
 

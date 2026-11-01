@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-01 · Jornada: la anulación acepta su instante
+
+- `void_attendance_mark` y `decide_attendance_request` (`backend/src/app/modules/staffing/service.py`) reciben `now=`; la aprobación sella la anulación que aplica con su propio instante, así que la decisión y el cambio que aprueba ya no se separan por dos lecturas del reloj.
+- Las dos pruebas de anulaciones de `test_attendance_requests.py` fijan el sello en `VOIDED_AT` (la congelada del turno más 30 días) y lo exigen exacto en la bitácora y en el orden del reporte, que se mide sobre ese sello y no sobre la fecha del turno.
+- La custodia de higiene de fechas (`backend/tests/test_date_hygiene_guard.py`) pasa de tres mezclas permitidas a una y ahora también reconoce alias de una constante congelada (`VOIDED_AT = START + timedelta(days=30)`), el ciego que le quedaba sobre las constantes de módulo.
+- `backend/src/app/main.py` no cambia: las rutas siguen llamando sin `now` y obtienen el reloj de la sala.
+- Validación: suite backend **637 pruebas: 629 aprobadas y 8 omitidas**, sin funciones de prueba nuevas; cuatro mutaciones del servicio producen cuatro fallos y la regla transitiva se verificó con un archivo sintético fuera de `tests/`. Cada archivo mutado se restauró byte a byte.
+
 ## 2026-11-01 · Socios: la ventana «por vencer» acepta su instante
 
 - `_member_state_condition` en `backend/src/app/modules/memberships/service.py` leía `utc_now()` por dentro y no aceptaba un instante: era el último ciego que quedó del dictamen de fechas, y el único punto abierto de `docs/deuda-tecnica.md` sobre este tema. Ahora recibe `now=` y `list_member_overview` también, de modo que la prueba puede fijar el calendario.
