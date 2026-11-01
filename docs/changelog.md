@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-31 · Facturación: proteger el script demo de Finkok contra producción accidental
+
+- Se añadieron pruebas offline para asegurar que la configuración por defecto use el demo, que `PAC_PRODUCTION=true` y una URL personalizada no redirijan silenciosamente la prueba, y que producción requiera ambas confirmaciones explícitas (`--production --confirm-production`).
+- Validación local: `finkok_demo.py --dry-run` generó el XML con datos sintéticos sin contactar al PAC; las 22 pruebas del script y adaptador Finkok pasaron.
+
 ## 2026-10-31 · Avisos: cierre del aviso de ticket al cerrar el ticket (ADR-080)
 
 - `maintenance_ticket_assigned` se sumó a `CLOSABLE_STAFF_KINDS`: la insignia y `unread_total` del panel cuentan el aviso mientras el ticket siga abierto, aunque el técnico ya lo haya leído. Leer el aviso deja de vaciar la campana; solo el cierre del ticket lo saca.

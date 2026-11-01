@@ -10,6 +10,8 @@ from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from app.modules.billing import cfdi
 from app.modules.billing.cfdi import CFDI_NS, IssuerConfig
 
@@ -115,3 +117,52 @@ def test_placeholder_issuer_is_reported_before_stamping() -> None:
 
     assert any("GYM_RFC" in problem for problem in problems)
     assert any("GYM_POSTAL_CODE" in problem for problem in problems)
+
+
+def test_demo_target_is_the_default_without_production_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PAC_BASE_URL", raising=False)
+    monkeypatch.delenv("PAC_PRODUCTION", raising=False)
+
+    target, production = finkok_demo._guard_target(finkok_demo._parse_args([]))
+
+    assert target == finkok_demo.DEMO_BASE_URL
+    assert production is False
+
+
+def test_environment_cannot_redirect_demo_script_to_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_PRODUCTION", "true")
+    args = finkok_demo._parse_args([])
+
+    with pytest.raises(finkok_demo.DemoFailure, match="--production --confirm-production"):
+        finkok_demo._guard_target(args)
+
+
+def test_production_flag_requires_second_explicit_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PAC_BASE_URL", raising=False)
+    monkeypatch.delenv("PAC_PRODUCTION", raising=False)
+
+    with pytest.raises(finkok_demo.DemoFailure, match="--confirm-production"):
+        finkok_demo._guard_target(finkok_demo._parse_args(["--production"]))
+
+    target, production = finkok_demo._guard_target(
+        finkok_demo._parse_args(["--production", "--confirm-production"])
+    )
+
+    assert target == finkok_demo.PRODUCTION_BASE_URL
+    assert production is True
+
+
+def test_custom_non_demo_url_requires_explicit_production_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAC_BASE_URL", "https://pac.example.test")
+    args = finkok_demo._parse_args([])
+
+    with pytest.raises(finkok_demo.DemoFailure, match="apunta fuera del demo"):
+        finkok_demo._guard_target(args)
