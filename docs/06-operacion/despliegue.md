@@ -25,7 +25,7 @@ La validación del paso 2 incluye el job `migrations`: aplica la cadena Alembic 
 
 ## Mantenimiento programado
 
-La purga de los datos operativos, la consulta de acuses, la cola del push web del personal, la cola de correo del personal, la retención de la bandeja, los avisos diferidos y el cierre del día de fisioterapia **no corren solas**: no hay programador dentro de la aplicación y dependen del cron del servidor. El bloque de las nueve tareas se genera desde el repositorio con `backend/ops_cron.py` (ADR-063); no se copia a mano.
+La purga de los datos operativos, la consulta de acuses, las colas de push y correo del personal, la cola de correo del socio, la retención de la bandeja, los avisos diferidos y el cierre del día de fisioterapia **no corren solas**: no hay programador dentro de la aplicación y dependen del cron del servidor. El bloque de las diez tareas se genera desde el repositorio con `backend/ops_cron.py` (ADR-063 y ADR-081); no se copia a mano.
 
 Primero se revisa lo que se va a escribir y después se instala, con el usuario de la aplicación y después del respaldo:
 
@@ -36,7 +36,7 @@ DATABASE_URL="postgresql+psycopg://gym:...@db:5432/gym" .venv/bin/python ops_cro
 ```
 
 - `--print` es el valor por defecto y no toca nada: imprime el bloque delimitado por `# BEGIN gimnasio-ops` / `# END gimnasio-ops`. **No pegues esa salida con una URL real en un ticket ni en un chat**: la URL de la base queda escrita en el crontab del usuario, que el propio cron protege con modo `600`.
-- `--install` crea la carpeta de bitácoras (`<backend>/logs` por defecto), comprueba que los nueve scripts existan y **reemplaza** el bloque marcado en el crontab del usuario actual; las demás entradas se conservan. Volver a instalarlo con los mismos valores deja el crontab igual, así que cambiar la contraseña de la base o mover la carpeta se resuelve reinstalando, no editando a mano.
+- `--install` crea la carpeta de bitácoras (`<backend>/logs` por defecto), comprueba que los diez scripts existan y **reemplaza** el bloque marcado en el crontab del usuario actual; las demás entradas se conservan. Volver a instalarlo con los mismos valores deja el crontab igual, así que cambiar la contraseña de la base o mover la carpeta se resuelve reinstalando, no editando a mano.
 - `--uninstall` retira solo el bloque marcado y deja el resto del crontab intacto.
 - Sin el comando `crontab` (Windows, un contenedor mínimo) la instalación no inventa un programador: explica que hay que instalar cron o usar `--print` y sale con código 1.
 - Las horas son **locales del servidor**: el cron no interpreta `APP_TIMEZONE`. Fija la zona del host o ajusta `--daily-at` al desplegar.
@@ -53,6 +53,7 @@ Valores por defecto y banderas:
 | Acuses del push | cada 30 minutos (`*/30`) | `sync_push_receipts.py --limit 200` | `logs/push-receipts.log` |
 | Push web del personal | cada 15 minutos (`*/15`) | `flush_staff_push.py` | `logs/staff-push.log` |
 | Correo del personal | cada 15 minutos (`*/15`) | `flush_staff_email.py` | `logs/staff-email.log` |
+| Correo del socio | cada 15 minutos (`*/15`) | `flush_member_email.py` | `logs/member-email.log` |
 | Avisos diferidos y su push | cada 60 minutos (`0 * * * *`) | `emit_deferred_notices.py` | `logs/deferred-notices.log` |
 
 - `--daily-at HH:MM` mueve la primera purga; la de acuses del correo queda 30 minutos después, la del push 60 y la de la bandeja 90, para no solaparse.
@@ -60,6 +61,7 @@ Valores por defecto y banderas:
 - `--receipts-every` acepta de 5 a 59 minutos (`*/N`) o 60 (`0 * * * *`): un acuse de Expo vence a las 24 horas, así que no se programa a diario.
 - `--staff-push-every` acepta de 5 a 59 minutos (`*/N`) o 60 (`0 * * * *`): una entrega pendiente del push web del personal se drena en la siguiente corrida; 15 minutos por defecto.
 - `--staff-email-every` acepta de 5 a 59 minutos (`*/N`) o 60 (`0 * * * *`): un correo del personal atorado en `pending` se drena en la siguiente corrida; 15 minutos por defecto.
+- `--member-email-every` acepta de 5 a 59 minutos (`*/N`) o 60 (`0 * * * *`): recupera correos de socios pendientes y reintentos cuyo backoff ya venció; 15 minutos por defecto.
 - `--notices-every` acepta de 5 a 59 minutos (`*/N`) o 60 (`0 * * * *`): una pasada al día no basta para los recordatorios de clase de 24 y 2 horas; 60 minutos por defecto.
 - `--limit` va de 1 a 1000 tickets por corrida (el tope de Expo); 200 por defecto.
 - `--app-dir`, `--python`, `--log-dir` y `--database-url` ajustan la ruta del backend, el intérprete, la carpeta de bitácoras y la URL sin depender del entorno.
@@ -73,10 +75,17 @@ Qué hace cada tarea:
 - `sync_push_receipts.py` no borra nada: pregunta a Expo por los tickets de los push `sent` y escribe su acuse en `member_push_delivery_receipts` (ADR-062). Un acuse con error distinto de `DeviceNotRegistered` deja un aviso `member_push_receipt_failed` para quien opera la cola y el script drena la cola de correos al terminar, porque el cron no tiene una respuesta donde colgarla (ADR-064). Acepta `--database-url`, `--limit` y `--preview`; en vista previa informa la pasada como diferida porque no hay tickets reales. Un fallo de Expo interrumpe la corrida sin escribir acuses y la siguiente la retoma.
 - `flush_staff_push.py` envía las entregas `pending` del push web del personal que un proceso caído dejó sin mandar (ADR-070): usa la misma pasada del gancho, con el compare-and-set sobre `attempts`, y **no reintenta las `failed`** —esas siguen esperando a una persona— (ADR-071). Acepta `--database-url`, `--limit` (1 a 100, 20 por defecto) y `--preview`, que usa `gym_preview.db` y simula las entregas sin contactar al servicio de push. Sin URL sale con código 2 y una base inalcanzable con código 1.
 - `flush_staff_email.py` envía las entregas de correo del personal que quedaron `pending` cuando el proceso murió antes de la pasada que viaja con la respuesta (ADR-079): usa la misma pasada del gancho y del botón «Enviar pendientes», con el compare-and-set sobre `attempts`, y **no reintenta las `failed`** —esas siguen esperando a una persona—. Respeta el interruptor del club al drenar: con el correo apagado no envía nada y deja las filas pendientes. Acepta `--database-url`, `--limit` (1 a 100, 20 por defecto) y `--preview`, que usa `gym_preview.db` y marca las entregas como simuladas sin contactar al servidor de correo. Sin URL sale con código 2 y una base inalcanzable con código 1.
+- `flush_member_email.py` recupera los correos de socios que quedaron pendientes y reintenta los fallos cuyo backoff venció (ADR-081), con un máximo de cinco intentos por entrega. Antes de conectarse a SMTP vuelve a comprobar el consentimiento y que la dirección siga coincidiendo con la guardada al encolar; la vista previa simula y no conecta. Acepta `--database-url`, `--limit` (1 a 100, 20 por defecto) y `--preview`. Sin URL sale con código 2 y una base inalcanzable con código 1.
 - `emit_deferred_notices.py` escribe los avisos que se vuelven ciertos con el tiempo sin esperar a que alguien abra la bandeja (ADR-076): los recordatorios de membresía por vencer, de clase próxima y de cita de fisioterapia, más el escalamiento de una solicitud de asistencia vencida y la advertencia del token del kiosco por caducar. Reutiliza los productores de las rutas de lectura y sus claves de deduplicación, así que una segunda corrida no repite nada; solo revisa a los socios con una fuente en ventana. Desde ADR-078 los tres recordatorios del socio encolan su push y el script drena la cola en la misma corrida: respeta la preferencia de categoría, la ventana de silencio del club y la del socio, simula en `--preview` y deja los fallos al reintento normal; `--push-limit` (1 a 100, 20 por defecto) limita los envíos por corrida y lo que sobra sale en la siguiente. Acepta `--database-url` y `--preview` (crea el esquema en `gym_preview.db`). Sin URL sale con código 2 y una base inalcanzable con código 1. El cron del host es lo único que hace sonar ese push: sin `--install` el aviso se sigue escribiendo al abrir la bandeja, pero el teléfono no suena.
 - `close_physio_day.py` cierra el día anterior de la agenda de fisioterapia con el mismo servicio del botón «Cerrar día» (ADR-073): deja `no_show` lo que terminó sin marca, sin cobrar ni descontar, y no toca las citas ya marcadas. Acepta `--date AAAA-MM-DD` para recuperar un día perdido, `--database-url` y `--preview` (que **escribe** en `gym_preview.db`). Sin URL sale con código 2 y una base inalcanzable con código 1.
 
-Las nueve son idempotentes: una segunda corrida seguida no duplica trabajo. Una configuración inválida sale con código 2 y no modifica el crontab. En la vista previa se prueban con `--preview` (o sin `--database-url` si `DATABASE_URL` apunta a `gym_preview.db`); las purgas conviene estrenarlas con `--dry-run`.
+Las diez son idempotentes: una segunda corrida seguida no duplica trabajo. Una configuración inválida sale con código 2 y no modifica el crontab. En la vista previa se prueban con `--preview` (o sin `--database-url` si `DATABASE_URL` apunta a `gym_preview.db`); las purgas conviene estrenarlas con `--dry-run`.
+
+## Configuración del transporte SMTP
+
+El correo de socios usa el transporte compartido `app/mailer.py`. Configura el entorno del proceso web y del cron con `SMTP_HOST`, `SMTP_PORT` (587 por defecto), `SMTP_USE_TLS` (activado por defecto para STARTTLS) o `SMTP_USE_SSL` (para TLS implícito), y `SMTP_FROM`. Si el proveedor requiere autenticación, configura también `SMTP_USER` y `SMTP_PASSWORD`; no guardes estos valores en el repositorio ni en el crontab. Inyecta los secretos mediante el gestor de secretos o el entorno del servicio y limita el acceso a ellos.
+
+Antes de habilitar preferencias de correo para socios, valida con un destinatario de prueba consentido en un entorno de staging, verifica el registro SMTP y confirma que la dirección actual y el consentimiento se revalidan. `--preview` no comprueba conectividad SMTP: solo confirma que el script procesa la cola en modo simulado. No uses datos reales de socios para una prueba inicial.
 
 El instalador no configura **rotación de bitácoras** ni **bloqueo de solapamiento**: usa `--log-dir` para llevarlas a la carpeta que ya rote el servidor y revisa las bitácoras cuando una tarea falle, porque el cron no avisa por correo.
 

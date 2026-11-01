@@ -5,6 +5,7 @@
 - La definición de stack aún está en diseño inicial y requiere validación con el negocio antes de implementación final.
 - Los costos reales de hardware y pasarelas deberán validarse con proveedores locales antes de entorno productivo.
 - La integración con PAC y el control legal de LFPDPPP requiere revisión profesional.
+- **Dependencias móviles (2026-11-01)**: Expo se actualizó a `58.0.22` y React Native a `0.88.1` dentro de su SDK; ya no hay avisos altos o críticos en `npm audit`, pero el último análisis todavía reporta 11 avisos moderados en dependencias de ejecución (31 en total al incluir desarrollo). Revisar los avisos restantes con cada actualización de Expo y antes de publicar; no ejecutar `npm audit fix --force` porque propuso bajar Expo fuera de la versión mayor actual.
 
 ## Atajos planificados
 

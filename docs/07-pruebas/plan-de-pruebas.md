@@ -31,6 +31,16 @@ Probar que cada regla crítica del negocio funcione sin errores, especialmente a
 - permisos y bitácora
 - corte de caja y inventario
 
+## Prueba móvil de error al guardar preferencias de avisos
+
+`mobile/src/screens/__tests__/NotificationsScreen.test.tsx` simula un fallo de red al activar el correo de Membresía y verifica que:
+
+- el interruptor refleja el cambio optimista mientras la petición sigue pendiente y todos los interruptores quedan deshabilitados durante el guardado;
+- al rechazarse la petición, el interruptor vuelve al valor anterior y la pantalla muestra el error genérico de conexión;
+- el texto del error conserva `accessibilityLiveRegion="polite"`.
+
+Ejecutar desde `mobile/` con `npm test -- --runInBand`. La prueba cubre el comportamiento de React Native, no la locución real de TalkBack ni VoiceOver.
+
 ## Cobertura de complementos de pago PPD
 
 `backend/tests/test_billing_api.py` (6 pruebas PPD) cubre:

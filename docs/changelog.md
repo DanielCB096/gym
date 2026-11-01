@@ -1,11 +1,21 @@
 # Changelog
 
+## 2026-11-01 · App móvil: actualizar parches de Expo y React Native
+
+- Se actualizó Expo de `58.0.20` a `58.0.22` y React Native de `0.88.0` a `0.88.1`, permaneciendo en el SDK 58. El parche renovó dependencias transitivas y eliminó los dos avisos altos que reportaba `npm audit`; no se forzó ningún downgrade de Expo.
+- Validación: `npx expo install --check`, la prueba móvil de error al guardar preferencias y `npm run typecheck` pasaron. `npm audit` aún reporta 31 avisos en todo el árbol (1 bajo y 30 moderados); con `--omit=dev` hay 11 moderados y ninguno alto o crítico.
+
+## 2026-11-01 · App móvil: error al guardar preferencias de avisos
+
+- Se configuró Jest con Expo y React Native Testing Library. La prueba de `NotificationsScreen` simula un fallo de red al guardar el correo: comprueba el estado optimista, que los interruptores queden deshabilitados durante la petición, la restauración del valor anterior y que el error se exponga en una región viva `polite`.
+- Validación: prueba móvil aprobada y `npm run typecheck` aprobado. Esto verifica el estado y las propiedades de accesibilidad en el árbol de React Native, pero no confirma qué pronuncia TalkBack en un dispositivo.
+
 ## 2026-10-31 · Avisos: correo opcional para el socio (ADR-081)
 
 - Se añadió correo por categoría independiente del push, apagado por defecto y con consentimiento append-only. La cola se crea junto al aviso y, antes de SMTP, vuelve a validar el consentimiento y que la dirección no haya cambiado.
 - Se añadió envío inmediato tras responder, recuperación/reintentos limitados por `flush_member_email.py` y cron cada 15 minutos. La vista previa simula y no contacta SMTP; la purga compartida de ADR-075 incluye entregas terminales y canceladas del socio, sin podar consentimientos.
 - La app ofrece switches de correo para Membresía, Clases, Facturas, Equipo y Fisioterapia; Rutinas y metas quedan excluidas. Se añadieron la migración `20261031_0078`, la adaptación de la base de vista previa y la documentación ADR-081.
-- Validación: suite backend **608 aprobadas y 8 omitidas** (`TEST_POSTGRES_URL` no configurada), typecheck móvil aprobado y `alembic heads` confirma `20261031_0078`. La revisión estática móvil encontró un error de guardado que no se anunciaba al lector de pantalla; se corrigió con `accessibilityLiveRegion="polite"`. La comprobación en VoiceOver/TalkBack y hardware real sigue pendiente.
+- Validación: suite backend **608 aprobadas y 8 omitidas** (`TEST_POSTGRES_URL` no configurada), typecheck móvil aprobado y `alembic heads` confirma `20261031_0078`. En seguimiento se aprobaron 56 pruebas de SMTP/cola/migración/cron; el drenado `--preview` se ejecutó sobre SQLite en memoria (sin SMTP) y `ops_cron.py --print` incluyó la tarea cada 15 minutos. No hay configuración SMTP ni base de staging en este entorno, así que el envío real y la instalación del cron Linux aún requieren infraestructura del club. La revisión estática móvil corrigió el error no anunciado con `accessibilityLiveRegion="polite"`; VoiceOver/TalkBack en dispositivo sigue pendiente.
 
 ## 2026-10-31 · Mantenimiento: avisar al socio cuando vuelve el equipo
 
