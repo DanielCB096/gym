@@ -35,7 +35,7 @@ Los estados de equipo que puedes encontrar son:
 1. Abre **Tickets** y crea un ticket para el equipo correspondiente.
 2. Describe el problema con información concreta: qué observaste, dónde y cuándo ocurrió.
 3. Selecciona la severidad según el riesgo y el impacto operativo.
-4. Si existe un riesgo de seguridad, detén el uso y avisa inmediatamente a gerencia o al responsable de mantenimiento. Si tienes el permiso correspondiente, cambia el equipo a **Fuera de servicio**; no esperes a que se asigne la reparación.
+4. Si existe un riesgo de seguridad, detén el uso y avisa inmediatamente a gerencia o al responsable de mantenimiento. Si tienes el permiso correspondiente, cambia el equipo a **Fuera de servicio**; no esperes a que se asigne la reparación. Los socios cuyo plan vigente usa esa máquina reciben su aviso en la app, tal como explica «Avisos a los socios por caída y regreso del equipo».
 5. Revisa que el ticket aparezca en la lista y comunica el folio al responsable para facilitar el seguimiento.
 
 Un ticket crítico bloquea el equipo automáticamente. Si no es crítico, el equipo no necesariamente cambia de estado al crear el ticket; solicita el bloqueo cuando la condición lo requiera.
@@ -98,6 +98,16 @@ El retiro es una acción de gerencia o mantenimiento con permiso `maintenance.ma
 2. Verifica que no tenga tickets abiertos; el panel no permite retirarlo mientras los tenga.
 3. Usa la acción **Retirar** y confirma la operación.
 4. El equipo queda en estado **Baja** y conserva su historial. No se elimina.
+
+## Avisos a los socios por caída y regreso del equipo
+
+El panel avisa a los socios por su cuenta, así que no hace falta que nadie les escriba por otro canal:
+
+- Cuando un equipo pasa a **Fuera de servicio** —porque cambiaste el estado o porque un ticket crítico lo bloqueó—, reciben un aviso los socios cuyo plan vigente tiene un ejercicio ligado a esa máquina.
+- Cuando vuelve a **Operativo** —por cambio directo de estado o porque se resolvió o canceló el ticket que lo bloqueaba y el equipo recobra ese estado—, ese mismo grupo recibe un segundo aviso de regreso.
+- **Los estados intermedios no avisan**: un paso por **En mantenimiento** o **En revisión** no anuncia regreso, y **Baja** tampoco.
+- El aviso se envía **una vez por equipo y por día del club**, aunque repitas el cambio de estado.
+- El aviso de caída **no se borra** cuando el equipo regresa: la bandeja del socio es un historial, no un estado vivo.
 
 ## Buenas prácticas y seguridad
 

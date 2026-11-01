@@ -904,7 +904,27 @@ Verificado en la vista previa el 2026-10-31, con el backend en un puerto aislado
 
 Al terminar se borraron los eventos, cuentas, sesiones y asignaciones de rol temporales, se devolvió `access_settings` a `max_occupancy = NULL` con `occupancy_window_seconds = 7200` y se detuvieron solo los servidores levantados para esta verificación (3001 y 8010). La base `gym_preview.db` no se versiona.
 
+## Cobertura de la consistencia de los mapas de avisos del socio
+
+Agregar un tipo de aviso del socio es un cambio de **seis sitios** que ningún código relaciona: la tupla `NOTIFICATION_KINDS` y su `CHECK` en el modelo, la categoría que lo silencia, la cadena `CHECK_UPGRADES` que sube la base de vista previa a la lista de hoy, la etiqueta del panel, la etiqueta de la app y la pantalla que abre al tocarlo. Antes de esta custodia solo el mapa de navegación tenía una verificación —el arnés manual de Node de ADR-060—, y ese arnés es testigo del problema: contó **18 tipos** cuando la bandeja ya tenía 19, porque la lista la escribía una persona.
+
+`tests/test_notification_kind_maps_consistency.py` (10 pruebas) cierra el hueco sin levantar la app ni el panel: lee los archivos TypeScript como texto y compara conjuntos de tipos.
+
+- **Inventario**: la tupla no se repite a sí misma.
+- **Base de datos**: el `CHECK ck_member_notifications_kind` del modelo acepta exactamente los tipos declarados —un tipo de más rechazaría el insert en producción, uno de menos dejaría filas ilegibles—.
+- **Vista previa**: la última sustitución de `CHECK_UPGRADES["member_notifications"]` termina en la lista vigente; `test_preview_patch.py` sigue probando que la cadena reconstruya la tabla.
+- **Categorías**: `NOTIFICATION_CATEGORY_BY_KIND` cubre todos los tipos y solo usa categorías conocidas; ninguna categoría queda sin avisos que callar y cada categoría de correo tiene tipos que enviar.
+- **Etiquetas**: `MEMBER_NOTIFICATION_KIND_LABELS` del panel y `NOTIFICATION_KIND_LABELS` de la app tienen exactamente los tipos declarados, por lo que tampoco sobra etiqueta de un tipo retirado.
+- **Navegación**: las reglas de `notificationDestination` se recogen en el orden en que la app las evalúa —igualdad, prefijo y pertenencia a conjunto— y cada tipo debe abrir la pantalla que su categoría impone, con el mapa categoría → pantalla explícito en la prueba (los avisos de equipo abren Rutinas porque la app no tiene pantalla de Equipo). Los tres conjuntos no comparten tipos: un tipo en dos conjuntos se resolvería por orden y el mapa dejaría de ser explícito.
+- **Emisión**: todo tipo declarado tiene su `kind="…"` escrita en `notifications/service.py`, y ese archivo no emite ningún tipo fuera del inventario del socio y del personal.
+
+**Verificación por mutación** (2026-11-01): se comprobó que la custodia falla cuando debe, no solo que pasa. Siete mutaciones sobre los datos reales —añadir `invoice_paid` a la tupla, borrar la etiqueta «Factura · timbrada» del panel, quitar `equipment_back_in_service` del conjunto de rutas y recortar el último tramo de la cadena de la vista previa, entre otras— produjeron siete fallos, cada uno con el mensaje del sitio que quedó desalineado. Los analistas TypeScript **fallan en voz alta** si cambia la forma del archivo (`assert` de mapa o conjunto no encontrado), nunca pasan por omisión.
+
+**Límite conocido**: la prueba compara nombres y pantallas, no el texto de las etiquetas ni el comportamiento del toque en un teléfono; eso sigue con el arnés de Node y el build de EAS de ADR-060.
+
 ## Estado
+
+**Actualización 2026-11-01 (custodia de avisos y fechas de siembra):** la suite backend queda en **626 pruebas: 618 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL`. Dos correcciones de la misma clase acompañan la custodia. `test_reconciliation_api.py` sembraba sus orígenes conciliables con `datetime.now()` y la ventana de sugerencias es ±7 días **de la fecha del movimiento**, así que al octavo día dejaba de ver candidatos y fallaba sin que la regla hubiera cambiado; ahora fija la siembra al día del club de los movimientos que importa (2026-10-24). `test_member_push_receipts.py` congelaba `NOW` en `2026-10-31 18:00 UTC` para todas sus pasadas; las que llaman al servicio pasan su propio `now` y siguen siendo deterministas, pero la del endpoint del panel usa el reloj real y, cumplidas 24 horas desde ese instante, Expo ya no responde el boleto: la prueba se volvió roja el 1 de noviembre a las 18:00 UTC y se quedaba así para siempre. Su siembra ahora es fresca, porque el `CHECK` de vencimiento del acuse lo decide el reloj de la sala, no el del calendario de la prueba. Queda pendiente un **dictamen de fechas**: hay 59 fechas literales repartidas en 27 archivos de `tests/` y solo se comprobaron las dos que ya mordieron; conviene barrer cuáles dependen del reloj real del proceso y cuáles viven solo de un `now` que la prueba pasa ella misma.
 
 **Actualización 2026-10-31 (ADR-081):** la suite backend queda en **616 pruebas: 608 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL`; `alembic heads` confirma una sola cabeza, `20261031_0078`, y `npm.cmd run typecheck` de la app móvil pasa. La revisión estática especializada de los controles encontró que el error al guardar preferencias no se anunciaba al lector de pantalla; se añadió `accessibilityLiveRegion="polite"`. La validación en VoiceOver/TalkBack y hardware real no se ha realizado.
 
