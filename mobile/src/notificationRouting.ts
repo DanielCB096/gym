@@ -27,6 +27,7 @@ const ROUTINE_KINDS = new Set([
   "goal_cancelled_by_staff",
   "goal_updated_by_staff",
   "equipment_out_of_service",
+  "equipment_back_in_service",
 ]);
 
 export type NotificationRefTarget =

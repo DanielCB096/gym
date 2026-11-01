@@ -42,6 +42,7 @@ from app.modules.maintenance.models import (
     utc_now,
 )
 from app.modules.notifications import (
+    notify_equipment_back_in_service,
     notify_equipment_out_of_service,
     notify_technician_ticket_assigned,
     resolve_staff_notifications,
@@ -708,6 +709,23 @@ def _announce_equipment_outage(
     )
 
 
+def _announce_equipment_recovery(
+    session: Session, equipment: Equipment, occurred: datetime
+) -> None:
+    member_ids = _members_using_equipment(session, equipment.id)
+    if not member_ids:
+        return
+    notify_equipment_back_in_service(
+        session,
+        equipment_id=equipment.id,
+        equipment_name=equipment.name,
+        location=equipment.location,
+        member_ids=member_ids,
+        occurred_on=club_date(occurred),
+        now=occurred,
+    )
+
+
 def set_equipment_status(
     session: Session,
     equipment_id: UUID,
@@ -724,11 +742,14 @@ def set_equipment_status(
         raise InvalidEquipmentState("Un equipo retirado ya no cambia de estado")
     if equipment.status == status:
         return _equipment_item(equipment)
+    was_out_of_service = equipment.status == "out_of_service"
     equipment.status = status
     equipment.updated_at = _as_utc(now or utc_now())
     session.add(equipment)
     if status == "out_of_service":
         _announce_equipment_outage(session, equipment, equipment.updated_at)
+    elif was_out_of_service and status == "operational":
+        _announce_equipment_recovery(session, equipment, equipment.updated_at)
     session.commit()
     session.refresh(equipment)
     return _equipment_item(equipment)
@@ -1149,12 +1170,15 @@ def _release_equipment(
         return
     if equipment.status not in ("maintenance", "out_of_service"):
         return
+    was_out_of_service = equipment.status == "out_of_service"
     restored = ticket.previous_status or "inspection"
     if restored not in MANUAL_EQUIPMENT_STATUSES:
         restored = "inspection"
     equipment.status = restored
     equipment.updated_at = occurred
     session.add(equipment)
+    if was_out_of_service and restored == "operational":
+        _announce_equipment_recovery(session, equipment, occurred)
 
 
 def start_ticket(

@@ -14,6 +14,7 @@ PHYSIO_KINDS = (
     "physio_appointment_cancelled",
     "physio_appointment_rescheduled",
     "physio_reminder",
+    "equipment_back_in_service",
 )
 
 # The CHECK the preview database carried before the physiotherapy increment.
@@ -65,10 +66,14 @@ def test_preview_upgrade_adds_every_notification_kind() -> None:
     for kind in PHYSIO_KINDS:
         assert kind in create_sql
     assert connection.execute("SELECT COUNT(*) FROM member_notifications").fetchone()[0] == 1
-    # The upgraded CHECK now accepts a physiotherapy notice.
+    # The upgraded CHECK accepts the latest member notice kinds.
     connection.execute(
         "INSERT INTO member_notifications (id, kind, dedupe_key) "
         "VALUES ('n2', 'physio_reminder', 'physio_reminder:a:24')"
+    )
+    connection.execute(
+        "INSERT INTO member_notifications (id, kind, dedupe_key) "
+        "VALUES ('n3', 'equipment_back_in_service', 'equipment_back_in_service:a:20261031')"
     )
 
 

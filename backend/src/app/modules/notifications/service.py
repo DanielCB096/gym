@@ -764,6 +764,40 @@ def notify_equipment_out_of_service(
     return len(member_ids)
 
 
+def notify_equipment_back_in_service(
+    session: Session,
+    *,
+    equipment_id: UUID,
+    equipment_name: str,
+    location: str | None,
+    member_ids: Sequence[UUID],
+    occurred_on: date,
+    now: datetime | None = None,
+) -> int:
+    """Tell members whose plan uses a machine that has returned to service."""
+    label = _clip(equipment_name.strip() or "Un equipo", 80)
+    where = f" de {_clip(location.strip(), 40)}" if location and location.strip() else ""
+    body = (
+        f"El equipo {label}{where} volvió a estar operativo el "
+        f"{occurred_on:%d/%m/%Y}. Ya puedes usarlo en tu rutina."
+    )
+    for member_id in member_ids:
+        create_notification(
+            session,
+            member_id=member_id,
+            kind="equipment_back_in_service",
+            title="Un equipo volvió a estar operativo",
+            body=body,
+            ref_id=equipment_id,
+            dedupe_key=(
+                f"equipment_back_in_service:{equipment_id}:{member_id}:"
+                f"{occurred_on:%Y%m%d}"
+            ),
+            now=now,
+        )
+    return len(member_ids)
+
+
 def notify_invoice_stamped(
     session: Session,
     *,

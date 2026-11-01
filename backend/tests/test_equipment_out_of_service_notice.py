@@ -19,6 +19,7 @@ from app.modules.identity.service import ensure_default_access_control, register
 from app.modules.maintenance import (
     create_equipment,
     create_ticket,
+    resolve_ticket,
     set_equipment_status,
 )
 from app.modules.memberships.models import Member, Membership, Plan
@@ -245,14 +246,17 @@ def test_only_the_members_whose_plan_uses_the_machine_are_told(monkeypatch) -> N
                 assert [row.kind for row in _inbox(session, ids["beto"])] == []
                 assert [row.kind for row in _inbox(session, ids["carlos"])] == []
 
-                # Bringing it back and stopping it again the same day is the same
-                # fact: the club day is part of the dedupe key.
+                # The return is a separate notice, while stopping it again the
+                # same day does not duplicate the original outage.
                 assert (
                     set_equipment_status(session, ids["machine"], status="operational").status
                     == "operational"
                 )
                 set_equipment_status(session, ids["machine"], status="out_of_service")
-                assert len(_inbox(session, ids["ana"])) == 1
+                assert [row.kind for row in _inbox(session, ids["ana"])] == [
+                    "equipment_back_in_service",
+                    "equipment_out_of_service",
+                ]
 
                 # A unit already stopped does not announce itself a second time.
                 before = len(_inbox(session, ids["ana"]))
@@ -311,14 +315,17 @@ def test_a_critical_ticket_announces_the_outage_once_per_club_day() -> None:
         )
         assert len(_rows(session, ids["ana"])) == 1
 
-        # Repaired, then broken again on a later club day: that is a new fact.
+        # Repaired, then broken again on a later club day: both are new facts.
         assert (
             set_equipment_status(
                 session, ids["machine"], status="operational", now=second_day
             ).status
             == "operational"
         )
-        assert len(_rows(session, ids["ana"])) == 1
+        assert [row.kind for row in _rows(session, ids["ana"])] == [
+            "equipment_out_of_service",
+            "equipment_back_in_service",
+        ]
         create_ticket(
             session,
             equipment_id=ids["machine"],
@@ -326,4 +333,96 @@ def test_a_critical_ticket_announces_the_outage_once_per_club_day() -> None:
             severity="critical",
             now=second_day,
         )
+        assert [row.kind for row in _rows(session, ids["ana"])] == [
+            "equipment_out_of_service",
+            "equipment_back_in_service",
+            "equipment_out_of_service",
+        ]
+
+
+def test_manual_recovery_notifies_plan_members_once_per_club_day() -> None:
+    engine, ids = _prepare()
+    occurred = datetime.now(timezone.utc) + timedelta(days=1)
+    with Session(engine) as session:
+        # A routine status change that never involved an outage is not a return.
+        set_equipment_status(
+            session, ids["machine"], status="maintenance", now=occurred
+        )
+        set_equipment_status(
+            session,
+            ids["machine"],
+            status="operational",
+            now=occurred + timedelta(minutes=5),
+        )
+        assert _rows(session, ids["ana"]) == []
+
+        set_equipment_status(
+            session,
+            ids["machine"],
+            status="out_of_service",
+            now=occurred + timedelta(minutes=10),
+        )
+        set_equipment_status(
+            session,
+            ids["machine"],
+            status="operational",
+            now=occurred + timedelta(minutes=20),
+        )
+        notices = _rows(session, ids["ana"])
+        assert [row.kind for row in notices] == [
+            "equipment_out_of_service",
+            "equipment_back_in_service",
+        ]
+        recovery = notices[1]
+        assert recovery.title == "Un equipo volvió a estar operativo"
+        assert "Bicicleta espacial" in recovery.body
+        assert "Sala de ciclo" in recovery.body
+        assert recovery.ref_id == ids["machine"]
+        assert recovery.dedupe_key == (
+            f"equipment_back_in_service:{ids['machine']}:{ids['ana']}:"
+            f"{club_date(occurred):%Y%m%d}"
+        )
+        assert _rows(session, ids["beto"]) == []
+
+        # A second outage and recovery that same day remain deduplicated.
+        set_equipment_status(
+            session,
+            ids["machine"],
+            status="out_of_service",
+            now=occurred + timedelta(minutes=30),
+        )
+        set_equipment_status(
+            session,
+            ids["machine"],
+            status="operational",
+            now=occurred + timedelta(minutes=40),
+        )
         assert len(_rows(session, ids["ana"])) == 2
+
+
+def test_resolving_critical_ticket_notifies_recovery() -> None:
+    engine, ids = _prepare()
+    occurred = datetime.now(timezone.utc) + timedelta(days=1)
+    with Session(engine) as session:
+        ticket = create_ticket(
+            session,
+            equipment_id=ids["machine"],
+            title="Motor humea",
+            severity="critical",
+            now=occurred,
+        )
+        assert _rows(session, ids["ana"])[0].kind == "equipment_out_of_service"
+
+        resolve_ticket(
+            session,
+            ticket.id,
+            resolution_notes="Se reemplazó el motor y se validó su operación.",
+            now=occurred + timedelta(hours=2),
+        )
+
+        notices = _rows(session, ids["ana"])
+        assert [row.kind for row in notices] == [
+            "equipment_out_of_service",
+            "equipment_back_in_service",
+        ]
+        assert notices[1].title == "Un equipo volvió a estar operativo"

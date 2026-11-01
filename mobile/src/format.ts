@@ -138,6 +138,7 @@ const NOTIFICATION_KIND_LABELS: Record<string, string> = {
   physio_reminder: "Recordatorio de fisioterapia",
   membership_expiring: "Membresía",
   equipment_out_of_service: "Equipo",
+  equipment_back_in_service: "Equipo",
   invoice_stamped: "Factura",
   invoice_failed: "Factura",
   invoice_cancelled: "Factura",

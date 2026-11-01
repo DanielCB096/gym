@@ -255,6 +255,24 @@ CHECK_UPGRADES = {
             "'physio_appointment_cancelled', 'physio_appointment_rescheduled', "
             "'physio_reminder'))",
         ),
+        (
+            "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
+            "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
+            "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
+            "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
+            "'invoice_cancelled', 'class_reminder', 'class_reserved', "
+            "'class_cancelled', 'class_rescheduled', 'physio_appointment_scheduled', "
+            "'physio_appointment_cancelled', 'physio_appointment_rescheduled', "
+            "'physio_reminder'))",
+            "CONSTRAINT ck_member_notifications_kind CHECK (kind IN "
+            "('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
+            "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
+            "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
+            "'invoice_cancelled', 'class_reminder', 'class_reserved', "
+            "'class_cancelled', 'class_rescheduled', 'physio_appointment_scheduled', "
+            "'physio_appointment_cancelled', 'physio_appointment_rescheduled', "
+            "'physio_reminder', 'equipment_back_in_service'))",
+        ),
     ),
     "staff_notifications": (
         (

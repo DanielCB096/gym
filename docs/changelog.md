@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-31 · Mantenimiento: avisar al socio cuando vuelve el equipo
+
+- Se completó `equipment_back_in_service`: se avisa a los socios cuyos planes vigentes usan el equipo al cambiar directamente de `out_of_service` a `operational`, manualmente o al cerrar el ticket que lo bloqueaba. La audiencia mantiene la deduplicación por equipo, socio y día del club; los estados intermedios no anuncian regreso.
+- La migración `20261031_0077_equipment_back_in_service_notice.py` amplía el `CHECK`; la vista previa aplica la misma ampliación y las interfaces clasifican el aviso como «Equipo». Se actualizaron ADR-018 y las fichas de mantenimiento y notificaciones.
+- Validación dirigida: 14 pruebas de aviso de equipo y migración de vista previa aprobadas.
+
 ## 2026-10-31 · Facturación: proteger el script demo de Finkok contra producción accidental
 
 - Se añadieron pruebas offline para asegurar que la configuración por defecto use el demo, que `PAC_PRODUCTION=true` y una URL personalizada no redirijan silenciosamente la prueba, y que producción requiera ambas confirmaciones explícitas (`--production --confirm-production`).

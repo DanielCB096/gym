@@ -57,6 +57,7 @@ NOTIFICATION_KINDS = (
     "class_waitlist_promoted",
     "membership_expiring",
     "equipment_out_of_service",
+    "equipment_back_in_service",
     "invoice_stamped",
     "invoice_failed",
     "invoice_cancelled",
@@ -101,6 +102,7 @@ NOTIFICATION_CATEGORY_BY_KIND = {
     "invoice_failed": "billing",
     "invoice_cancelled": "billing",
     "equipment_out_of_service": "equipment",
+    "equipment_back_in_service": "equipment",
     "physio_appointment_scheduled": "physio",
     "physio_appointment_cancelled": "physio",
     "physio_appointment_rescheduled": "physio",
@@ -114,7 +116,8 @@ class MemberNotification(SQLModel, table=True):
         CheckConstraint(
             "kind IN ('workout_reviewed', 'goal_achieved', 'goal_cancelled_by_staff', "
             "'goal_updated_by_staff', 'class_waitlist_promoted', 'membership_expiring', "
-            "'equipment_out_of_service', 'invoice_stamped', 'invoice_failed', "
+            "'equipment_out_of_service', 'equipment_back_in_service', "
+            "'invoice_stamped', 'invoice_failed', "
             "'invoice_cancelled', 'class_reminder', 'class_reserved', "
             "'class_cancelled', 'class_rescheduled', 'physio_appointment_scheduled', "
             "'physio_appointment_cancelled', 'physio_appointment_rescheduled', "

@@ -16150,6 +16150,7 @@ const MEMBER_NOTIFICATION_KIND_LABELS: Record<string, string> = {
   class_waitlist_promoted: "Clases · lista de espera",
   membership_expiring: "Membresía · por vencer",
   equipment_out_of_service: "Equipos · fuera de servicio",
+  equipment_back_in_service: "Equipos · de vuelta en servicio",
   invoice_stamped: "Factura · timbrada",
   invoice_failed: "Factura · con error",
   invoice_cancelled: "Factura · cancelada",

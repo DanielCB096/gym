@@ -103,8 +103,12 @@ jobs:
                   "select pg_get_constraintdef(oid) from pg_constraint "
                   "where conname = 'ck_member_notifications_kind'"
               ).fetchone()[0]
-          if "equipment_out_of_service" not in definition:
-              raise SystemExit(f"ck_member_notifications_kind sin el tipo de equipo: {definition}")
+          equipment_kinds = ("equipment_out_of_service", "equipment_back_in_service")
+          missing_equipment = [kind for kind in equipment_kinds if kind not in definition]
+          if missing_equipment:
+              raise SystemExit(
+                  f"ck_member_notifications_kind sin tipos de equipo {missing_equipment}: {definition}"
+              )
           missing = [
               kind
               for kind in ("invoice_stamped", "invoice_failed", "invoice_cancelled")
