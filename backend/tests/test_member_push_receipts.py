@@ -468,7 +468,9 @@ def test_the_panel_runs_the_pass_and_shows_the_receipt(monkeypatch) -> None:
             password="trainer-correct-horse-battery",
             role_codes=("trainer",),
         )
-        _sent_delivery(seed)
+        # `NOW` congelado no sirve aquí: el endpoint usa el reloj real y a las 24
+        # horas deja el boleto como vencido, así que la siembra tiene que ser fresca.
+        _sent_delivery(seed, sent_at=datetime.now(timezone.utc))
 
     def override_session() -> Iterator[Session]:
         with Session(engine) as session:
