@@ -28,8 +28,12 @@ from sqlmodel import Session, select
 from app.modules.memberships.models import Member
 from app.modules.notifications.models import (
     MEMBER_NOTIFICATION_CATEGORIES,
+    MEMBER_EMAIL_NOTIFICATION_CATEGORIES,
+    MEMBER_EMAIL_CONSENT_VERSION,
     NOTIFICATION_CATEGORY_BY_KIND,
     MemberNotification,
+    MemberNotificationEmailDelivery,
+    MemberNotificationEmailPreferenceEvent,
     MemberNotificationPreference,
     MemberNotificationSetting,
     MemberPushDelivery,
@@ -54,10 +58,19 @@ class PreferenceQuietHoursError(PreferenceError):
     pass
 
 
+class EmailNotificationCategoryUnavailable(PreferenceError):
+    pass
+
+
+class MemberEmailUnavailable(PreferenceError):
+    pass
+
+
 @dataclass(frozen=True)
 class MemberNotificationPreferenceItem:
     category: str
     push_enabled: bool
+    email_enabled: bool
     updated_at: datetime | None
 
 
@@ -122,6 +135,7 @@ def list_member_preferences(
             MemberNotificationPreferenceItem(
                 category=category,
                 push_enabled=True if row is None else row.push_enabled,
+                email_enabled=False if row is None else row.email_enabled,
                 updated_at=None if row is None else _as_utc(row.updated_at),
             )
         )
@@ -133,38 +147,74 @@ def update_member_preferences(
     member_id: UUID,
     changes: Mapping[str, bool],
     *,
+    email_changes: Mapping[str, bool] | None = None,
     now: datetime | None = None,
 ) -> list[MemberNotificationPreferenceItem]:
-    """Apply the switches the member moved and return the whole set.
+    """Apply independent push/email changes and return the whole set.
 
-    Only the categories present in ``changes`` are touched, so a partial update
-    from the app cannot silently reset the others.
+    A missing key leaves that channel alone. Email requires both an explicit
+    opt-in and one of the categories the product has approved for that channel.
     """
 
-    if session.get(Member, member_id) is None:
+    member = session.get(Member, member_id)
+    if member is None:
         raise PreferenceMemberNotFound("El socio no existe")
+    email_changes = email_changes or {}
+    if any(email_changes.values()) and not (member.email or "").strip():
+        raise MemberEmailUnavailable(
+            "Agrega un correo en tu perfil antes de activar los avisos por correo."
+        )
     occurred = _as_utc(now or utc_now())
-    for category, push_enabled in changes.items():
+    for category in dict.fromkeys((*changes, *email_changes)):
         clean = _validated_category(category)
+        if (
+            clean in email_changes
+            and email_changes[category]
+            and clean not in MEMBER_EMAIL_NOTIFICATION_CATEGORIES
+        ):
+            raise EmailNotificationCategoryUnavailable(
+                f"Los avisos de la categoría '{clean}' no están disponibles por correo."
+            )
         row = session.exec(
             select(MemberNotificationPreference).where(
                 MemberNotificationPreference.member_id == member_id,
                 MemberNotificationPreference.category == clean,
             )
         ).first()
+        previous_email_enabled = row.email_enabled if row is not None else False
         if row is None:
             row = MemberNotificationPreference(
                 member_id=member_id,
                 category=clean,
-                push_enabled=push_enabled,
+                push_enabled=changes.get(category, True),
+                email_enabled=email_changes.get(category, False),
                 updated_at=occurred,
             )
         else:
-            row.push_enabled = push_enabled
+            if category in changes:
+                row.push_enabled = changes[category]
+            if category in email_changes:
+                row.email_enabled = email_changes[category]
             row.updated_at = occurred
         session.add(row)
-        if not push_enabled:
+        if category in changes and not changes[category]:
             _cancel_waiting_pushes(session, member_id, clean)
+        if category in email_changes and not email_changes[category]:
+            _cancel_waiting_member_emails(session, member_id, clean)
+        if (
+            category in email_changes
+            and clean in MEMBER_EMAIL_NOTIFICATION_CATEGORIES
+            and previous_email_enabled != email_changes[category]
+        ):
+            session.add(
+                MemberNotificationEmailPreferenceEvent(
+                    member_id=member_id,
+                    category=clean,
+                    enabled=email_changes[category],
+                    consent_version=MEMBER_EMAIL_CONSENT_VERSION,
+                    changed_at=occurred,
+                )
+            )
     session.commit()
     return list_member_preferences(session, member_id)
 
@@ -184,6 +234,21 @@ def is_push_enabled(session: Session, member_id: UUID, kind: str) -> bool:
         )
     ).first()
     return row is None or row.push_enabled
+
+
+def is_email_enabled(session: Session, member_id: UUID, kind: str) -> bool:
+    """Email is opt-in and unavailable for the training category."""
+
+    category = category_for_kind(kind)
+    if category not in MEMBER_EMAIL_NOTIFICATION_CATEGORIES:
+        return False
+    row = session.exec(
+        select(MemberNotificationPreference).where(
+            MemberNotificationPreference.member_id == member_id,
+            MemberNotificationPreference.category == category,
+        )
+    ).first()
+    return row is not None and row.email_enabled
 
 
 def _parse_quiet_hour(value: str, *, field: str) -> time:
@@ -308,6 +373,41 @@ def _cancel_waiting_pushes(
             MemberPushDelivery.status == "failed",
             MemberPushDelivery.next_attempt_at.is_not(None),
             MemberPushDelivery.notification_id.in_(notices),
+        )
+        .values(next_attempt_at=None)
+    )
+
+
+def _cancel_waiting_member_emails(
+    session: Session, member_id: UUID, category: str
+) -> None:
+    """Cancel unsent mail and stop scheduled retries without erasing history."""
+
+    kinds = tuple(
+        kind
+        for kind, kind_category in NOTIFICATION_CATEGORY_BY_KIND.items()
+        if kind_category == category
+    )
+    notices = select(MemberNotification.id).where(
+        MemberNotification.member_id == member_id,
+        MemberNotification.kind.in_(kinds),
+    )
+    session.exec(
+        update(MemberNotificationEmailDelivery)
+        .where(
+            MemberNotificationEmailDelivery.member_id == member_id,
+            MemberNotificationEmailDelivery.status == "pending",
+            MemberNotificationEmailDelivery.notification_id.in_(notices),
+        )
+        .values(status="cancelled", error="El socio desactivó el correo antes del envío.")
+    )
+    session.exec(
+        update(MemberNotificationEmailDelivery)
+        .where(
+            MemberNotificationEmailDelivery.member_id == member_id,
+            MemberNotificationEmailDelivery.status == "failed",
+            MemberNotificationEmailDelivery.next_attempt_at.is_not(None),
+            MemberNotificationEmailDelivery.notification_id.in_(notices),
         )
         .values(next_attempt_at=None)
     )

@@ -89,6 +89,9 @@ ADDED_COLUMNS = {
         "expo_ticket_id": "VARCHAR(100)",
         "receipt_checked_at": "DATETIME",
     },
+    "member_notification_preferences": {
+        "email_enabled": "BOOLEAN NOT NULL DEFAULT 0",
+    },
 }
 
 # New RBAC rows for features added after the preview database was seeded.

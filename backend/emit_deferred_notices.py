@@ -50,6 +50,9 @@ from app.modules.notifications.push import (  # noqa: E402
     MAX_SEND_BATCH_LIMIT,
     send_pending_member_push_deliveries_from_engine,
 )
+from app.modules.notifications.member_email import (  # noqa: E402
+    send_pending_member_notification_emails_from_engine,
+)
 
 PREVIEW_DATABASE_URL = "sqlite:///./gym_preview.db"
 
@@ -123,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Base de vista previa: {database_url}")
         with Session(engine) as session:
             result = materialise_deferred_notices(session)
+        emails = send_pending_member_notification_emails_from_engine(engine)
         pushes = send_pending_member_push_deliveries_from_engine(
             engine, limit=args.push_limit
         )
@@ -147,6 +151,15 @@ def main(argv: list[str] | None = None) -> int:
     if pushes.deferred:
         print("La ventana de silencio del club retuvo los push; saldrán en la próxima pasada.")
     print(f"Entregas de push pendientes que quedan: {pushes.remaining}.")
+    print(
+        f"Correo de socios: {emails.attempted} intentos — enviados {emails.sent}, "
+        f"simulados {emails.simulated}, fallidos {emails.failed}, "
+        f"cancelados {emails.cancelled}."
+    )
+    print(
+        "Entregas de correo pendientes o con reintento programado que quedan: "
+        f"{emails.remaining}."
+    )
     return 0
 
 

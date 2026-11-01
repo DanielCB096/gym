@@ -28,6 +28,7 @@ from app.modules.notifications.inbox_retention import (
 )
 from app.modules.notifications.models import (
     MemberNotification,
+    MemberNotificationEmailDelivery,
     MemberPushDelivery,
     StaffNotification,
     StaffNotificationDelivery,
@@ -100,6 +101,31 @@ def _member_push_delivery(
         status="sent",
         attempts=1,
         sent_at=created_at,
+        created_at=created_at,
+    )
+    session.add(delivery)
+    session.commit()
+    return delivery
+
+
+def _member_email_delivery(
+    session: Session,
+    notice: MemberNotification,
+    *,
+    status: str = "sent",
+    next_attempt_at: datetime | None = None,
+    created_days_ago: int = 400,
+) -> MemberNotificationEmailDelivery:
+    created_at = NOW - timedelta(days=created_days_ago)
+    delivery = MemberNotificationEmailDelivery(
+        notification_id=notice.id,
+        member_id=notice.member_id,
+        recipient="ana@example.test",
+        message_id=f"{uuid4().hex}@example.test",
+        status=status,
+        attempts=1,
+        next_attempt_at=next_attempt_at,
+        sent_at=created_at if status == "sent" else None,
         created_at=created_at,
     )
     session.add(delivery)
@@ -244,6 +270,39 @@ def test_member_notice_with_a_push_delivery_is_kept(session: Session) -> None:
     result = purge_inbox_history(session, now=NOW)
 
     assert result.member_notices_deleted == 0
+
+
+def test_terminal_member_email_delivery_and_old_notice_are_purged_together(
+    session: Session,
+) -> None:
+    notice = _member_notice(session, created_days_ago=400)
+    delivery = _member_email_delivery(session, notice, status="sent")
+
+    result = purge_inbox_history(session, now=NOW)
+
+    assert result.member_email_deliveries_deleted == 1
+    assert result.member_notices_deleted == 1
+    assert delivery.id not in _ids(session, MemberNotificationEmailDelivery)
+    assert notice.id not in _ids(session, MemberNotification)
+
+
+def test_pending_or_scheduled_member_email_keeps_the_old_notice(
+    session: Session,
+) -> None:
+    notice = _member_notice(session, created_days_ago=400)
+    delivery = _member_email_delivery(
+        session,
+        notice,
+        status="failed",
+        next_attempt_at=NOW + timedelta(minutes=5),
+    )
+
+    result = purge_inbox_history(session, now=NOW)
+
+    assert result.member_email_deliveries_deleted == 0
+    assert result.member_notices_deleted == 0
+    assert session.get(MemberNotificationEmailDelivery, delivery.id) is not None
+    assert session.get(MemberNotification, notice.id) is not None
     assert _ids(session, MemberNotification) == {notice.id}
 
 

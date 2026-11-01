@@ -32,7 +32,6 @@ service that completes the work a staff notice announced closes it with
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-import os
 from typing import Sequence, TypeVar
 from uuid import UUID, uuid4
 
@@ -42,10 +41,10 @@ from sqlmodel import Session, select
 
 from app.modules.identity.models import AppUser
 from app.modules.memberships.models import Member, Membership
+from app.modules.notifications.delivery import new_message_id
 from app.modules.notifications.models import (
     MAX_BODY_CHARS,
     MAX_DEDUPE_CHARS,
-    MAX_MESSAGE_ID_CHARS,
     MAX_TITLE_CHARS,
     NOTIFICATION_KINDS,
     STAFF_NOTIFICATION_EMAIL_KINDS,
@@ -59,6 +58,7 @@ from app.modules.notifications.models import (
     StaffPushSubscription,
     utc_now,
 )
+from app.modules.notifications.member_email import enqueue_member_notification_email
 from app.modules.notifications.preferences import is_push_enabled
 from app.timezone import to_club_timezone
 
@@ -74,7 +74,6 @@ CLASS_REMINDER_WINDOWS_HOURS = (2, 24)
 PHYSIO_REMINDER_WINDOWS_HOURS = (24,)
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
-DEFAULT_MESSAGE_ID_DOMAIN = "centro-fit.local"
 
 
 class NotificationError(Exception):
@@ -212,11 +211,12 @@ def create_notification(
     now: datetime | None = None,
     push: bool = True,
 ) -> MemberNotification:
-    """Append a message for a member and queue its push.
+    """Append a message for a member and queue its opted-in channels.
 
     ``push=False`` is for the reminders materialised while the member is reading
     the inbox: they were not caused by an event, so pushing them at that moment
-    would announce something the member is already looking at.
+    would announce something the member is already looking at. Email consent is
+    independent and still applies to a newly written reminder.
     """
     clean_title, clean_body = _validated_message(kind, title, body, NOTIFICATION_KINDS)
     notice = MemberNotification(
@@ -229,8 +229,10 @@ def create_notification(
         created_at=_as_utc(now or utc_now()),
     )
     stored = _append(session, notice, MemberNotification)
-    if stored is notice and push:
-        _enqueue_member_push_deliveries(session, notice)
+    if stored is notice:
+        if push:
+            _enqueue_member_push_deliveries(session, notice)
+        enqueue_member_notification_email(session, notice)
     return stored
 
 
@@ -332,20 +334,6 @@ def _enqueue_staff_notification_push(
     for delivery in deliveries:
         session.add(delivery)
     return deliveries
-
-
-def new_message_id() -> str:
-    """Identifier stored with the delivery and written on the message header.
-
-    The domain only has to be stable enough for a provider to echo it back; the
-    club's real domain is configured with ``EMAIL_MESSAGE_ID_DOMAIN``.
-    """
-
-    domain = (
-        os.getenv("EMAIL_MESSAGE_ID_DOMAIN", DEFAULT_MESSAGE_ID_DOMAIN).strip()
-        or DEFAULT_MESSAGE_ID_DOMAIN
-    )
-    return f"{uuid4().hex}@{domain.lower()}"[:MAX_MESSAGE_ID_CHARS]
 
 
 def _enqueue_staff_notification_email(

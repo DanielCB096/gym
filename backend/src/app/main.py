@@ -497,6 +497,9 @@ from app.modules.notifications.delivery import (
     send_pending_staff_notification_emails_from_engine,
     staff_notification_delivery_counts,
 )
+from app.modules.notifications.member_email import (
+    send_pending_member_notification_emails_from_engine,
+)
 from app.modules.notifications.receipts import (
     ReceiptInvalid,
     ReceiptNotConfigured,
@@ -509,7 +512,9 @@ from app.modules.notifications.receipts import (
 )
 from app.modules.notifications.models import MemberPushToken
 from app.modules.notifications.preferences import (
+    EmailNotificationCategoryUnavailable,
     MemberNotificationPreferenceItem,
+    MemberEmailUnavailable,
     MemberQuietHours,
     PreferenceMemberNotFound,
     PreferenceQuietHoursError,
@@ -2616,6 +2621,7 @@ class MemberNotificationReadAllResponse(BaseModel):
 class MemberNotificationPreferenceResponse(BaseModel):
     category: str
     push_enabled: bool
+    email_enabled: bool
     updated_at: datetime | None
 
 
@@ -2634,13 +2640,15 @@ class MemberClubQuietHoursResponse(BaseModel):
 
 class MemberNotificationPreferencesResponse(BaseModel):
     items: list[MemberNotificationPreferenceResponse]
+    email_available: bool
     quiet_hours: MemberNotificationQuietHoursResponse | None = None
     club_quiet_hours: MemberClubQuietHoursResponse | None = None
 
 
 class MemberNotificationPreferenceChange(BaseModel):
     category: str = Field(min_length=1, max_length=24)
-    push_enabled: bool
+    push_enabled: bool | None = None
+    email_enabled: bool | None = None
 
 
 class MemberNotificationQuietHoursUpdate(BaseModel):
@@ -3733,15 +3741,16 @@ def flush_member_pushes_after_response(
     background: BackgroundTasks,
     session: SessionDependency,
 ) -> None:
-    """Queue one member-push pass to run after the response is sent.
+    """Queue member email and push passes after the response is sent.
 
-    Same shape as the email hook: the task opens its own session on the
-    request's engine and the pass re-reads the queue, so a stale task only finds
-    nothing to do.
+    Each task opens its own session on the request's engine and re-reads its
+    queue, so SMTP and push calls stay outside the transaction and stale tasks
+    only find nothing to do.
     """
 
     bind = session.get_bind()
     if isinstance(bind, Engine):
+        background.add_task(send_pending_member_notification_emails_from_engine, bind)
         background.add_task(send_pending_member_push_deliveries_from_engine, bind)
 
 
@@ -4976,10 +4985,12 @@ def member_notification_preferences(
     session: SessionDependency,
 ) -> MemberNotificationPreferencesResponse:
     now = datetime.now(timezone.utc)
+    member_record = session.get(Member, member.member_id)
     return _member_preferences_response(
         list_member_preferences(session, member.member_id),
         get_member_quiet_hours(session, member.member_id),
         member_push_quiet_window(now),
+        email_available=bool(member_record and (member_record.email or "").strip()),
         now=now,
     )
 
@@ -5013,13 +5024,22 @@ def member_notification_preferences_update(
             detail="Envía al menos una categoría.",
         )
     changes: dict[str, bool] = {}
+    email_changes: dict[str, bool] = {}
     for change in request.categories:
-        if change.category in changes:
+        if change.category in changes or change.category in email_changes:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"La categoría '{change.category}' está repetida",
             )
-        changes[change.category] = change.push_enabled
+        if change.push_enabled is None and change.email_enabled is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Cada categoría debe incluir push_enabled o email_enabled.",
+            )
+        if change.push_enabled is not None:
+            changes[change.category] = change.push_enabled
+        if change.email_enabled is not None:
+            email_changes[change.category] = change.email_enabled
     try:
         if quiet_given:
             payload = request.quiet_hours
@@ -5029,8 +5049,13 @@ def member_notification_preferences_update(
                 payload.start if payload is not None else None,
                 payload.end if payload is not None else None,
             )
-        if changes:
-            update_member_preferences(session, member.member_id, changes)
+        if changes or email_changes:
+            update_member_preferences(
+                session,
+                member.member_id,
+                changes,
+                email_changes=email_changes,
+            )
     except UnknownNotificationCategory as error:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
@@ -5043,11 +5068,17 @@ def member_notification_preferences_update(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
         ) from error
+    except (EmailNotificationCategoryUnavailable, MemberEmailUnavailable) as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
     now = datetime.now(timezone.utc)
+    member_record = session.get(Member, member.member_id)
     return _member_preferences_response(
         list_member_preferences(session, member.member_id),
         get_member_quiet_hours(session, member.member_id),
         member_push_quiet_window(now),
+        email_available=bool(member_record and (member_record.email or "").strip()),
         now=now,
     )
 
@@ -11339,6 +11370,7 @@ def _member_preferences_response(
     quiet: MemberQuietHours | None = None,
     club: MemberPushQuietWindow | None = None,
     *,
+    email_available: bool,
     now: datetime | None = None,
 ) -> MemberNotificationPreferencesResponse:
     moment = now or datetime.now(timezone.utc)
@@ -11347,10 +11379,12 @@ def _member_preferences_response(
             MemberNotificationPreferenceResponse(
                 category=item.category,
                 push_enabled=item.push_enabled,
+                email_enabled=item.email_enabled,
                 updated_at=item.updated_at,
             )
             for item in items
         ],
+        email_available=email_available,
         quiet_hours=(
             MemberNotificationQuietHoursResponse(
                 start=quiet.start.strftime("%H:%M"),

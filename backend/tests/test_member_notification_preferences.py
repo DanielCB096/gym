@@ -21,9 +21,11 @@ from app.main import app, get_session
 from app.modules.memberships.models import Member
 from app.modules.notifications.models import (
     MEMBER_NOTIFICATION_CATEGORIES,
+    MEMBER_EMAIL_NOTIFICATION_CATEGORIES,
     NOTIFICATION_CATEGORY_BY_KIND,
     NOTIFICATION_KINDS,
     MemberNotification,
+    MemberNotificationEmailPreferenceEvent,
     MemberNotificationPreference,
     MemberNotificationSetting,
     MemberPushDelivery,
@@ -31,12 +33,15 @@ from app.modules.notifications.models import (
 from app.modules.notifications.preferences import (
     MemberQuietHours,
     PreferenceError,
+    EmailNotificationCategoryUnavailable,
+    MemberEmailUnavailable,
     PreferenceMemberNotFound,
     PreferenceQuietHoursError,
     UnknownNotificationCategory,
     category_for_kind,
     get_member_quiet_hours,
     is_push_enabled,
+    is_email_enabled,
     is_quiet_now,
     list_member_preferences,
     update_member_preferences,
@@ -103,8 +108,10 @@ def test_a_member_without_rows_has_every_switch_on(session: Session) -> None:
 
     assert [item.category for item in items] == list(MEMBER_NOTIFICATION_CATEGORIES)
     assert all(item.push_enabled is True for item in items)
+    assert all(item.email_enabled is False for item in items)
     assert all(item.updated_at is None for item in items)
     assert is_push_enabled(session, member.id, "class_reserved") is True
+    assert is_email_enabled(session, member.id, "class_reserved") is False
 
 
 def test_a_partial_update_leaves_the_other_switches_alone(session: Session) -> None:
@@ -128,6 +135,61 @@ def test_a_partial_update_leaves_the_other_switches_alone(session: Session) -> N
         )
     ).one()
     assert row.push_enabled is False
+
+
+def test_email_is_independent_opt_in_for_only_approved_categories(
+    session: Session,
+) -> None:
+    member = _member(session, email="ana@example.test")
+
+    update_member_preferences(
+        session,
+        member.id,
+        {},
+        email_changes={"classes": True, "billing": True},
+        now=NOW,
+    )
+
+    stored = {
+        item.category: item for item in list_member_preferences(session, member.id)
+    }
+    assert set(MEMBER_EMAIL_NOTIFICATION_CATEGORIES) == {
+        "membership",
+        "classes",
+        "billing",
+        "equipment",
+        "physio",
+    }
+    assert stored["classes"].email_enabled is True
+    assert stored["classes"].push_enabled is True
+    assert stored["training"].email_enabled is False
+    assert is_email_enabled(session, member.id, "class_reserved") is True
+    assert is_email_enabled(session, member.id, "workout_reviewed") is False
+    email_events = session.exec(
+        select(MemberNotificationEmailPreferenceEvent).where(
+            MemberNotificationEmailPreferenceEvent.member_id == member.id
+        )
+    ).all()
+    assert {
+        (event.category, event.enabled) for event in email_events
+    } == {("classes", True), ("billing", True)}
+
+    with pytest.raises(EmailNotificationCategoryUnavailable):
+        update_member_preferences(
+            session, member.id, {}, email_changes={"training": True}, now=NOW
+        )
+
+
+def test_email_opt_in_requires_an_address(session: Session) -> None:
+    member = _member(session, email="")
+    member.email = None
+    session.add(member)
+    session.commit()
+
+    with pytest.raises(MemberEmailUnavailable):
+        update_member_preferences(
+            session, member.id, {}, email_changes={"classes": True}, now=NOW
+        )
 
 
 def test_an_unknown_category_or_member_is_rejected(session: Session) -> None:
@@ -363,6 +425,8 @@ def test_the_api_returns_every_category(monkeypatch) -> None:
                 MEMBER_NOTIFICATION_CATEGORIES
             )
             assert all(item["push_enabled"] is True for item in items)
+            assert all(item["email_enabled"] is False for item in items)
+            assert response.json()["email_available"] is True
     finally:
         app.dependency_overrides.pop(get_session, None)
         engine.dispose()
@@ -399,6 +463,17 @@ def test_the_api_updates_a_switch_and_persists_it(monkeypatch) -> None:
             items = {item["category"]: item for item in reread.json()["items"]}
             assert items["physio"]["push_enabled"] is False
             assert items["equipment"]["push_enabled"] is True
+
+            email_on = client.patch(
+                "/member/notification-preferences",
+                headers=ana,
+                json={"categories": [{"category": "classes", "email_enabled": True}]},
+            )
+            assert email_on.status_code == 200, email_on.text
+            items = {item["category"]: item for item in email_on.json()["items"]}
+            assert items["classes"]["email_enabled"] is True
+            assert items["classes"]["push_enabled"] is True
+            assert items["training"]["email_enabled"] is False
     finally:
         app.dependency_overrides.pop(get_session, None)
         engine.dispose()
@@ -436,6 +511,20 @@ def test_the_api_rejects_bad_payloads_and_requires_a_session(monkeypatch) -> Non
                 },
             )
             assert duplicated.status_code == 422
+
+            missing_channel = client.patch(
+                "/member/notification-preferences",
+                headers=ana,
+                json={"categories": [{"category": "classes"}]},
+            )
+            assert missing_channel.status_code == 422
+
+            training_email = client.patch(
+                "/member/notification-preferences",
+                headers=ana,
+                json={"categories": [{"category": "training", "email_enabled": True}]},
+            )
+            assert training_email.status_code == 422
     finally:
         app.dependency_overrides.pop(get_session, None)
         engine.dispose()

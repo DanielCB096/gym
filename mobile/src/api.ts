@@ -403,7 +403,11 @@ export function getMemberNotificationPreferences(
 
 export function updateMemberNotificationPreferences(
   token: string,
-  categories: { category: MemberNotificationCategory; push_enabled: boolean }[],
+  categories: {
+    category: MemberNotificationCategory;
+    push_enabled?: boolean;
+    email_enabled?: boolean;
+  }[],
 ): Promise<MemberNotificationPreferences> {
   return request<MemberNotificationPreferences>("/member/notification-preferences", {
     method: "PATCH",

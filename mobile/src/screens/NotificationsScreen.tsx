@@ -28,6 +28,7 @@ import {
 } from "../notificationRouting";
 import { PUSH_PROBE_ENABLED, scheduleLocalPushProbe } from "../pushProbe";
 import { colors, radius, sharedStyles, spacing } from "../theme";
+import { MEMBER_EMAIL_NOTIFICATION_CATEGORIES } from "../types";
 import type {
   MemberClubQuietHours,
   MemberNotification,
@@ -76,6 +77,7 @@ export function NotificationsScreen({
   const [preferences, setPreferences] = useState<
     MemberNotificationPreference[] | null
   >(null);
+  const [emailAvailable, setEmailAvailable] = useState(false);
   const [quietHours, setQuietHours] =
     useState<MemberNotificationQuietHours | null>(null);
   const [clubQuietHours, setClubQuietHours] =
@@ -104,6 +106,7 @@ export function NotificationsScreen({
         ]);
         setInbox(next);
         setPreferences(prefs.items);
+        setEmailAvailable(prefs.email_available);
         setQuietHours(prefs.quiet_hours);
         setClubQuietHours(prefs.club_quiet_hours);
         setQuietStart(prefs.quiet_hours?.start ?? "");
@@ -198,7 +201,8 @@ export function NotificationsScreen({
 
   async function handleTogglePreference(
     category: MemberNotificationCategory,
-    pushEnabled: boolean,
+    channel: "push" | "email",
+    enabled: boolean,
   ) {
     if (preferenceBusy !== null) {
       return;
@@ -208,20 +212,28 @@ export function NotificationsScreen({
     setPreferences((current) =>
       current
         ? current.map((item) =>
-            item.category === category ? { ...item, push_enabled: pushEnabled } : item,
+            item.category === category
+              ? channel === "push"
+                ? { ...item, push_enabled: enabled }
+                : { ...item, email_enabled: enabled }
+              : item,
           )
         : current,
     );
     try {
       const updated = await updateMemberNotificationPreferences(token, [
-        { category, push_enabled: pushEnabled },
+        channel === "push"
+          ? { category, push_enabled: enabled }
+          : { category, email_enabled: enabled },
       ]);
       setPreferences(updated.items);
-      setNotice(
-        pushEnabled
-          ? `${CATEGORY_LABELS[category]}: volverás a recibir el aviso en el teléfono.`
-          : `${CATEGORY_LABELS[category]}: dejaremos de avisarte en el teléfono. El aviso seguirá en tu bandeja.`,
-      );
+      setEmailAvailable(updated.email_available);
+      const channelLabel = channel === "push" ? "teléfono" : "correo";
+      setNotice(`${CATEGORY_LABELS[category]}: ${
+        enabled
+          ? `recibirás los avisos nuevos por ${channelLabel}.`
+          : `no recibirás avisos nuevos por ${channelLabel}; seguirán en tu bandeja.`
+      }`);
       setError(null);
     } catch (toggleError) {
       setPreferences(previous);
@@ -240,6 +252,7 @@ export function NotificationsScreen({
     try {
       const updated = await updateMemberNotificationQuietHours(token, payload);
       setPreferences(updated.items);
+      setEmailAvailable(updated.email_available);
       setQuietHours(updated.quiet_hours);
       setClubQuietHours(updated.club_quiet_hours);
       setQuietStart(updated.quiet_hours?.start ?? "");
@@ -348,7 +361,9 @@ export function NotificationsScreen({
 
       {error ? (
         <View style={styles.errorBanner}>
-          <Text style={sharedStyles.error}>{error}</Text>
+          <Text accessibilityLiveRegion="polite" style={sharedStyles.error}>
+            {error}
+          </Text>
         </View>
       ) : null}
 
@@ -430,35 +445,72 @@ export function NotificationsScreen({
 
       {preferences ? (
         <View style={sharedStyles.card}>
-          <Text style={sharedStyles.label}>Avisos en el teléfono</Text>
+          <Text style={sharedStyles.label}>Preferencias de avisos</Text>
           <Text style={sharedStyles.body}>
-            Elige qué avisos quieres que suenen en tu teléfono. Si apagas una
-            categoría, el aviso se guarda igual en tu bandeja y solo deja de
-            interrumpirte.
+            Elige por separado qué avisos quieres recibir en el teléfono y por
+            correo. Ambas opciones son independientes y apagarlas no elimina el
+            aviso de tu bandeja. El correo se envía en cuanto se genera cada aviso.
           </Text>
           {preferences.map((item) => (
-            <View key={item.category} style={styles.preferenceRow}>
-              <View style={styles.preferenceCopy}>
-                <Text style={styles.preferenceTitle}>
-                  {CATEGORY_LABELS[item.category]}
-                </Text>
-                <Text style={sharedStyles.hint}>
-                  {item.push_enabled
-                    ? "Te avisamos en el teléfono."
-                    : "Solo aparece en tu bandeja."}
-                </Text>
+            <View key={item.category} style={styles.preferenceGroup}>
+              <Text style={styles.preferenceTitle}>
+                {CATEGORY_LABELS[item.category]}
+              </Text>
+              <View style={styles.preferenceRow}>
+                <View style={styles.preferenceCopy}>
+                  <Text style={styles.preferenceChannel}>Teléfono</Text>
+                  <Text style={sharedStyles.hint}>
+                    {item.push_enabled
+                      ? "Recibirás avisos en el teléfono."
+                      : "Solo aparecerán en tu bandeja."}
+                  </Text>
+                </View>
+                <Switch
+                  accessibilityRole="switch"
+                  accessibilityLabel={`Avisos de ${CATEGORY_LABELS[item.category]} en el teléfono`}
+                  value={item.push_enabled}
+                  disabled={preferenceBusy !== null}
+                  onValueChange={(value) =>
+                    void handleTogglePreference(item.category, "push", value)
+                  }
+                  trackColor={{ false: colors.surfaceMuted, true: colors.accent }}
+                  thumbColor={colors.surface}
+                />
               </View>
-              <Switch
-                accessibilityRole="switch"
-                accessibilityLabel={`Avisos de ${CATEGORY_LABELS[item.category]} en el teléfono`}
-                value={item.push_enabled}
-                disabled={preferenceBusy !== null}
-                onValueChange={(value) =>
-                  void handleTogglePreference(item.category, value)
-                }
-                trackColor={{ false: colors.surfaceMuted, true: colors.accent }}
-                thumbColor={colors.surface}
-              />
+              {MEMBER_EMAIL_NOTIFICATION_CATEGORIES.includes(item.category) ? (
+                <View style={styles.preferenceRow}>
+                  <View style={styles.preferenceCopy}>
+                    <Text style={styles.preferenceChannel}>Correo</Text>
+                    <Text style={sharedStyles.hint}>
+                      {!emailAvailable
+                        ? "Agrega un correo en tu perfil para activar este canal."
+                        : item.email_enabled
+                          ? "Recibirás cada aviso nuevo por correo."
+                          : "El correo está apagado; los avisos siguen en tu bandeja."}
+                    </Text>
+                  </View>
+                  <Switch
+                    accessibilityRole="switch"
+                    accessibilityLabel={`Avisos de ${CATEGORY_LABELS[item.category]} por correo`}
+                    accessibilityHint={
+                      emailAvailable
+                        ? "El correo es independiente de los avisos en el teléfono."
+                        : "Agrega un correo en tu perfil antes de activar esta opción."
+                    }
+                    value={item.email_enabled}
+                    disabled={preferenceBusy !== null || !emailAvailable}
+                    onValueChange={(value) =>
+                      void handleTogglePreference(item.category, "email", value)
+                    }
+                    trackColor={{ false: colors.surfaceMuted, true: colors.accent }}
+                    thumbColor={colors.surface}
+                  />
+                </View>
+              ) : (
+                <Text style={[sharedStyles.hint, styles.emailUnavailable]}>
+                  Los avisos de rutinas y metas no se envían por correo.
+                </Text>
+              )}
             </View>
           ))}
         </View>
@@ -653,11 +705,14 @@ const styles = StyleSheet.create({
   },
   preferenceRow: {
     alignItems: "center",
-    borderTopColor: colors.border,
-    borderTopWidth: 1,
     flexDirection: "row",
     gap: spacing.md,
     justifyContent: "space-between",
+    marginTop: spacing.sm,
+  },
+  preferenceGroup: {
+    borderTopColor: colors.border,
+    borderTopWidth: 1,
     marginTop: spacing.md,
     paddingTop: spacing.md,
   },
@@ -683,6 +738,14 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 15,
     fontWeight: "700",
+  },
+  preferenceChannel: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  emailUnavailable: {
+    marginTop: spacing.sm,
   },
   rowTitle: {
     color: colors.text,

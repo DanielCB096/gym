@@ -559,6 +559,35 @@ def test_preview_upgrade_registers_the_push_retry_and_receipt_columns() -> None:
     assert {"next_attempt_at", "expo_ticket_id", "receipt_checked_at"} <= columns
 
 
+def test_preview_upgrade_adds_the_default_off_member_email_preference() -> None:
+    assert preview_patch.ADDED_COLUMNS["member_notification_preferences"] == {
+        "email_enabled": "BOOLEAN NOT NULL DEFAULT 0",
+    }
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        'CREATE TABLE "member_notification_preferences" (\n'
+        "\tid CHAR(32) NOT NULL, \n"
+        "\tpush_enabled BOOLEAN NOT NULL DEFAULT 1, \n"
+        "\tPRIMARY KEY (id)\n"
+        ")"
+    )
+    connection.execute(
+        "INSERT INTO member_notification_preferences (id, push_enabled) "
+        "VALUES ('p1', 1)"
+    )
+
+    preview_patch.ensure_added_columns(
+        connection, "member_notification_preferences"
+    )
+    row = connection.execute(
+        "SELECT push_enabled, email_enabled "
+        "FROM member_notification_preferences WHERE id = 'p1'"
+    ).fetchone()
+
+    assert row == (1, 0)
+
+
 # The preview database stopped at the three kinds the first migration created.
 PRE_PUSH_ALERT_TABLE = (
     'CREATE TABLE "staff_notifications" (\n'

@@ -86,6 +86,14 @@ MEMBER_NOTIFICATION_CATEGORIES = (
     "equipment",
     "physio",
 )
+MEMBER_EMAIL_NOTIFICATION_CATEGORIES = (
+    "membership",
+    "classes",
+    "billing",
+    "equipment",
+    "physio",
+)
+MEMBER_EMAIL_CONSENT_VERSION = "member-notices-v1"
 
 NOTIFICATION_CATEGORY_BY_KIND = {
     "membership_expiring": "membership",
@@ -162,14 +170,11 @@ class MemberNotification(SQLModel, table=True):
 
 
 class MemberNotificationPreference(SQLModel, table=True):
-    """One push switch of one member for one category of notice.
+    """One push and email switch of one member for one category of notice.
 
-    Only the phone is switched, never the inbox: the notice is still written and
-    still counts as unread, because the member did not ask to miss it, only to be
-    interrupted less. A missing row means enabled, so the table only stores the
-    decisions the member actually made and a new category starts on by default.
-    The row is kept (rather than deleted) when the switch goes back on, so the
-    panel can tell an explicit "on" from a member who never touched the switch.
+    The inbox is never switched: the notice is still written and still counts
+    as unread. Missing rows mean push enabled and email disabled; the two
+    channels therefore have independent defaults and consent.
     """
 
     __tablename__ = "member_notification_preferences"
@@ -199,9 +204,118 @@ class MemberNotificationPreference(SQLModel, table=True):
         default=True,
         sa_column=Column(Boolean, nullable=False, server_default=text("true")),
     )
+    email_enabled: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
     updated_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
+class MemberNotificationEmailDelivery(SQLModel, table=True):
+    """Auditable, consent-gated email delivery for one member notice."""
+
+    __tablename__ = "member_notification_email_deliveries"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'sent', 'simulated', 'failed', 'cancelled')",
+            name="ck_member_notification_email_deliveries_status",
+        ),
+        CheckConstraint(
+            "attempts >= 0",
+            name="ck_member_notification_email_deliveries_attempts",
+        ),
+        UniqueConstraint(
+            "notification_id",
+            name="uq_member_notification_email_deliveries_notification",
+        ),
+        Index(
+            "ix_member_notification_email_deliveries_status_created",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "ix_member_notification_email_deliveries_message_id",
+            "message_id",
+            unique=True,
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    notification_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("member_notifications.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    member_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("members.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    recipient: str = Field(max_length=254)
+    message_id: str | None = Field(default=None, max_length=MAX_MESSAGE_ID_CHARS)
+    status: str = Field(
+        default="pending",
+        sa_column=Column(String(16), nullable=False, server_default=text("'pending'")),
+    )
+    attempts: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default=text("0")),
+    )
+    error: str | None = Field(default=None, max_length=500)
+    last_attempt_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    next_attempt_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    sent_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
+    )
+
+
+class MemberNotificationEmailPreferenceEvent(SQLModel, table=True):
+    """Append-only evidence of a member's email-consent changes."""
+
+    __tablename__ = "member_notification_email_preference_events"
+    __table_args__ = (
+        CheckConstraint(
+            "category IN ('membership', 'classes', 'billing', 'equipment', 'physio')",
+            name="ck_member_notification_email_preference_events_category",
+        ),
+        Index(
+            "ix_member_notification_email_preference_events_member_changed",
+            "member_id",
+            "changed_at",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    member_id: UUID = Field(
+        sa_column=Column(
+            Uuid(as_uuid=True),
+            ForeignKey("members.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    category: str = Field(max_length=24)
+    enabled: bool = Field(sa_column=Column(Boolean, nullable=False))
+    consent_version: str = Field(max_length=40)
+    changed_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
     )
 
 

@@ -1,4 +1,4 @@
-"""Delete the read notices and the finished staff deliveries past retention.
+"""Delete eligible notices and finished email/push deliveries past retention.
 
 Run it from the ``backend`` directory with the virtualenv Python:
 
@@ -14,11 +14,12 @@ purges:
 The inbox window is 365 days by default (``NOTIFICATION_INBOX_RETENTION_DAYS``
 or ``--inbox-days``): a member notice is deleted only when it was read, and a
 staff notice when its work is done — resolved if it was actionable, read if it
-only informed. The terminal deliveries of the two staff queues are kept 365 days
-(``STAFF_DELIVERY_RETENTION_DAYS`` or ``--delivery-days``). Unread notices, the
-unresolved actionable notices, the pending deliveries and any row a surviving
-receipt still points at are never touched. The member push queue and its
-receipts have their own purge in ``purge_push_data.py``.
+only informed. The terminal email and push deliveries are kept 365 days
+(``STAFF_DELIVERY_RETENTION_DAYS`` or ``--delivery-days``); despite its legacy
+name, the environment variable also covers member email deliveries. Unread
+notices, unresolved actionable notices, pending deliveries, scheduled retries
+and any row a surviving receipt still points at are never touched. The member
+push queue and its receipts have their own purge in ``purge_push_data.py``.
 """
 
 import argparse
@@ -49,8 +50,8 @@ PREVIEW_DATABASE_URL = "sqlite:///./gym_preview.db"
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Borra los avisos leídos o cerrados y las entregas terminadas del "
-            "personal anteriores a la retención configurada."
+            "Borra los avisos leídos o cerrados y las entregas de correo y push "
+            "terminadas anteriores a la retención configurada."
         )
     )
     parser.add_argument(
@@ -77,7 +78,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help=(
-            "días que se conserva una entrega terminada del personal "
+            "días que se conservan las entregas terminadas "
             f"(por defecto {DEFAULT_STAFF_DELIVERY_RETENTION_DAYS})"
         ),
     )
@@ -155,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = "Simulación (no se borró nada)" if result.dry_run else "Purga aplicada"
     print(
         f"{mode} — avisos de {result.inbox_days} días (mínimo "
-        f"{MIN_INBOX_RETENTION_DAYS}) y entregas del personal de "
+        f"{MIN_INBOX_RETENTION_DAYS}) y entregas de correo/push de "
         f"{result.delivery_days} días (mínimo {MIN_DELIVERY_RETENTION_DAYS}, "
         f"máximo {MAX_RETENTION_DAYS})."
     )
@@ -168,7 +169,8 @@ def main(argv: list[str] | None = None) -> int:
         f"Entregas terminadas creadas antes de "
         f"{result.delivery_cutoff:%Y-%m-%d %H:%M} UTC: "
         f"{result.staff_email_deliveries_deleted} de correo y "
-        f"{result.staff_push_deliveries_deleted} de push del personal"
+        f"{result.staff_push_deliveries_deleted} de push del personal, "
+        f"{result.member_email_deliveries_deleted} de correo del socio"
     )
     return 0
 

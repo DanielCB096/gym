@@ -379,9 +379,18 @@ export type MemberNotificationCategory =
   | "equipment"
   | "physio";
 
+export const MEMBER_EMAIL_NOTIFICATION_CATEGORIES: readonly MemberNotificationCategory[] = [
+  "membership",
+  "classes",
+  "billing",
+  "equipment",
+  "physio",
+];
+
 export type MemberNotificationPreference = {
   category: MemberNotificationCategory;
   push_enabled: boolean;
+  email_enabled: boolean;
   updated_at: string | null;
 };
 
@@ -400,6 +409,7 @@ export type MemberClubQuietHours = {
 
 export type MemberNotificationPreferences = {
   items: MemberNotificationPreference[];
+  email_available: boolean;
   quiet_hours: MemberNotificationQuietHours | null;
   club_quiet_hours: MemberClubQuietHours | null;
 };

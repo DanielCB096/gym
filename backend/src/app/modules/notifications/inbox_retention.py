@@ -3,18 +3,18 @@
 The member and the staff inboxes are append-only from the reader's point of
 view: a notice is never edited and only the emitting service can close it. They
 also grow forever, because every event of the club leaves a row, and the panel
-and the app read a bounded page at a time anyway. The same happens with the two
-staff delivery queues: the email row and the browser push row of every notice,
-plus the Expo receipt and the pushes of the member (those two already have their
-own purge in ``push_retention`` and ``retention``).
+and the app read a bounded page at a time anyway. The staff delivery queues
+store email and browser push per notice; member email is covered here too, while
+Expo receipts and member push have their own purge in ``push_retention`` and
+``retention``.
 
 This module deletes history that nobody reads anymore:
 
 * a member notice that was read and is older than the inbox window;
 * a staff notice from the same window whose work is finished —resolved when it
   was actionable, read when it only informed—;
-* a terminal delivery (``sent``, ``simulated`` or ``failed``) of either staff
-  queue past the delivery window, once no provider receipt still points at it.
+* a terminal email or push delivery past the delivery window, once no provider
+  receipt still points at it.
 
 Three guards keep the deletion safe. A notice is never touched while any
 delivery still points at it (the foreign keys are ``RESTRICT``, so deleting the
@@ -36,6 +36,7 @@ from sqlmodel import Session, select
 
 from app.modules.notifications.models import (
     MemberNotification,
+    MemberNotificationEmailDelivery,
     MemberPushDelivery,
     StaffNotification,
     StaffNotificationDelivery,
@@ -46,6 +47,7 @@ from app.modules.notifications.models import (
 from app.modules.notifications.service import CLOSABLE_STAFF_KINDS
 
 INBOX_RETENTION_ENV = "NOTIFICATION_INBOX_RETENTION_DAYS"
+# Kept for compatibility; the setting now also governs member email deliveries.
 STAFF_DELIVERY_RETENTION_ENV = "STAFF_DELIVERY_RETENTION_DAYS"
 DEFAULT_INBOX_RETENTION_DAYS = 365
 DEFAULT_STAFF_DELIVERY_RETENTION_DAYS = 365
@@ -53,6 +55,7 @@ MIN_INBOX_RETENTION_DAYS = 30
 MIN_DELIVERY_RETENTION_DAYS = 1
 MAX_RETENTION_DAYS = 3650
 TERMINAL_DELIVERY_STATUSES = ("sent", "simulated", "failed")
+TERMINAL_MEMBER_EMAIL_STATUSES = ("sent", "simulated", "failed", "cancelled")
 # Materialised on read, so deleting it would let the same warning be written
 # again while the device still carries that expiry date; it is one row per
 # device, phase and account, tiny against the event notices.
@@ -73,6 +76,7 @@ class InboxPurgeResult:
     delivery_cutoff: datetime
     member_notices_deleted: int
     staff_notices_deleted: int
+    member_email_deliveries_deleted: int
     staff_email_deliveries_deleted: int
     staff_push_deliveries_deleted: int
     dry_run: bool
@@ -101,7 +105,7 @@ def purge_inbox_history(
     delivery_days: int | None = None,
     dry_run: bool = False,
 ) -> InboxPurgeResult:
-    """Delete the read notices and terminal staff deliveries past their window.
+    """Delete eligible notices and terminal email/push deliveries past their window.
 
     The deliveries go first: the notices point at them through ``RESTRICT``
     foreign keys, so a notice whose email or push row is still inside the
@@ -138,6 +142,11 @@ def purge_inbox_history(
         ~select(MemberPushDelivery.id)
         .where(MemberPushDelivery.notification_id == MemberNotification.id)
         .exists(),
+        ~select(MemberNotificationEmailDelivery.id)
+        .where(
+            MemberNotificationEmailDelivery.notification_id == MemberNotification.id
+        )
+        .exists(),
     )
     staff_notice_condition = and_(
         StaffNotification.kind != KIOSK_TOKEN_NOTICE_KIND,
@@ -166,6 +175,11 @@ def purge_inbox_history(
         )
         .exists(),
     )
+    member_email_delivery_condition = and_(
+        MemberNotificationEmailDelivery.status.in_(TERMINAL_MEMBER_EMAIL_STATUSES),
+        MemberNotificationEmailDelivery.next_attempt_at.is_(None),
+        MemberNotificationEmailDelivery.created_at < delivery_cutoff,
+    )
     push_delivery_condition = and_(
         StaffPushDelivery.status.in_(TERMINAL_DELIVERY_STATUSES),
         StaffPushDelivery.created_at < delivery_cutoff,
@@ -176,12 +190,22 @@ def purge_inbox_history(
         email_deleted = _count(
             session, StaffNotificationDelivery, email_delivery_condition
         )
+        member_email_deleted = _count(
+            session,
+            MemberNotificationEmailDelivery,
+            member_email_delivery_condition,
+        )
         staff_deleted = _count(session, StaffNotification, staff_notice_condition)
         member_deleted = _count(session, MemberNotification, member_notice_condition)
     else:
         push_deleted = _delete(session, StaffPushDelivery, push_delivery_condition)
         email_deleted = _delete(
             session, StaffNotificationDelivery, email_delivery_condition
+        )
+        member_email_deleted = _delete(
+            session,
+            MemberNotificationEmailDelivery,
+            member_email_delivery_condition,
         )
         staff_deleted = _delete(session, StaffNotification, staff_notice_condition)
         member_deleted = _delete(session, MemberNotification, member_notice_condition)
@@ -194,6 +218,7 @@ def purge_inbox_history(
         delivery_cutoff=delivery_cutoff,
         member_notices_deleted=member_deleted,
         staff_notices_deleted=staff_deleted,
+        member_email_deliveries_deleted=member_email_deleted,
         staff_email_deliveries_deleted=email_deleted,
         staff_push_deliveries_deleted=push_deleted,
         dry_run=dry_run,

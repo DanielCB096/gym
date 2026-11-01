@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-31 · Avisos: correo opcional para el socio (ADR-081)
+
+- Se añadió correo por categoría independiente del push, apagado por defecto y con consentimiento append-only. La cola se crea junto al aviso y, antes de SMTP, vuelve a validar el consentimiento y que la dirección no haya cambiado.
+- Se añadió envío inmediato tras responder, recuperación/reintentos limitados por `flush_member_email.py` y cron cada 15 minutos. La vista previa simula y no contacta SMTP; la purga compartida de ADR-075 incluye entregas terminales y canceladas del socio, sin podar consentimientos.
+- La app ofrece switches de correo para Membresía, Clases, Facturas, Equipo y Fisioterapia; Rutinas y metas quedan excluidas. Se añadieron la migración `20261031_0078`, la adaptación de la base de vista previa y la documentación ADR-081.
+- Validación: suite backend **608 aprobadas y 8 omitidas** (`TEST_POSTGRES_URL` no configurada), typecheck móvil aprobado y `alembic heads` confirma `20261031_0078`. La revisión estática móvil encontró un error de guardado que no se anunciaba al lector de pantalla; se corrigió con `accessibilityLiveRegion="polite"`. La comprobación en VoiceOver/TalkBack y hardware real sigue pendiente.
+
 ## 2026-10-31 · Mantenimiento: avisar al socio cuando vuelve el equipo
 
 - Se completó `equipment_back_in_service`: se avisa a los socios cuyos planes vigentes usan el equipo al cambiar directamente de `out_of_service` a `operational`, manualmente o al cerrar el ticket que lo bloqueaba. La audiencia mantiene la deduplicación por equipo, socio y día del club; los estados intermedios no anuncian regreso.

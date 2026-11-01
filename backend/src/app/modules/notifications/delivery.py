@@ -17,7 +17,7 @@ concurrent passes from sending the same row twice.
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, update
 from sqlalchemy.engine import Engine
@@ -25,6 +25,7 @@ from sqlmodel import Session, select
 
 from app.mailer import MailerError, send_email
 from app.modules.notifications.models import (
+    MAX_MESSAGE_ID_CHARS,
     StaffNotification,
     StaffNotificationDelivery,
     StaffNotificationDeliveryReceipt,
@@ -66,6 +67,17 @@ NOTICE_LOCATIONS = {
     ),
 }
 MAX_SUBJECT_CHARS = 180
+DEFAULT_MESSAGE_ID_DOMAIN = "centro-fit.local"
+
+
+def new_message_id() -> str:
+    """Create the stable header identifier shared by notification emails."""
+
+    domain = (
+        os.getenv("EMAIL_MESSAGE_ID_DOMAIN", DEFAULT_MESSAGE_ID_DOMAIN).strip()
+        or DEFAULT_MESSAGE_ID_DOMAIN
+    )
+    return f"{uuid4().hex}@{domain.lower()}"[:MAX_MESSAGE_ID_CHARS]
 
 
 class NotificationDeliveryError(Exception):
