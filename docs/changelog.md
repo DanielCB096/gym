@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-01 · Socios: la ventana «por vencer» acepta su instante
+
+- `_member_state_condition` en `backend/src/app/modules/memberships/service.py` leía `utc_now()` por dentro y no aceptaba un instante: era el último ciego que quedó del dictamen de fechas, y el único punto abierto de `docs/deuda-tecnica.md` sobre este tema. Ahora recibe `now=` y `list_member_overview` también, de modo que la prueba puede fijar el calendario.
+- La ventana de siete días vivía escrita dos veces —en el filtro y en el resumen del directorio— y podía divergir. Se extrae a `_expiring_soon_condition` y ambos la comparten; `list_member_overview` pasa el mismo instante al filtro y al chip, así que ya no puede darse el caso de que la lista y el contador del encabezado midan desde horas distintas.
+- `test_members_api.py` estrenó la prueba de la frontera: seis socios sembrados en un instante fijo (vence justo ahí, a tres días, a siete exactos, a siete y un segundo, vencido un segundo antes y una congelada dentro de la ventana) y tres lecturas del filtro —el instante, un día y cinco días después— exigiendo cada vez `summary.expiring_soon == total`.
+- Sin cambios de firma hacia afuera: `main.py` sigue llamando sin `now` y obtiene el reloj de la sala.
+- Validación: suite backend **637 pruebas: 629 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL`. Cinco mutaciones producen cinco fallos —volver estricto cada uno de los dos bordes, que el filtro ignore el instante, que lo ignore el resumen, y que el resumen escriba su propio predicado perdiendo el borde superior—; el archivo mutado se restauró byte a byte.
+
 ## 2026-11-01 · Fisioterapia: la extensión del paquete deja de depender del reloj
 
 - `test_physio_control_api.py` comparaba los dos vencimientos con un margen de un minuto porque cada petición leía el reloj de la sala. La prueba del paquete vigente ahora exige `nuevo = viejo + 10 días` exactos.

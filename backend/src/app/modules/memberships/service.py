@@ -241,6 +241,7 @@ def list_member_overview(
     direction: str = "asc",
     state: str | None = None,
     plan_id: UUID | None = None,
+    now: datetime | None = None,
 ) -> MemberPage:
     """Return a page of members with their most recent membership and plan.
 
@@ -251,6 +252,10 @@ def list_member_overview(
     ``pending``) and ``plan_id`` narrows to members whose latest membership uses
     that plan. Summary counters and the ``plans`` options are club-wide and
     intentionally ignore the search term and filters so the header stays stable.
+
+    ``now`` pins the instant the seven-day window is measured from. The filter
+    and the summary header read the same one, so a caller that fixes it cannot
+    end up with a chip and a list that disagree.
     """
     if page < 1:
         raise ValueError("page must be at least 1")
@@ -284,7 +289,7 @@ def list_member_overview(
     if term:
         conditions.append(_member_search_condition(term))
     if state is not None:
-        conditions.append(_member_state_condition(state))
+        conditions.append(_member_state_condition(state, now=now))
     if plan_id is not None:
         conditions.append(Membership.plan_id == plan_id)
     for condition in conditions:
@@ -321,7 +326,7 @@ def list_member_overview(
         page=page,
         page_size=page_size,
         pages=pages,
-        summary=member_directory_summary(session),
+        summary=member_directory_summary(session, now=now),
         plans=_member_plan_options(session),
     )
 
@@ -379,20 +384,27 @@ def _member_search_condition(term: str):
     return and_(*conditions)
 
 
-def _member_state_condition(state: str):
+def _expiring_soon_condition(moment: datetime):
+    """The one shape of "expiring soon": active and ending within the window.
+
+    The directory summary and the ``state=expiring_soon`` filter must agree, so
+    neither of them writes the predicate on its own.
+    """
+    return and_(
+        Membership.status == "active",
+        Membership.ends_at >= moment,
+        Membership.ends_at <= moment + timedelta(days=MEMBER_EXPIRING_SOON_DAYS),
+    )
+
+
+def _member_state_condition(state: str, *, now: datetime | None = None):
     if state == "active":
         return Membership.status == "active"
     if state == "frozen":
         return Membership.status == "frozen"
     if state == "pending":
         return or_(Member.status == "pending", Membership.status == "pending_payment")
-    moment = _as_utc(utc_now())
-    soon = moment + timedelta(days=MEMBER_EXPIRING_SOON_DAYS)
-    return and_(
-        Membership.status == "active",
-        Membership.ends_at >= moment,
-        Membership.ends_at <= soon,
-    )
+    return _expiring_soon_condition(_as_utc(now or utc_now()))
 
 
 def _member_order_by(sort: str, direction: str) -> list:
@@ -412,7 +424,6 @@ def _member_order_by(sort: str, direction: str) -> list:
 
 def member_directory_summary(session: Session, *, now: datetime | None = None) -> MemberDirectorySummary:
     moment = _as_utc(now or utc_now())
-    soon = moment + timedelta(days=MEMBER_EXPIRING_SOON_DAYS)
     ranked = _latest_membership_subquery()
     membership_join = and_(ranked.c.member_id == Member.id, ranked.c.rn == 1)
     statement = (
@@ -421,17 +432,8 @@ def member_directory_summary(session: Session, *, now: datetime | None = None) -
             func.coalesce(func.sum(case((Membership.status == "active", 1), else_=0)), 0),
             func.coalesce(
                 func.sum(
-                    case(
-                        (
-                            and_(
-                                Membership.status == "active",
-                                Membership.ends_at >= moment,
-                                Membership.ends_at <= soon,
-                            ),
-                            1,
-                        ),
-                        else_=0,
-                    )
+                    case((_expiring_soon_condition(moment), 1)),
+                    else_=0,
                 ),
                 0,
             ),

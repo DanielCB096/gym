@@ -16,6 +16,7 @@ from app.modules.memberships.models import (
     MembershipEvent,
     Plan,
 )
+from app.modules.memberships.service import list_member_overview
 
 
 def _build_engine():
@@ -226,6 +227,99 @@ def test_admin_members_sorting_and_state_filter() -> None:
     finally:
         app.dependency_overrides.pop(get_session, None)
         engine.dispose()
+
+
+def _seed_expiring_boundary(session: Session, moment: datetime) -> None:
+    """Socios con vencimientos justo en los bordes de la ventana de siete días.
+
+    Todo cuelga del instante que recibe la siembra: la frontera solo es frontera
+    si el `now` de la prueba es el mismo `now` que recibe el servicio.
+    """
+    plan = Plan(code="MONTHLY", name="Mensual", duration_days=30, price_cents=50000)
+    session.add(plan)
+    session.flush()
+
+    people = [
+        ("Cero", "Cero", "cero@example.com", "active", moment),
+        ("Media", "Media", "media@example.com", "active", moment + timedelta(days=3)),
+        ("Once", "Once", "once@example.com", "active", moment + timedelta(days=7)),
+        ("Paso", "Paso", "paso@example.com", "active", moment + timedelta(days=7, seconds=1)),
+        ("Vencido", "Vencido", "vencido@example.com", "active", moment - timedelta(seconds=1)),
+        ("Fria", "Fria", "fria@example.com", "frozen", moment + timedelta(days=2)),
+    ]
+    for first_name, last_name, email, status, ends_at in people:
+        member = Member(first_name=first_name, last_name=last_name, email=email, status="active")
+        session.add(member)
+        session.flush()
+        session.add(
+            Membership(
+                member_id=member.id,
+                plan_id=plan.id,
+                status=status,
+                starts_at=ends_at - timedelta(days=30),
+                ends_at=ends_at,
+            )
+        )
+    session.commit()
+
+
+def test_the_expiring_soon_window_is_measured_from_the_injected_instant() -> None:
+    """El filtro «por vencer» y el chip del resumen leen el mismo instante.
+
+    La regla vive en `_expiring_soon_condition`: membresía activa cuyo vencimiento
+    cae entre `now` y `now` más siete días, con los dos bordes incluidos. Por HTTP
+    el «ahora» lo decide el reloj de la sala, así que la frontera se recorre
+    llamando al servicio con `now=` sobre una siembra anclada a ese mismo instante.
+    """
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    moment = datetime(2027, 3, 15, 9, 0, tzinfo=timezone.utc)
+    with Session(engine) as session:
+        _seed_expiring_boundary(session, moment)
+
+    with Session(engine) as session:
+        at_the_seed = list_member_overview(session, state="expiring_soon", now=moment)
+        assert [item.email for item in at_the_seed.items] == [
+            "cero@example.com",
+            "media@example.com",
+            "once@example.com",
+        ]
+        assert at_the_seed.total == 3
+        # El chip que ve recepción coincide con lo que entrega el filtro en el
+        # mismo instante: sin el `now` compartido, el resumen iría por el reloj
+        # de la sala y la lista por el instante de la llamada.
+        assert at_the_seed.summary.expiring_soon == at_the_seed.total
+
+        # Un segundo más allá del borde ya no entra, y congelada nunca entra.
+        assert "paso@example.com" not in [item.email for item in at_the_seed.items]
+        assert "fria@example.com" not in [item.email for item in at_the_seed.items]
+
+        # Vencido un segundo antes tampoco: la ventana empieza en `now`, incluido.
+        assert "vencido@example.com" not in [item.email for item in at_the_seed.items]
+
+    with Session(engine) as session:
+        one_day_later = list_member_overview(
+            session, state="expiring_soon", now=moment + timedelta(days=1)
+        )
+        # La ventana se corrió: Cero quedó atrás y Paso entró por la orilla.
+        assert [item.email for item in one_day_later.items] == [
+            "media@example.com",
+            "once@example.com",
+            "paso@example.com",
+        ]
+        assert one_day_later.summary.expiring_soon == one_day_later.total
+
+    with Session(engine) as session:
+        five_days_later = list_member_overview(
+            session, state="expiring_soon", now=moment + timedelta(days=5)
+        )
+        assert [item.email for item in five_days_later.items] == [
+            "once@example.com",
+            "paso@example.com",
+        ]
+        assert five_days_later.summary.expiring_soon == five_days_later.total
+
+    engine.dispose()
 
 
 def _login(client: TestClient, email: str, password: str) -> dict[str, str]:
