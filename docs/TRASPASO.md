@@ -1,6 +1,6 @@
 # Traspaso para retomar el trabajo
 
-Actualizado: 2026-10-31 · Rama: `main` · ADR-079 en `4ee66d5`, ADR-078 en `162abf2`, ADR-076 en `84dae39`, ADR-075 en `38d19bf`, ADR-074 en `eaf09b2`, ADR-073 en `097176a`, ADR-072 en `cf1930f`, ADR-071 en `cb87609`, ADR-070 en `316ede7`, ADR-069 en `b6ea88f`, ADR-068 en `036f553`, ADR-067 en `b2b454a`, ADR-065 en `6cb1632`, ADR-064 en `7ee0bdd`, ADR-063 en `96e967f`, ADR-062 en `d9594e4`, ADR-061 en `dd482d7`, ADR-059 en `984c901`, ADR-058 en `f4280ae`, ADR-057 en `39391dc`, ADR-056 en `e4c4399`, ADR-055 en `d7c21ac`, ADR-054 en `94c3a6a` y ADR-050 a ADR-053 en `8a0daa8`.
+Actualizado: 2026-10-31 · Rama: `main` · ADR-080 en `dab7a5e`, ADR-079 en `4ee66d5`, ADR-078 en `162abf2`, ADR-076 en `84dae39`, ADR-075 en `38d19bf`, ADR-074 en `eaf09b2`, ADR-073 en `097176a`, ADR-072 en `cf1930f`, ADR-071 en `cb87609`, ADR-070 en `316ede7`, ADR-069 en `b6ea88f`, ADR-068 en `036f553`, ADR-067 en `b2b454a`, ADR-065 en `6cb1632`, ADR-064 en `7ee0bdd`, ADR-063 en `96e967f`, ADR-062 en `d9594e4`, ADR-061 en `dd482d7`, ADR-059 en `984c901`, ADR-058 en `f4280ae`, ADR-057 en `39391dc`, ADR-056 en `e4c4399`, ADR-055 en `d7c21ac`, ADR-054 en `94c3a6a` y ADR-050 a ADR-053 en `8a0daa8`.
 
 Esta nota es el punto de entrada para otra persona o IA. El estado detallado vive en [README.md](README.md#estado-del-proyecto) y el histórico en [changelog.md](changelog.md); aquí solo se resume qué está hecho, qué sigue y qué no debe tocarse sin pedirlo.
 
