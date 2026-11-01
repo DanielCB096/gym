@@ -923,7 +923,12 @@ def test_difference_note_flagging_and_manual_search() -> None:
             assert back.json()["status"] == "pending"
             assert back.json()["note"] is None
 
-            old_payment = datetime.now(timezone.utc) - timedelta(days=20)
+            # Las dos ventanas —±7 días la sugerencia y ±60 la búsqueda manual— se
+            # miden contra la fecha del movimiento, no contra el reloj real. Un
+            # pago en `now - 20 días` entraba en la ventana de siete el 6 de
+            # noviembre y el `candidates == []` se volvía rojo sin que la regla
+            # hubiera cambiado; se siembra respecto del movimiento.
+            old_payment = _club_day_noon(date(2026, 10, 24) - timedelta(days=20))
             with Session(engine) as session:
                 payment = session.get(Payment, ids["payment_id"])
                 assert payment is not None

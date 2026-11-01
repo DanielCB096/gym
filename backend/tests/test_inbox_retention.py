@@ -73,9 +73,10 @@ def _member_notice(
     read: bool = True,
     kind: str = "class_reserved",
     member: Member | None = None,
+    now: datetime = NOW,
 ) -> MemberNotification:
     member = member or _member(session)
-    created_at = NOW - timedelta(days=created_days_ago)
+    created_at = now - timedelta(days=created_days_ago)
     notice = MemberNotification(
         member_id=member.id,
         kind=kind,
@@ -153,8 +154,9 @@ def _staff_notice(
     read: bool = True,
     resolved: bool = False,
     kind: str = "attendance_corrected",
+    now: datetime = NOW,
 ) -> StaffNotification:
-    created_at = NOW - timedelta(days=created_days_ago)
+    created_at = now - timedelta(days=created_days_ago)
     notice = StaffNotification(
         user_id=user.id,
         kind=kind,
@@ -513,14 +515,19 @@ def test_policy_rejects_an_invalid_environment(
 
 
 def _seed_database_file(db_path: Path) -> dict[str, UUID]:
+    # El script de purga corre con el reloj de la sala, no con la `NOW` congelada
+    # del resto del archivo: sembrar contra el mismo instante que él va a leer.
+    # Con la fecha congelada, el aviso «joven» dejaba de serlo al vencer los 365
+    # días y la prueba se ponía roja sin que la retención hubiera cambiado.
+    real_now = datetime.now(timezone.utc)
     engine = create_engine(f"sqlite:///{db_path.as_posix()}")
     try:
         SQLModel.metadata.create_all(engine)
         with Session(engine) as session:
-            old_read = _member_notice(session, created_days_ago=400)
-            young_unread = _member_notice(session, created_days_ago=1, read=False)
+            old_read = _member_notice(session, created_days_ago=400, now=real_now)
+            young_unread = _member_notice(session, created_days_ago=1, read=False, now=real_now)
             user = _user(session)
-            old_staff = _staff_notice(session, user, created_days_ago=400)
+            old_staff = _staff_notice(session, user, created_days_ago=400, now=real_now)
             return {
                 "old_read": old_read.id,
                 "young_unread": young_unread.id,

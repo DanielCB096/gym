@@ -1427,7 +1427,11 @@ def test_member_row_lock_precedes_the_limits_read(monkeypatch) -> None:
         plan.daily_entry_limit = 3
         session.add(plan)
         device, _ = create_kiosk_device(session, label="Tablet")
-        now = datetime(2026, 10, 28, 18, 0, tzinfo=timezone.utc)
+        # `_seed` planta la membresía respecto del reloj real, así que la base de
+        # esta prueba también lo es: congelar el instante aquí dejaba la siembra
+        # fuera de la ventana de la membresía ocho días después y el kiosco
+        # negaba el código sin que la regla hubiera cambiado.
+        now = datetime.now(timezone.utc)
 
         issued = issue_member_access_code(session, ids["ana"], now=now)
         assert order == ["lock"]
@@ -1556,10 +1560,20 @@ def test_kiosk_denies_outside_the_plan_schedule(monkeypatch) -> None:
     with Session(engine) as session:
         ids = _seed(session)
         device, _ = create_kiosk_device(session, label="Tablet")
-        monday_morning = datetime(2026, 10, 26, 10, 0, tzinfo=timezone.utc)
-        monday_night = datetime(2026, 10, 26, 23, 0, tzinfo=timezone.utc)
-        tuesday_early = datetime(2026, 10, 27, 1, 0, tzinfo=timezone.utc)
-        tuesday_after = datetime(2026, 10, 27, 3, 0, tzinfo=timezone.utc)
+        # La ventana del plan se evalúa por día de la semana y hora, pero la
+        # membresía que siembra `_seed` cuelga del reloj real: el ancla tiene que
+        # ser un lunes próximo calculado desde hoy. Un lunes del calendario —como
+        # el 2026-10-26 con el que nació esta prueba— deja de estar cubierto por
+        # la membresía cinco días después y el kiosco negaba el código por
+        # vencimiento, no por horario.
+        today = datetime.now(timezone.utc)
+        monday = (today + timedelta(days=(7 - today.weekday()) % 7)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        monday_morning = monday + timedelta(hours=10)
+        monday_night = monday + timedelta(hours=23)
+        tuesday_early = monday + timedelta(days=1, hours=1)
+        tuesday_after = monday + timedelta(days=1, hours=3)
 
         replace_plan_access_windows(
             session,
