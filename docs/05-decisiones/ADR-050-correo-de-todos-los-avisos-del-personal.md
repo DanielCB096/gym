@@ -26,6 +26,7 @@ La infraestructura ya resuelve los problemas difíciles —no hay worker, el env
 - **No hay relleno.** Los avisos escritos mientras el canal estaba apagado —o antes de este corte— no se encolan al encenderlo; solo los avisos nuevos.
 - **La ventana at-least-once y la falta de acuse siguen igual.** `sent` es que el servidor SMTP aceptó el mensaje, y el intento se confirma antes de enviar, así que un corte entre la aceptación y el `commit` puede repetir el correo. Ver la deuda técnica.
 - **El destinatario sigue congelado al emitir.** Si la cuenta del técnico o del entrenador cambia de correo después, la entrega conserva la dirección anterior; una cuenta deshabilitada o sin correo deja el aviso solo en la campana.
+- **Actualización de ADR-079 (2026-10-31).** La cola ya no espera a que alguien abra el panel: `backend/flush_staff_email.py` la drena por cron cada 15 minutos con la misma pasada, respetando el interruptor del club y sin reintentar las `failed`.
 
 ## Referencias
 

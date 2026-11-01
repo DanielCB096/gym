@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-31 · Avisos: drenado programado de la cola de correo del personal (ADR-079)
+
+- `backend/flush_staff_email.py` drena por cron las entregas de correo del personal que quedaron `pending` cuando el proceso murió entre el commit del aviso y la pasada que viaja con la respuesta. Llama a `send_pending_staff_notification_emails_from_engine` —la misma pasada del gancho y del botón «Enviar pendientes»—, toma hasta 20 filas por corrida (`--limit`, de 1 a 100), las reclama con el compare-and-set de `attempts` y las envía por SMTP. No reintenta ni reprograma las `failed`: esas siguen esperando a una persona, igual que en la tarjeta. Acepta `--preview` sobre `gym_preview.db` (marca `simulated` y no contacta al correo) y `--database-url`, con código 2 para configuración inválida y 1 para base inalcanzable.
+- El interruptor del club se respeta al drenar: con el correo del personal apagado la pasada no envía nada, lo informa y deja las filas pendientes para cuando se reactive. Sin migración, sin endpoint y sin cambio de pantalla: la tarjeta sigue mostrando los conteos y los botones de siempre.
+- `ops_cron.py` pasó a nueve entradas: la del correo corre cada 15 minutos por defecto (`--staff-email-every`, de 5 a 59 o 60) con bitácora `staff-email.log`, después del push del personal y antes de los avisos diferidos; `--install` exige también el script. Se actualizaron ADR-049, ADR-050, ADR-063, ADR-071, la ficha de avisos, la guía de despliegue, la deuda, el plan de pruebas, TRASPASO y el README del backend.
+- Suite backend completa: **586 pruebas, 578 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL` (`test_staff_email_flush.py` suma 8 y el cron pasa a 38).
+
 ## 2026-10-31 · Avisos: push para los recordatorios diferidos (ADR-078)
 
 - `materialise_deferred_notices` ahora encola el push de los tres recordatorios del socio. Los productores —membresía, clase y fisioterapia— aceptan `push: bool = False` y las rutas de lectura de la bandeja y del contador lo dejan apagado, así que siguen materializando en silencio; la pasada por cron pasa `push=True` porque nadie está mirando. El encolado respeta la preferencia por categoría y la ausencia de token activo; el envío conserva la ventana del club, la del socio, el reintento con espera y el aviso al personal.

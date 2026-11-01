@@ -25,6 +25,7 @@ La cola del socio ya tiene su planificador (ADR-062) y el instalador de cron (AD
 - **Sigue sin haber acuse de visualización.** `sent` significa que el servicio de push aceptó el mensaje (ADR-070); el planificador no cambia eso.
 - **Cada corrida envía como máximo 20 entregas.** Si la cola crece por un apagón largo, se drena en varias corridas o se lanza el script a mano con `--limit` mayor.
 - **Requiere la configuración VAPID del backend.** Sin `VAPID_PRIVATE_KEY` el script falla cada entrega y las deja `failed`, igual que el gancho; el motivo queda en el detalle de cada fila.
+- **El mismo patrón se aplicó a la cola de correo (ADR-079).** `backend/flush_staff_email.py` drena las entregas de correo `pending` con la misma pasada del gancho y con un tope de 20 por corrida, respetando el interruptor del club al drenar.
 
 ## Referencias
 

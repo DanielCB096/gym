@@ -1,8 +1,8 @@
 """Install the cron entries that keep the operations data fresh.
 
 The application has no scheduler: the maintenance scripts run from the host's
-cron (ADR-058, ADR-062, ADR-071, ADR-073, ADR-074, ADR-075, ADR-076). This
-script renders the eight entries as one block delimited by markers, so
+cron (ADR-058, ADR-062, ADR-071, ADR-073, ADR-074, ADR-075, ADR-076, ADR-079).
+This script renders the nine entries as one block delimited by markers, so
 reinstalling after moving the app,
 changing the database password or adjusting the schedule replaces the old block
 instead of duplicating lines, and unrelated crontab entries are left untouched.
@@ -33,11 +33,13 @@ DEFAULT_DAILY_AT = "03:15"
 DEFAULT_PHYSIO_CLOSE_AT = "00:30"
 DEFAULT_RECEIPTS_EVERY = 30
 DEFAULT_STAFF_PUSH_EVERY = 15
+DEFAULT_STAFF_EMAIL_EVERY = 15
 DEFAULT_NOTICES_EVERY = 60
 DEFAULT_PUSH_LIMIT = 200
 MAX_PUSH_LIMIT = 1000
 MIN_RECEIPTS_EVERY = 5
 MIN_STAFF_PUSH_EVERY = 5
+MIN_STAFF_EMAIL_EVERY = 5
 MIN_NOTICES_EVERY = 5
 MAX_SCHEDULE_EVERY = 60
 # The daily purges run one after the other, spaced by this many minutes.
@@ -51,6 +53,7 @@ _SCRIPTS = (
     "purge_inbox_data.py",
     "sync_push_receipts.py",
     "flush_staff_push.py",
+    "flush_staff_email.py",
     "emit_deferred_notices.py",
     "close_physio_day.py",
 )
@@ -70,6 +73,7 @@ class OpsCronConfig:
     physio_close_at: str = DEFAULT_PHYSIO_CLOSE_AT
     receipts_every: int = DEFAULT_RECEIPTS_EVERY
     staff_push_every: int = DEFAULT_STAFF_PUSH_EVERY
+    staff_email_every: int = DEFAULT_STAFF_EMAIL_EVERY
     notices_every: int = DEFAULT_NOTICES_EVERY
     push_limit: int = DEFAULT_PUSH_LIMIT
 
@@ -101,6 +105,12 @@ def staff_push_schedule(minutes: int) -> str:
     return _every_schedule(minutes, "--staff-push-every", MIN_STAFF_PUSH_EVERY)
 
 
+def staff_email_schedule(minutes: int) -> str:
+    """Cron minute field for the staff email drain."""
+
+    return _every_schedule(minutes, "--staff-email-every", MIN_STAFF_EMAIL_EVERY)
+
+
 def notices_schedule(minutes: int) -> str:
     """Cron minute field for the deferred-notices pass."""
 
@@ -113,7 +123,7 @@ def add_minutes(hour: int, minute: int, offset: int) -> tuple[int, int]:
 
 
 def build_block(config: OpsCronConfig) -> str:
-    """Render the marked crontab block for the eight maintenance jobs."""
+    """Render the marked crontab block for the nine maintenance jobs."""
 
     database_url = config.database_url.strip()
     if not database_url:
@@ -134,6 +144,7 @@ def build_block(config: OpsCronConfig) -> str:
     close_hour, close_minute = parse_daily_at(config.physio_close_at)
     receipts = receipts_schedule(config.receipts_every)
     staff_push = staff_push_schedule(config.staff_push_every)
+    staff_email = staff_email_schedule(config.staff_email_every)
     notices = notices_schedule(config.notices_every)
 
     def command(script: str, extra: str, log_name: str) -> str:
@@ -149,7 +160,8 @@ def build_block(config: OpsCronConfig) -> str:
         (
             "# Generado por backend/ops_cron.py: acuses cada "
             f"{config.receipts_every} min, push del personal cada "
-            f"{config.staff_push_every} min, avisos diferidos con su push cada "
+            f"{config.staff_push_every} min, correo del personal cada "
+            f"{config.staff_email_every} min, avisos diferidos con su push cada "
             f"{config.notices_every} min, cierre de fisioterapia a las "
             f"{close_hour:02d}:{close_minute:02d} y purgas diarias a las "
             f"{hour:02d}:{minute:02d}, {second_hour:02d}:{second_minute:02d}, "
@@ -178,6 +190,7 @@ def build_block(config: OpsCronConfig) -> str:
             f"{command('sync_push_receipts.py', f' --limit {config.push_limit}', 'push-receipts.log')}"
         ),
         f"{staff_push} {command('flush_staff_push.py', '', 'staff-push.log')}",
+        f"{staff_email} {command('flush_staff_email.py', '', 'staff-email.log')}",
         (
             f"{notices} "
             f"{command('emit_deferred_notices.py', '', 'deferred-notices.log')}"
@@ -282,6 +295,7 @@ def _config_from_args(args: argparse.Namespace) -> OpsCronConfig:
         physio_close_at=args.physio_close_at,
         receipts_every=args.receipts_every,
         staff_push_every=args.staff_push_every,
+        staff_email_every=args.staff_email_every,
         notices_every=args.notices_every,
         push_limit=args.limit,
     )
@@ -294,8 +308,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "cierre del día de fisioterapia, purga de accesos, purga de acuses "
             "de correo, purga de acuses y entregas del push, purga de la "
             "bandeja y de las entregas del personal, consulta de acuses del "
-            "push, envío de la cola del push web del personal y emisión de los "
-            "avisos diferidos."
+            "push, envío de la cola del push web del personal, envío de la cola "
+            "de correo del personal y emisión de los avisos diferidos."
         )
     )
     action = parser.add_mutually_exclusive_group()
@@ -369,6 +383,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--staff-email-every",
+        type=int,
+        default=DEFAULT_STAFF_EMAIL_EVERY,
+        help=(
+            "minutos entre envíos de la cola de correo del personal "
+            f"({MIN_STAFF_EMAIL_EVERY} a 59, o 60; por defecto "
+            f"{DEFAULT_STAFF_EMAIL_EVERY})"
+        ),
+    )
+    parser.add_argument(
         "--notices-every",
         type=int,
         default=DEFAULT_NOTICES_EVERY,
@@ -420,7 +444,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(
         f"Bloque instalado en el crontab: acuses cada {config.receipts_every} min, "
-        f"push del personal cada {config.staff_push_every} min, avisos diferidos "
+        f"push del personal cada {config.staff_push_every} min, correo del "
+        f"personal cada {config.staff_email_every} min, avisos diferidos "
         f"cada {config.notices_every} min, cierre de fisioterapia a las "
         f"{config.physio_close_at} y cuatro purgas diarias desde las "
         f"{config.daily_at}. Revisa con: crontab -l"
