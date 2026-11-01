@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -274,6 +274,83 @@ def test_reminders_send_only_overdue_accounts_and_respect_cooldown(monkeypatch) 
             assert repeated.json()["skipped"] == 1
             assert "7 días" in repeated.json()["results"][0]["reason"]
             assert len(_delivery_rows(engine)) == 1
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
+def _stamp(row: MemberAccountStatementDelivery) -> datetime:
+    """SQLite regresa ingenuo el instante guardado; se normaliza para compararlo."""
+    return (
+        row.created_at
+        if row.created_at.tzinfo is not None
+        else row.created_at.replace(tzinfo=timezone.utc)
+    )
+
+
+def test_reminder_cooldown_reads_the_injected_instant(monkeypatch) -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        member_ids = _seed_members(session)
+
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            _prepare_overdue_accounts(client, manager, reception, engine, member_ids)
+
+            # El enfriamiento de siete días se mide contra el sello de la entrega,
+            # así que ambos viajan con el instante inyectado y la frontera puede
+            # recorrerse sin mover el reloj de la máquina.
+            sent_at = utc_now().replace(microsecond=0)
+
+            with Session(engine) as session:
+                first = statements.send_member_account_reminders(
+                    session, [member_ids[0]], document_format="csv", now=sent_at
+                )
+            assert [item.status for item in first.results] == ["simulated"]
+            rows = _delivery_rows(engine)
+            assert len(rows) == 1
+            assert _stamp(rows[0]) == sent_at
+
+            with Session(engine) as session:
+                held = statements.send_member_account_reminders(
+                    session,
+                    [member_ids[0]],
+                    now=sent_at + timedelta(days=7) - timedelta(seconds=1),
+                )
+            assert held.results[0].status == "skipped"
+            assert "7 días" in held.results[0].reason
+            assert len(_delivery_rows(engine)) == 1
+
+            with Session(engine) as session:
+                released = statements.send_member_account_reminders(
+                    session, [member_ids[0]], now=sent_at + timedelta(days=7)
+                )
+            assert released.results[0].status == "simulated"
+            rows = _delivery_rows(engine)
+            assert len(rows) == 2, "cumplidos los siete días el recordatorio vuelve a salir"
+            assert _stamp(rows[1]) == sent_at + timedelta(days=7)
+
+            # Una entrega fallida no abre el enfriamiento: en el mismo instante la
+            # pasada siguiente lo intenta otra vez.
+            with Session(engine) as session:
+                last = session.get(MemberAccountStatementDelivery, rows[1].id)
+                assert last is not None
+                last.status = "failed"
+                session.add(last)
+                session.commit()
+
+            with Session(engine) as session:
+                retried = statements.send_member_account_reminders(
+                    session, [member_ids[0]], now=sent_at + timedelta(days=7)
+                )
+            assert retried.results[0].status == "simulated"
+            assert len(_delivery_rows(engine)) == 3
     finally:
         app.dependency_overrides.pop(get_session, None)
         engine.dispose()

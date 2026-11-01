@@ -743,12 +743,17 @@ def send_member_account_statement(
     actor_id: UUID | None = None,
     retry_of_id: UUID | None = None,
     today: date | None = None,
+    now: datetime | None = None,
 ) -> StatementDeliveryView:
     """Send a statement or collection reminder and append the attempt.
 
     The delivery record is written even when the transport fails, with
     ``status = "failed"`` and the error, so a manager can see why a member did
     not receive the document. The account balance is never mutated here.
+
+    ``now`` pins the instant stamped on the delivery row. The cooldown that the
+    reminder batch measures reads that stamp, so a caller that fixes one has to
+    fix the other for the pair to stay comparable.
 
     A reminder is only valid while the account still has a positive balance with
     charges older than 30 days. This is checked again here, not only in the batch
@@ -831,7 +836,7 @@ def send_member_account_statement(
         status="failed",
         as_of=statement.as_of,
         retry_of_id=retry_of_id,
-        created_at=utc_now(),
+        created_at=_as_utc(now) if now is not None else utc_now(),
     )
     try:
         status = _send_email(
@@ -863,6 +868,7 @@ def send_member_account_reminders(
     document_format: str = "pdf",
     actor_id: UUID | None = None,
     today: date | None = None,
+    now: datetime | None = None,
 ) -> StatementReminderBatch:
     """Send collection reminders to several members, one audit row each.
 
@@ -874,7 +880,11 @@ def send_member_account_reminders(
     A member is skipped when they still have no balance, when no charge is older
     than 30 days, or when a successful reminder was already recorded in the last
     seven days. Failed reminders do not start the cooldown, so the panel can
-    retry them from the delivery history.
+    retry them from the delivery history. ``now`` is the instant the cooldown is
+    measured from and the stamp the new deliveries take, so a caller can test the
+    seven-day edge without moving the clock of the machine. The statement itself
+    keeps reading ``today``, so pinning the cooldown alone does not pin the aging
+    of the account.
     """
 
     if document_format not in MEMBER_ACCOUNT_STATEMENT_FORMATS:
@@ -918,7 +928,7 @@ def send_member_account_reminders(
         latest_reminder.setdefault(record.member_id, record)
 
     results: list[StatementReminderResult] = []
-    now = utc_now()
+    moment = _as_utc(now) if now is not None else utc_now()
     cooldown = timedelta(days=STATEMENT_REMINDER_COOLDOWN_DAYS)
     for member_id in unique_ids:
         member = members.get(member_id)
@@ -974,7 +984,7 @@ def send_member_account_reminders(
         else:
             previous = latest_reminder.get(member_id)
             if previous is not None:
-                elapsed = now - _as_utc(previous.created_at)
+                elapsed = moment - _as_utc(previous.created_at)
                 if elapsed < cooldown:
                     skip_reason = (
                         "Ya se envió un recordatorio en los últimos "
@@ -1001,6 +1011,7 @@ def send_member_account_reminders(
                 purpose="reminder",
                 actor_id=actor_id,
                 today=statement.as_of,
+                now=moment,
             )
         except StatementReminderNotAllowed as error:
             results.append(
