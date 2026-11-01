@@ -13,10 +13,18 @@ executed: the assertions parse what they need and nothing else. The routing
 rules are collected in source order, exactly like ``notificationDestination``
 evaluates them, and each category names the screen it has to open here, so a
 notice cannot quietly start landing in the tray after a refactor.
+
+The staff inbox spreads the same way across fewer files — the tuple and its
+``CHECK``, the chain that lifts a preview database, the single panel label map,
+the modules that emit each kind and the short list of kinds the badge agrees
+are closable — so the same assertions run against it. A notice nobody writes,
+one the panel cannot name, or one that keeps its red dot after the work is done
+fails here instead of surprising whoever reads the inbox.
 """
 
 import importlib.util
 import re
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -27,13 +35,17 @@ from app.modules.notifications.models import (
     MEMBER_NOTIFICATION_CATEGORIES,
     NOTIFICATION_CATEGORY_BY_KIND,
     NOTIFICATION_KINDS,
+    STAFF_NOTIFICATION_EMAIL_KINDS,
     STAFF_NOTIFICATION_KINDS,
     MemberNotification,
+    StaffNotification,
 )
+from app.modules.notifications.service import CLOSABLE_STAFF_KINDS
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 REPO_DIR = BACKEND_DIR.parent
-NOTIFICATIONS_SERVICE = BACKEND_DIR / "src" / "app" / "modules" / "notifications" / "service.py"
+APP_SRC = BACKEND_DIR / "src" / "app"
+NOTIFICATIONS_SERVICE = APP_SRC / "modules" / "notifications" / "service.py"
 WEB_PANEL = REPO_DIR / "web" / "src" / "app" / "page.tsx"
 MOBILE_FORMAT = REPO_DIR / "mobile" / "src" / "format.ts"
 MOBILE_ROUTING = REPO_DIR / "mobile" / "src" / "notificationRouting.ts"
@@ -66,14 +78,38 @@ def _kinds_from_check(clause: str) -> set[str]:
     return set(re.findall(r"'([a-z_]+)'", match.group(1)))
 
 
-def _model_check_kinds() -> set[str]:
-    for constraint in MemberNotification.__table__.constraints:
-        if (
-            isinstance(constraint, CheckConstraint)
-            and constraint.name == "ck_member_notifications_kind"
-        ):
+def _model_check_kinds(table: type, constraint_name: str) -> set[str]:
+    for constraint in table.__table__.constraints:
+        if isinstance(constraint, CheckConstraint) and constraint.name == constraint_name:
             return _kinds_from_check(str(constraint.sqltext))
-    pytest.fail("member_notifications perdió su CHECK ck_member_notifications_kind")
+    pytest.fail(f"{table.__tablename__} perdió su CHECK {constraint_name}")
+
+
+@lru_cache(maxsize=None)
+def _emitted_kinds() -> frozenset[str]:
+    """Every notice kind the backend can write, read from ``src/app``.
+
+    A ``kind=`` literal is either in the call itself or in a variable assigned
+    right before it, so the whole tree is scanned instead of call keywords only.
+    """
+    kinds: set[str] = set()
+    for path in sorted(APP_SRC.rglob("*.py")):
+        kinds |= set(re.findall(r'kind\s*=\s*"([a-z_]+)"', _read(path)))
+    return frozenset(kinds)
+
+
+def _closed_staff_kinds() -> set[str]:
+    """The kinds an existing call actually closes when the work is done."""
+    kinds: set[str] = set()
+    for path in sorted(APP_SRC.rglob("*.py")):
+        kinds |= set(
+            re.findall(
+                r'resolve_staff_notifications\(\s*session,\s*kind\s*=\s*"([a-z_]+)"',
+                _read(path),
+                re.S,
+            )
+        )
+    return kinds
 
 
 def _preview_patch():
@@ -164,7 +200,9 @@ def test_notification_kinds_are_unique():
 
 
 def test_model_check_accepts_exactly_the_declared_kinds():
-    assert _model_check_kinds() == set(NOTIFICATION_KINDS), (
+    assert _model_check_kinds(MemberNotification, "ck_member_notifications_kind") == set(
+        NOTIFICATION_KINDS
+    ), (
         "el CHECK ck_member_notifications_kind y NOTIFICATION_KINDS dicen cosas distintas: "
         "un tipo aceptado por la base pero no declarado, o declarado y rechazado al insertar"
     )
@@ -262,4 +300,73 @@ def test_every_kind_is_emitted_and_no_emitter_invents_a_kind():
     assert not missing, (
         f"ningún aviso de la app escribe estos tipos: {missing}; "
         "o se perdió el emisor o el tipo sobra del inventario"
+    )
+
+
+def test_staff_kinds_are_unique_and_disjoint_from_the_member_inbox():
+    assert len(STAFF_NOTIFICATION_KINDS) == len(set(STAFF_NOTIFICATION_KINDS)), (
+        "STAFF_NOTIFICATION_KINDS tiene tipos duplicados"
+    )
+    shared = sorted(set(STAFF_NOTIFICATION_KINDS) & set(NOTIFICATION_KINDS))
+    assert not shared, (
+        f"estos tipos viven en las dos bandejas a la vez: {shared}. Los inventarios "
+        "dejan de decir dónde cae un aviso y las comparaciones de este archivo, "
+        "que trabajan por conjuntos, se tapan una omisión entre sí"
+    )
+
+
+def test_staff_model_check_accepts_exactly_the_declared_kinds():
+    assert _model_check_kinds(StaffNotification, "ck_staff_notifications_kind") == set(
+        STAFF_NOTIFICATION_KINDS
+    ), (
+        "el CHECK ck_staff_notifications_kind y STAFF_NOTIFICATION_KINDS dicen cosas "
+        "distintas: un aviso nuevo se rechaza al insertarlo aunque el panel lo nombre"
+    )
+
+
+def test_preview_patch_lifts_the_staff_check_to_the_current_kinds():
+    chain = _preview_patch().CHECK_UPGRADES["staff_notifications"]
+    assert _kinds_from_check(chain[-1][1]) == set(STAFF_NOTIFICATION_KINDS), (
+        "la última sustitución de la cadena de staff_notifications deja la base de "
+        "vista previa con otra lista de tipos; hay que añadir el tramo que falte"
+    )
+
+
+def test_panel_labels_cover_every_staff_kind():
+    labels = _record_keys(_read(WEB_PANEL), "STAFF_NOTIFICATION_KIND_LABELS")
+    assert labels == set(STAFF_NOTIFICATION_KINDS), (
+        f"las etiquetas del panel para el personal y los tipos declarados difieren: "
+        f"faltan {sorted(set(STAFF_NOTIFICATION_KINDS) - labels)}, "
+        f"sobran {sorted(labels - set(STAFF_NOTIFICATION_KINDS))}"
+    )
+
+
+def test_every_staff_kind_is_emitted_and_the_email_list_stays_inside():
+    emitted = _emitted_kinds() & set(STAFF_NOTIFICATION_KINDS)
+    missing = sorted(set(STAFF_NOTIFICATION_KINDS) - emitted)
+    assert not missing, (
+        f"ningún módulo escribe estos avisos al personal: {missing}; o se perdió el "
+        "emisor o el tipo sobra del inventario y el panel lo nombra en vacío"
+    )
+    outside = sorted(set(STAFF_NOTIFICATION_EMAIL_KINDS) - set(STAFF_NOTIFICATION_KINDS))
+    assert not outside, (
+        f"el correo del personal ofrece tipos que la bandeja no conoce: {outside}"
+    )
+
+
+def test_closable_staff_kinds_are_emitted_and_something_closes_them():
+    closable = set(CLOSABLE_STAFF_KINDS)
+    assert closable <= set(STAFF_NOTIFICATION_KINDS), (
+        f"la insignia da por cerrables tipos que no existen: "
+        f"{sorted(closable - set(STAFF_NOTIFICATION_KINDS))}"
+    )
+    assert closable <= _emitted_kinds(), (
+        f"estos tipos se cierran pero nadie los abre: {sorted(closable - _emitted_kinds())}"
+    )
+    closed = _closed_staff_kinds()
+    assert closed == closable, (
+        f"las llamadas a resolve_staff_notifications cierran {sorted(closed)} y "
+        f"CLOSABLE_STAFF_KINDS declara {sorted(closable)}: un aviso fuera de la lista "
+        "conserva su punto rojo aunque el trabajo esté hecho, y uno dentro sin llamada "
+        "queda pendiente para siempre"
     )
