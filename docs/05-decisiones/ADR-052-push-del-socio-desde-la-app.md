@@ -28,6 +28,7 @@ La bandeja del socio guarda cada aviso con su texto congelado, pero solo habla c
 - **El acuse del push no existe.** Se guarda el ticket de Expo (`sent`), no su recibo de entrega; saber si el teléfono lo mostró requeriría el receipt id de Expo y otra cola.
 - **El payload habilita la navegación.** El `data` lleva `notification_id`, `kind` y `ref_id`; ADR-060 usa `kind` para abrir la pantalla correspondiente al tocar la notificación y `notification_id` para marcarla leída. `ref_id` sigue sin usarse para abrir un detalle concreto.
 - **La vista previa no toca dispositivos.** `PREVIEW_MODE` marca las entregas como `simulated`, igual que el transporte SMTP.
+- **Actualización de ADR-078 (2026-10-31).** Los recordatorios diferidos también usan este push. `_materialise_deferred` y sus tres productores aceptan `push=False` y `materialise_deferred_notices` llama con `push=True`, así que el cron encola una entrega por token activo sin esperar a que el socio abra la app; la lectura de la bandeja sigue con `push=False`. Las preferencias, los silencios, el reintento y el aviso de agotamiento se aplican sin cambios.
 
 ## Referencias
 

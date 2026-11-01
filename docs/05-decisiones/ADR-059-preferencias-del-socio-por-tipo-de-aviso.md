@@ -31,6 +31,7 @@ La bandeja no es el problema. El club necesita dejar constancia de lo que comuni
 - **Apagar una categoría no borra los avisos de la bandeja ni los marca leídos.** El contador de no leídos sigue contando lo que llegó; el socio puede marcarlo todo como leído con el botón que ya existe.
 - **No hay preferencias por tipo de correo del personal.** Este corte es solo del push del socio. El correo del personal sigue con su interruptor global de club (ADR-048) y sin preferencias por cuenta o por tipo.
 - **El mínimo de categorías es fijo.** Un socio no puede silenciar, por ejemplo, solo los recordatorios de clase sin silenciar las cancelaciones: ambos comparten `classes`. Separarlos exigiría otra categoría y otra decisión de producto (las cancelaciones son de las que casi nadie quiere perder).
+- **Actualización de ADR-078 (2026-10-31).** Las preferencias también gobiernan el push de los recordatorios diferidos: el cron encola con `create_notification(..., push=True)` y `_enqueue_member_push_deliveries` consulta `is_push_enabled`, así que apagar una categoría deja el aviso en la bandeja y el teléfono calla; apagarla con entregas pendientes las cancela, incluidas las de un recordatorio recién encolado.
 
 ## Referencias
 

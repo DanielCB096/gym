@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-31 · Avisos: push para los recordatorios diferidos (ADR-078)
+
+- `materialise_deferred_notices` ahora encola el push de los tres recordatorios del socio. Los productores —membresía, clase y fisioterapia— aceptan `push: bool = False` y las rutas de lectura de la bandeja y del contador lo dejan apagado, así que siguen materializando en silencio; la pasada por cron pasa `push=True` porque nadie está mirando. El encolado respeta la preferencia por categoría y la ausencia de token activo; el envío conserva la ventana del club, la del socio, el reintento con espera y el aviso al personal.
+- `backend/emit_deferred_notices.py` drena la cola en la misma corrida con `send_pending_member_push_deliveries_from_engine`, estrena `--push-limit` (1 a 100, 20 por defecto), activa `PREVIEW_MODE` con `--preview` para simular y resume intentos, enviados, simulados, fallidos, dispositivos retirados y entregas pendientes; también informa cuando la ventana del club retuvo la pasada. La misma pasada vacía la cola de correo del personal (ADR-055), así que los avisos que nacen en el cron ya no esperan a la primera consulta del panel.
+- Sin migración: el cambio es de flujo y argumentos sobre las tablas de ADR-052, ADR-059 y ADR-065. La lectura nunca enciende el push, así que un recordatorio que se leyó antes de la corrida no suena; es la misma clave de deduplicación y el aviso no se pierde. Se actualizaron ADR-016, ADR-035, ADR-039, ADR-052, ADR-059, ADR-061, ADR-063, ADR-065 y ADR-076, las fichas de avisos, clases y fisioterapia, la guía de despliegue, la deuda, el plan de pruebas, TRASPASO y el README del backend.
+- Suite backend completa: **575 pruebas, 567 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL` (`test_deferred_notices_scheduler.py` suma 5 y queda en 12; el cron sigue en 35).
+
 ## 2026-10-31 · Avisos: programador de avisos diferidos (ADR-076)
 
 - `materialise_deferred_notices(session, *, now=None)` reúne las tres fuentes diferidas del socio —membresía a ≤ 7/3/1 días, clase a ≤ 24/2 h y cita de fisioterapia a ≤ 24 h—, el escalamiento de la solicitud de asistencia vencida y la advertencia del token del kiosco, y devuelve `DeferredNoticesResult` con los socios revisados y las filas escritas por origen. Reutiliza los productores y sus claves de deduplicación, consulta solo a los socios con una fuente en ventana y ahora cuenta solo lo que inserta: `warn_expiring_kiosk_tokens` comprueba la clave antes de escribir, así que pasar por la lectura y por el cron a la vez no duplica ni infla el log.

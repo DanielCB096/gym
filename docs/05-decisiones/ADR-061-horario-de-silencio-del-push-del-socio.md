@@ -26,6 +26,7 @@ ADR-059 apagó el ruido por tipo de aviso de forma individual; su límite explí
 - **Sin planificador, la salida depende de la próxima petición.** Igual que el resto del proyecto sin worker: si nadie abre el panel ni toca el backend entre las 07:00 y el mediodía, los push esperan a la primera petición que dispare la pasada. La tecnología es la de siempre (ADR-052); el horario puede empujarla unas horas.
 - **Las alertas de agotamiento no se silencian.** El aviso `member_push_failed` (ADR-055) es para el personal y viaja por correo y campana, no por push: la ventana no lo toca y una madrugada agitada puede dejar correos al amanecer, que es lo que se debe.
 - **Un socio sin fila de preferencias es encendido; un club sin variables de ventana es sin silencio.** El valor por defecto de las dos decisiones es sonar, y el silencio siempre es una elección explícita.
+- **Actualización de ADR-078 (2026-10-31).** La ventana también retiene el push de los recordatorios diferidos: `emit_deferred_notices.py` drena la cola con la pasada normal, así que dentro del silencio no contacta a Expo, deja las filas pendientes e imprime el aviso en el resumen; la primera corrida tras la ventana las envía. El aviso ya está en la bandeja desde que se materializó.
 
 ## Referencias
 

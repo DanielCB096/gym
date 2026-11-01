@@ -30,6 +30,7 @@ ADR-059 dejó una puerta abierta a la decisión individual al imaginar «otra ta
 - **La hora es texto libre hasta el servidor.** La app sugiere `22:00`/`07:00` y valida `HH:MM`, y el backend vuelve a validarlo; no hay selector de hora nativo ni zonas horarias por socio: todas las franjas se leen en `APP_TIMEZONE`. Cambiar la zona del club mueve todas las ventanas, igual que la ventana de ADR-061.
 - **Quitar el horario borra la fila.** No queda una fila con horas nulas ni un estado «apagado»; volver a poner un horario lo crea de nuevo. El borrado del socio sigue bloqueado por la FK `RESTRICT`.
 - **La ventana no toca el correo del personal ni los avisos.** Solo gobierna el push real del socio; la campana, el correo y el contador de no leídos no se enteran. Tampoco cancela entregas: apagar una categoría sigue siendo la única acción que las retira.
+- **Actualización de ADR-078 (2026-10-31).** La franja propia también calla el push de los recordatorios diferidos: la pasada que `emit_deferred_notices.py` ejecuta después de materializar descarta en SQL las entregas de ese socio y las deja pendientes; el aviso sigue escrito y contado, y suena en la primera pasada fuera de la franja.
 
 ## Referencias
 

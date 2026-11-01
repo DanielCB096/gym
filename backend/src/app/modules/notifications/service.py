@@ -1222,24 +1222,35 @@ def _member_notice_exists(session: Session, dedupe_key: str) -> bool:
 
 
 def _materialise_deferred(
-    session: Session, member_id: UUID, *, now: datetime | None = None
+    session: Session,
+    member_id: UUID,
+    *,
+    now: datetime | None = None,
+    push: bool = False,
 ) -> int:
     """Write every member reminder that is due for one member.
 
     The read path and the deferred-notices task share these producers. Each one
     deduplicates itself, so calling this on every read of the inbox and of the
     badge is safe, and the caller sums what each producer actually wrote.
+    ``push`` is off for the read path: the member is already looking at the
+    inbox, so ringing the phone would announce what is on screen. The scheduler
+    turns it on because nobody is looking.
     """
     occurred = _as_utc(now or utc_now())
     return (
-        _ensure_membership_expiring(session, member_id, now=occurred)
-        + _ensure_class_reminders(session, member_id, now=occurred)
-        + _ensure_physio_reminders(session, member_id, now=occurred)
+        _ensure_membership_expiring(session, member_id, now=occurred, push=push)
+        + _ensure_class_reminders(session, member_id, now=occurred, push=push)
+        + _ensure_physio_reminders(session, member_id, now=occurred, push=push)
     )
 
 
 def _ensure_physio_reminders(
-    session: Session, member_id: UUID, *, now: datetime | None = None
+    session: Session,
+    member_id: UUID,
+    *,
+    now: datetime | None = None,
+    push: bool = False,
 ) -> int:
     """Write the day-before reminder of a physiotherapy appointment.
 
@@ -1288,7 +1299,7 @@ def _ensure_physio_reminders(
             ref_id=appointment.id,
             dedupe_key=dedupe_key,
             now=occurred,
-            push=False,
+            push=push,
         )
         written += 1
     if written:
@@ -1297,7 +1308,11 @@ def _ensure_physio_reminders(
 
 
 def _ensure_class_reminders(
-    session: Session, member_id: UUID, *, now: datetime | None = None
+    session: Session,
+    member_id: UUID,
+    *,
+    now: datetime | None = None,
+    push: bool = False,
 ) -> int:
     """Write the reminder of every class the member is about to attend.
 
@@ -1354,7 +1369,7 @@ def _ensure_class_reminders(
             ref_id=reservation.id,
             dedupe_key=dedupe_key,
             now=occurred,
-            push=False,
+            push=push,
         )
         written += 1
     if written:
@@ -1363,7 +1378,11 @@ def _ensure_class_reminders(
 
 
 def _ensure_membership_expiring(
-    session: Session, member_id: UUID, *, now: datetime | None = None
+    session: Session,
+    member_id: UUID,
+    *,
+    now: datetime | None = None,
+    push: bool = False,
 ) -> int:
     """Write the expiring-membership reminder the member is currently inside.
 
@@ -1406,7 +1425,7 @@ def _ensure_membership_expiring(
         ref_id=row.id,
         dedupe_key=dedupe_key,
         now=occurred,
-        push=False,
+        push=push,
     )
     session.commit()
     return 1
@@ -1462,11 +1481,13 @@ def materialise_deferred_notices(
     the expiring kiosk token) are materialised by the read paths because there
     was no scheduler. This entry point lets a cron job write them without a
     reader; it is idempotent because every producer deduplicates itself.
+    Because nobody is looking at the inbox here, the member reminders also
+    queue their push (ADR-078); the read paths keep materialising them silently.
     """
     occurred = _as_utc(now or utc_now())
     member_ids = _deferred_member_ids(session, occurred)
     member_notices = sum(
-        _materialise_deferred(session, member_id, now=occurred)
+        _materialise_deferred(session, member_id, now=occurred, push=True)
         for member_id in member_ids
     )
     escalations = _ensure_attendance_request_escalations(session, now=occurred)

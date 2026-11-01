@@ -149,7 +149,7 @@ def build_block(config: OpsCronConfig) -> str:
         (
             "# Generado por backend/ops_cron.py: acuses cada "
             f"{config.receipts_every} min, push del personal cada "
-            f"{config.staff_push_every} min, avisos diferidos cada "
+            f"{config.staff_push_every} min, avisos diferidos con su push cada "
             f"{config.notices_every} min, cierre de fisioterapia a las "
             f"{close_hour:02d}:{close_minute:02d} y purgas diarias a las "
             f"{hour:02d}:{minute:02d}, {second_hour:02d}:{second_minute:02d}, "

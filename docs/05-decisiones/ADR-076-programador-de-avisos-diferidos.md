@@ -32,6 +32,7 @@ Desde ADR-063 el club ya tiene un bloque de cron idempotente que instala las tar
 - **El costo crece con los eventos próximos, no con la plantilla.** Por cada socio candidato se ejecutan tres consultas acotadas por esa persona. Es suficiente para la escala del club; muchas sedes o miles de citas simultáneas pedirían una pasada por lotes o una clave de deduplicación indexada por ventana.
 - **La audiencia de los avisos del personal no cambia.** El escalamiento sigue yendo a las cuentas con rol `owner` —nunca a quien pidió— y el token del kiosco a quienes pueden rotarlo (`settings.manage`). La tarea no amplía ni reduce esas audiencias.
 - **La retención de ADR-075 sigue mandando.** Los avisos emitidos son avisos normales: se podan cuando el socio los lee o el personal los cierra. La advertencia del token del kiosco se conserva porque se regeneraría.
+- **Actualización de ADR-078 (2026-10-31).** El límite «sigue sin haber push para los recordatorios» quedó cerrado: `materialise_deferred_notices` pasa `push=True`, así que los tres recordatorios del socio encolan su push, y `backend/emit_deferred_notices.py` drena la cola en la misma corrida con `--push-limit` (1 a 100, 20 por defecto). El límite del correo del personal que nace en el cron también mejora: la pasada por motor vacía esa cola al terminar, así que sus avisos ya no esperan a la primera consulta del panel. La lectura de la bandeja y del contador sigue materializando en silencio y sin cron no hay push.
 
 ## Referencias
 

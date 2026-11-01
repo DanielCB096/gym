@@ -7,8 +7,10 @@ class and the physiotherapy reminders, and the owners still hear about an
 overdue change request and an expiring kiosk token.
 """
 
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 import importlib.util
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,8 +22,17 @@ from app.modules.classes.models import ClassReservation, ClassSession, ClassType
 from app.modules.identity.models import Employee
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.memberships.models import Member, Membership, Plan, utc_now
-from app.modules.notifications.models import MemberNotification, StaffNotification
-from app.modules.notifications.service import materialise_deferred_notices
+from app.modules.notifications.models import (
+    MemberNotification,
+    MemberNotificationPreference,
+    MemberPushDelivery,
+    StaffNotification,
+)
+from app.modules.notifications.push import register_member_push_token
+from app.modules.notifications.service import (
+    list_member_notifications,
+    materialise_deferred_notices,
+)
 from app.modules.physio.models import PhysioAppointment, PhysioService
 from app.modules.staffing.service import clock_in, create_shift, request_attendance_change
 
@@ -34,6 +45,17 @@ spec.loader.exec_module(emit_deferred_notices)
 
 NOW = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
 PREVIEW_URL = "sqlite:///./gym_preview.db"
+TOKEN = "ExponentPushToken[deferred-reminder]"
+
+
+@pytest.fixture(autouse=True)
+def _restore_preview_env() -> Iterator[None]:
+    before = os.environ.get("PREVIEW_MODE")
+    yield
+    if before is None:
+        os.environ.pop("PREVIEW_MODE", None)
+    else:
+        os.environ["PREVIEW_MODE"] = before
 
 
 def _member(
@@ -284,6 +306,73 @@ def test_kiosk_warning_counts_only_rows_it_actually_writes(session: Session) -> 
     assert warn_expiring_kiosk_tokens(session, now=run_at) == 0
 
 
+def test_scheduler_queues_one_push_per_reminder_without_a_reader(
+    session: Session,
+) -> None:
+    membership = _member(session, email="ana@example.test", ends_in=timedelta(days=3))
+    _class_reservation(session, membership.member_id, starts_in=timedelta(hours=20))
+    _physio_appointment(session, membership.member_id, starts_in=timedelta(hours=20))
+    register_member_push_token(
+        session, membership.member_id, token=TOKEN, platform="android", now=NOW
+    )
+
+    result = materialise_deferred_notices(session, now=NOW)
+
+    assert result.member_notices_written == 3
+    deliveries = session.exec(select(MemberPushDelivery)).all()
+    assert len(deliveries) == 3
+    assert all(row.status == "pending" for row in deliveries)
+    notice_kinds = {
+        session.get(MemberNotification, row.notification_id).kind
+        for row in deliveries
+    }
+    assert notice_kinds == {
+        "membership_expiring",
+        "class_reminder",
+        "physio_reminder",
+    }
+
+
+def test_read_path_materialises_the_reminder_without_ringing_the_phone(
+    session: Session,
+) -> None:
+    membership = _member(session, email="ana@example.test", ends_in=timedelta(days=3))
+    register_member_push_token(
+        session, membership.member_id, token=TOKEN, platform="android", now=NOW
+    )
+
+    page = list_member_notifications(session, membership.member_id, now=NOW)
+
+    assert [item.kind for item in page.items] == ["membership_expiring"]
+    assert session.exec(select(MemberPushDelivery)).all() == []
+
+
+def test_a_switched_off_category_writes_the_notice_without_push(
+    session: Session,
+) -> None:
+    membership = _member(session, email="ana@example.test", ends_in=timedelta(days=3))
+    register_member_push_token(
+        session, membership.member_id, token=TOKEN, platform="android", now=NOW
+    )
+    session.add(
+        MemberNotificationPreference(
+            member_id=membership.member_id,
+            category="membership",
+            push_enabled=False,
+            updated_at=NOW,
+        )
+    )
+    session.commit()
+
+    result = materialise_deferred_notices(session, now=NOW)
+
+    assert result.member_notices_written == 1
+    assert [row.kind for row in session.exec(select(MemberNotification)).all()] == [
+        "membership_expiring"
+    ]
+    assert session.exec(select(MemberPushDelivery)).all() == []
+
+
 def test_preview_script_writes_a_due_reminder_and_repeats_safely(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -329,6 +418,65 @@ def test_preview_script_writes_a_due_reminder_and_repeats_safely(
         rows = session.exec(select(MemberNotification)).all()
     engine.dispose()
     assert [row.kind for row in rows] == ["membership_expiring"]
+
+
+def test_preview_script_drains_the_queued_push(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PREVIEW_MODE", raising=False)
+    engine = create_engine(PREVIEW_URL)
+    SQLModel.metadata.create_all(engine)
+    now = utc_now()
+    with Session(engine) as session:
+        member = Member(
+            first_name="Ana", last_name="Demo", email="ana@example.test", status="active"
+        )
+        session.add(member)
+        session.flush()
+        plan = Plan(code="PLAN-PREVIEW", name="Mensual", duration_days=30, price_cents=50000)
+        session.add(plan)
+        session.flush()
+        session.add(
+            Membership(
+                member_id=member.id,
+                plan_id=plan.id,
+                status="active",
+                starts_at=now - timedelta(days=5),
+                ends_at=now + timedelta(days=3),
+            )
+        )
+        register_member_push_token(
+            session, member.id, token=TOKEN, platform="android", now=now
+        )
+        session.commit()
+    engine.dispose()
+
+    assert emit_deferred_notices.main(["--preview"]) == 0
+    first = capsys.readouterr().out
+    assert "Push del socio: 1 intentos — enviados 0, simulados 1" in first
+    assert "Entregas de push pendientes que quedan: 0." in first
+
+    engine = create_engine(PREVIEW_URL)
+    with Session(engine) as session:
+        deliveries = session.exec(select(MemberPushDelivery)).all()
+    engine.dispose()
+    assert [row.status for row in deliveries] == ["simulated"]
+    assert all(row.attempts == 1 for row in deliveries)
+
+    assert emit_deferred_notices.main(["--preview"]) == 0
+    second = capsys.readouterr().out
+    assert "Escritos 0 avisos del socio" in second
+    assert "Push del socio: 0 intentos" in second
+
+
+def test_script_rejects_an_out_of_range_push_limit() -> None:
+    for limit in ("0", "101"):
+        with pytest.raises(SystemExit) as raised:
+            emit_deferred_notices.main(["--preview", "--push-limit", limit])
+        assert raised.value.code == 2
 
 
 def test_script_requires_a_database(

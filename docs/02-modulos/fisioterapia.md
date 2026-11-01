@@ -183,7 +183,7 @@ Veintiuna rutas bajo `web/src/app/api/admin/physio/**` —una por recurso y acci
 - `physio_appointment_cancelled`: al cancelar; llega al socio aunque la cancelación sea del club.
 - `physio_appointment_rescheduled`: solo si cambia el inicio o el fin, con la ventana anterior y la nueva; la clave lleva el instante del cambio.
 - `physio_reminder`: recordatorio 24 horas antes de la cita, con día, hora, fisioterapeuta y consultorio. Se materializa al leer la bandeja **y por cron** (`materialise_deferred_notices`, ADR-076: `backend/emit_deferred_notices.py` cada 60 minutos) y `dedupe_key = physio_reminder:<cita>:24`, así que abrirlo y correr el cron dentro de la ventana escriben un solo aviso; si la cita se cancela, deja de coincidir y el aviso queda como historial.
-- Sin push ni correo: el socio se entera al abrir su bandeja, como el resto de los avisos, aunque desde ADR-076 el recordatorio ya se escribe sin que tenga que abrirla.
+- **Push del recordatorio (ADR-078).** El cron encola el push al escribir el aviso y drena la cola en la misma corrida, con la preferencia de la categoría fisioterapia, la ventana del club y la del socio; la lectura de la bandeja sigue materializándolo en silencio. Sin cron no hay push y el correo sigue fuera de alcance.
 - No se avisa de la compra del paquete ni de la asistencia; no son hechos que el socio deba atender. La anulación del paquete sí avisa, porque cancela citas futuras.
 
 ## 10. Consideraciones de rendimiento
@@ -193,7 +193,7 @@ Veintiuna rutas bajo `web/src/app/api/admin/physio/**` —una por recurso y acci
 - El cálculo de vigencia y saldo se hace en la lectura, sin trabajos programados; el único trabajo del módulo es el cierre diario por cron (ADR-073).
 - El cierre del día opera sobre una fecha concreta y un máximo acotado de citas, sin barridos globales.
 - El reporte se calcula en una pasada por las citas del periodo, con tres agrupaciones en memoria (fisioterapeuta, servicio, hora) y una consulta de ventas y devoluciones; no guarda agregados ni necesita migración.
-- El recordatorio de la cita se escribe al leer la bandeja, con una consulta acotada a las citas del socio en las próximas 24 horas.
+- El recordatorio de la cita se escribe al leer la bandeja o por el cron, con una consulta acotada a las citas del socio en las próximas 24 horas; desde ADR-078 el cron además envía su push.
 
 ## 11. KPIs
 
@@ -241,6 +241,7 @@ Lo que sigue sin cubrirse: la devolución del paquete y la reserva desde la app 
 
 ## 14. Historial de cambios
 
+- 2026-10-31: push del recordatorio de la cita (ADR-078) —el cron encola el push al materializar `physio_reminder` y drena la cola en la misma corrida, con la preferencia de fisioterapia y las dos ventanas de silencio; la lectura sigue materializándolo en silencio y sin cron no hay push—; sin migración ni cambio de contrato.
 - 2026-10-31: consultorio como recurso reservable (ADR-069) —el alta y el movimiento de una cita rechazan con `409` el traslape de la misma sala del catálogo, con bloqueo de fila en PostgreSQL, sin migración ni cambio de contrato—; prueba nueva en `test_physio_api.py`.
 - 2026-10-30: incremento 3 implementado —consultorios y especialidades con el perfil del fisioterapeuta, extensión y anulación del paquete con `physio.adjust` y bitácora, `room_id` en la cita, recordatorio de 24 horas, reporte del consultorio con exportación CSV y migración `20261030_0058_physio_control.py`—; pantalla de reporte, acciones de ajuste y siete pruebas nuevas.
 - 2026-10-29: incremento 2 implementado —`GET /member/physio`, pantalla «Fisioterapia» de la app con su tarjeta en el inicio, los tres avisos de la cita (`physio_appointment_scheduled`, `physio_appointment_cancelled`, `physio_appointment_rescheduled`), migración `20261029_0057_physio_notifications.py` que amplía el `CHECK` de tipos y prueba de extremo a extremo del portal.
