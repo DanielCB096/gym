@@ -1060,6 +1060,7 @@ CLOSABLE_STAFF_KINDS = (
     "workout_pending_review",
     "attendance_request_pending",
     "attendance_request_overdue",
+    "maintenance_ticket_assigned",
 )
 
 

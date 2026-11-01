@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-31 · Avisos: cierre del aviso de ticket al cerrar el ticket (ADR-080)
+
+- `maintenance_ticket_assigned` se sumó a `CLOSABLE_STAFF_KINDS`: la insignia y `unread_total` del panel cuentan el aviso mientras el ticket siga abierto, aunque el técnico ya lo haya leído. Leer el aviso deja de vaciar la campana; solo el cierre del ticket lo saca.
+- `resolve_ticket` y `cancel_ticket` llaman a `resolve_staff_notifications(kind="maintenance_ticket_assigned", ref_id=<ticket>)` después de liberar el equipo y antes de su `commit()`, así que el cierre entra o revierte junto con el estado del ticket. Cierra todas las cuentas que recibieron el aviso de ese ticket, marca `read_at` si nadie lo abrió y deja la fila como historial «Atendido» que el panel ya pinta. Un ticket sin destinatario cierra cero filas.
+- Límites: reasignar el ticket no cierra el aviso del técnico anterior —solo el cierre del ticket lo hace—; editar título, severidad o costo tampoco cierra nada; el aviso del token del kiosco sigue sin cierre; y un ticket que nadie cierra conserva su aviso aunque esté leído, porque la purga de ADR-075 nunca borra una tarea sin resolver. Sin migración, endpoint ni cambio de pantalla.
+- Suite backend completa: **592 pruebas, 584 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL` (`test_maintenance_ticket_notice_closure.py` suma 5).
+
 ## 2026-10-31 · Pagos: prueba E2E de checkout Conekta sandbox
 
 - Se completó la compra de prueba de $10 MXN con el checkout alojado de Conekta: el webhook firmado fue recibido y validado, el intento terminó en `succeeded` y la membresía en `active`. No se habilitaron pagos productivos ni renovaciones.

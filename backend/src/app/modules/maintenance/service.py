@@ -44,6 +44,7 @@ from app.modules.maintenance.models import (
 from app.modules.notifications import (
     notify_equipment_out_of_service,
     notify_technician_ticket_assigned,
+    resolve_staff_notifications,
 )
 from app.timezone import club_date, club_day_stamp
 
@@ -1245,6 +1246,9 @@ def resolve_ticket(
         equipment.updated_at = occurred
         session.add(equipment)
     _release_equipment(session, ticket, equipment, occurred)
+    resolve_staff_notifications(
+        session, kind="maintenance_ticket_assigned", ref_id=ticket.id, now=occurred
+    )
 
     session.commit()
     session.refresh(ticket)
@@ -1283,6 +1287,9 @@ def cancel_ticket(
     ticket.updated_at = occurred
 
     _release_equipment(session, ticket, session.get(Equipment, ticket.equipment_id), occurred)
+    resolve_staff_notifications(
+        session, kind="maintenance_ticket_assigned", ref_id=ticket.id, now=occurred
+    )
 
     session.add(ticket)
     session.commit()

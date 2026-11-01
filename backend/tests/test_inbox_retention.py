@@ -126,7 +126,7 @@ def _staff_notice(
     created_days_ago: int,
     read: bool = True,
     resolved: bool = False,
-    kind: str = "maintenance_ticket_assigned",
+    kind: str = "attendance_corrected",
 ) -> StaffNotification:
     created_at = NOW - timedelta(days=created_days_ago)
     notice = StaffNotification(
@@ -267,6 +267,9 @@ def test_actionable_notice_needs_to_be_resolved_not_just_read(
     read_pending = _staff_notice(
         session, user, created_days_ago=400, kind="workout_pending_review"
     )
+    ticket_pending = _staff_notice(
+        session, user, created_days_ago=400, kind="maintenance_ticket_assigned"
+    )
     resolved_unread = _staff_notice(
         session,
         user,
@@ -279,7 +282,7 @@ def test_actionable_notice_needs_to_be_resolved_not_just_read(
     result = purge_inbox_history(session, now=NOW)
 
     assert result.staff_notices_deleted == 1
-    assert _ids(session, StaffNotification) == {read_pending.id}
+    assert _ids(session, StaffNotification) == {read_pending.id, ticket_pending.id}
     assert resolved_unread.id not in _ids(session, StaffNotification)
 
 

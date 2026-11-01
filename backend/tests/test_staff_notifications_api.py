@@ -307,16 +307,30 @@ def test_the_trainer_and_the_technician_see_their_own_work(monkeypatch) -> None:
             marked = client.post(f"/admin/notifications/{notice_id}/read", headers=technician)
             assert marked.status_code == 200, marked.text
             assert marked.json()["read_at"] is not None
-            # A ticket notice has no closure path yet, so acking it still clears
-            # the technician's badge; review requests stopped clearing theirs.
+            # An assigned ticket is work owed, not news: reading the notice no
+            # longer clears the badge; only closing the ticket takes it off.
             assert client.get(
                 "/admin/notifications/unread-count", headers=technician
-            ).json() == {"unread": 0}
+            ).json() == {"unread": 1}
             again = client.post(f"/admin/notifications/{notice_id}/read", headers=technician)
             assert again.status_code == 200, again.text
             assert client.post("/admin/notifications/read-all", headers=technician).json() == {
                 "updated": 0
             }
+            closed = client.post(
+                f"/admin/maintenance/tickets/{ticket_id}/resolve",
+                headers=owner,
+                json={"resolution_notes": "Se ajustó la banda y se probó la máquina."},
+            )
+            assert closed.status_code == 200, closed.text
+            assert closed.json()["ticket"]["status"] == "resolved"
+            attended = _inbox(client, technician)
+            assert attended["unread_total"] == 0
+            assert attended["items"][0]["read_at"] is not None
+            assert attended["items"][0]["resolved_at"] is not None
+            assert client.get(
+                "/admin/notifications/unread-count", headers=technician
+            ).json() == {"unread": 0}
             # The trainer still owes their review: read-all is per account.
             assert client.get("/admin/notifications/unread-count", headers=trainer).json() == {
                 "unread": 1
