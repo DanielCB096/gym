@@ -45,6 +45,7 @@ logs/
 # Local scratch
 .scratch/
 .tmp/
+.a11y-history/
 
 # Backups and exports
 backups/
