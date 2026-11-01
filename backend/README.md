@@ -230,7 +230,7 @@ Este entorno desechable permite probar el checkout y recibir un webhook real de 
    docker compose -f compose.conekta-sandbox.yml --profile tunnel up cloudflared
    ```
 
-   Copia el host `https://…trycloudflare.com` que imprime Cloudflare. El túnel llega a un relay que solo admite `POST /webhooks/conekta/membership`; no expone `/docs`, administración ni el resto de la API. En el panel Conekta sandbox registra `https://…trycloudflare.com/webhooks/conekta/membership` y selecciona los eventos de pago `order.paid`, `charge.paid` y `charge.created` disponibles. Asegúrate de que la llave pública en el archivo corresponde a esa configuración.
+   Copia el host `https://…trycloudflare.com` que imprime Cloudflare. El túnel llega a un relay que solo admite `POST /webhooks/conekta/membership`; no expone `/docs`, administración ni el resto de la API. En el panel Conekta sandbox registra `https://…trycloudflare.com/webhooks/conekta/membership` y selecciona los eventos de pago `order.paid`, `charge.paid` y `charge.created` disponibles. Asegúrate de que la llave pública en el archivo corresponde a esa configuración. El relay registra solo el código HTTP y el `detail` de errores del backend; no imprime los cuerpos de eventos ni las firmas.
 5. En una tercera terminal crea una orden de prueba de $10 MXN:
 
    ```powershell

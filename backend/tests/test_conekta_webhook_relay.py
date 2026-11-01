@@ -99,3 +99,15 @@ def test_relay_rejects_oversized_body(relay_server) -> None:
 
     assert response.startswith(b"HTTP/1.0 413 ")
     assert forwarded == []
+
+
+def test_relay_logs_only_upstream_error_detail(capsys: pytest.CaptureFixture[str]) -> None:
+    module = _relay_module()
+
+    module._log_upstream_error(
+        422,
+        b'{"detail":"Evento de pago invalido","private":"must not be logged"}',
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == "Webhook upstream returned HTTP 422: Evento de pago invalido\n"

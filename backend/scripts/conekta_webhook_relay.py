@@ -1,7 +1,9 @@
 """Expose only the Conekta membership webhook through a temporary local tunnel."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import os
+import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -62,9 +64,13 @@ class ConektaWebhookRelay(BaseHTTPRequestHandler):
         forwarded_request = Request(TARGET, data=payload, headers=headers, method="POST")
         try:
             with urlopen(forwarded_request, timeout=15) as response:
-                self._respond(response.status, response.read(MAX_RESPONSE_BYTES + 1))
+                body = response.read(MAX_RESPONSE_BYTES + 1)
+                _log_upstream_error(response.status, body)
+                self._respond(response.status, body)
         except HTTPError as error:
-            self._respond(error.code, error.read(MAX_RESPONSE_BYTES + 1))
+            body = error.read(MAX_RESPONSE_BYTES + 1)
+            _log_upstream_error(error.code, body)
+            self._respond(error.code, body)
         except (TimeoutError, URLError):
             self._respond(502, b'{"detail":"Local webhook service unavailable"}')
 
@@ -84,6 +90,28 @@ class ConektaWebhookRelay(BaseHTTPRequestHandler):
 
     def log_message(self, _format: str, *args: object) -> None:
         return
+
+
+def _log_upstream_error(status_code: int, body: bytes) -> None:
+    if status_code < 400:
+        return
+    try:
+        response = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        response = None
+    detail = response.get("detail") if isinstance(response, dict) else None
+    if isinstance(detail, str):
+        print(
+            f"Webhook upstream returned HTTP {status_code}: {detail[:300]}",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        print(
+            f"Webhook upstream returned HTTP {status_code}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

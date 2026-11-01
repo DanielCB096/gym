@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-31 · Pagos: prueba E2E de checkout Conekta sandbox
+
+- Se completó la compra de prueba de $10 MXN con el checkout alojado de Conekta: el webhook firmado fue recibido y validado, el intento terminó en `succeeded` y la membresía en `active`. No se habilitaron pagos productivos ni renovaciones.
+- El relay temporal del webhook registra solo el estado HTTP y el campo `detail` de errores del backend; no registra cuerpos de eventos ni firmas. Las cuatro pruebas dirigidas del relay pasan.
+- Se detuvieron los contenedores y el túnel temporal al terminar; se conservó el volumen local de datos de prueba.
+
 ## 2026-10-31 · Avisos: drenado programado de la cola de correo del personal (ADR-079)
 
 - `backend/flush_staff_email.py` drena por cron las entregas de correo del personal que quedaron `pending` cuando el proceso murió entre el commit del aviso y la pasada que viaja con la respuesta. Llama a `send_pending_staff_notification_emails_from_engine` —la misma pasada del gancho y del botón «Enviar pendientes»—, toma hasta 20 filas por corrida (`--limit`, de 1 a 100), las reclama con el compare-and-set de `attempts` y las envía por SMTP. No reintenta ni reprograma las `failed`: esas siguen esperando a una persona, igual que en la tarjeta. Acepta `--preview` sobre `gym_preview.db` (marca `simulated` y no contacta al correo) y `--database-url`, con código 2 para configuración inválida y 1 para base inalcanzable.
