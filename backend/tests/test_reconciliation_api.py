@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.main import app, get_session
+from app.timezone import club_timezone
 from app.modules.billing.models import Invoice, InvoicePayment
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.inventory.models import (
@@ -39,6 +40,18 @@ def _build_engine():
         cursor.close()
 
     return engine
+
+
+def _club_day_noon(day: date) -> datetime:
+    """Instante UTC de mediodía del día del club `day`.
+
+    La ventana de sugerencias es ±7 días **de la fecha del movimiento**, así que
+    un origen conciliable sembrado con `datetime.now()` deja de ser candidato al
+    octavo día: la prueba falla sin que la regla haya cambiado.
+    """
+
+    tz = club_timezone()
+    return datetime.combine(day, time(12), tzinfo=tz).astimezone(timezone.utc)
 
 
 def _seed_users(session: Session) -> None:
@@ -135,12 +148,14 @@ def _seed_credit_sale(
     return sale.id
 
 
-def _seed_account_payment(session: Session, *, member_id: UUID, amount_cents: int = 35000) -> UUID:
+def _seed_account_payment(
+    session: Session, *, member_id: UUID, amount_cents: int = 35000, paid_at: datetime | None = None
+) -> UUID:
     payment = MemberAccountPayment(
         member_id=member_id,
         method="transfer",
         amount_cents=amount_cents,
-        paid_at=datetime.now(timezone.utc),
+        paid_at=paid_at or datetime.now(timezone.utc),
     )
     session.add(payment)
     session.commit()
@@ -148,7 +163,12 @@ def _seed_account_payment(session: Session, *, member_id: UUID, amount_cents: in
 
 
 def _seed_return(
-    session: Session, *, sale_id: UUID, member_id: UUID, amount_cents: int = 2000
+    session: Session,
+    *,
+    sale_id: UUID,
+    member_id: UUID,
+    amount_cents: int = 2000,
+    returned_at: datetime | None = None,
 ) -> UUID:
     sale_return = SaleReturn(
         folio=f"D-20261025-{uuid4().hex[:4].upper()}",
@@ -157,7 +177,7 @@ def _seed_return(
         refund_method="transfer",
         total_refund_cents=amount_cents,
         reason="Producto defectuoso",
-        returned_at=datetime.now(timezone.utc),
+        returned_at=returned_at or datetime.now(timezone.utc),
     )
     session.add(sale_return)
     session.commit()
@@ -270,12 +290,18 @@ def _seed_ppd(session: Session) -> dict[str, object]:
 def _prepare():
     engine = _build_engine()
     SQLModel.metadata.create_all(engine)
+    # Los movimientos importados en estas pruebas son de 2026-10-23 y 2026-10-24.
+    movement_day = _club_day_noon(date(2026, 10, 24))
     with Session(engine) as session:
         _seed_users(session)
-        member_id, _, payment_id = _seed_transfer_payment(session)
-        sale_id = _seed_credit_sale(session, member_id=member_id)
-        account_payment_id = _seed_account_payment(session, member_id=member_id)
-        return_id = _seed_return(session, sale_id=sale_id, member_id=member_id)
+        member_id, _, payment_id = _seed_transfer_payment(session, paid_at=movement_day)
+        sale_id = _seed_credit_sale(session, member_id=member_id, sold_at=movement_day)
+        account_payment_id = _seed_account_payment(
+            session, member_id=member_id, paid_at=movement_day
+        )
+        return_id = _seed_return(
+            session, sale_id=sale_id, member_id=member_id, returned_at=movement_day
+        )
     app.dependency_overrides[get_session] = _override(engine)
     return engine, {
         "member_id": member_id,
