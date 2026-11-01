@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-01 · Fisioterapia: la extensión del paquete deja de depender del reloj
+
+- `test_physio_control_api.py` comparaba los dos vencimientos con un margen de un minuto porque cada petición leía el reloj de la sala. La prueba del paquete vigente ahora exige `nuevo = viejo + 10 días` exactos.
+- Se cubrió la rama que no tenía prueba: un paquete **vencido** se extiende desde el instante que se le pasa (`base = max(valid_until, occurred)`), no desde su vencimiento viejo. Se recorre llamando a `extend_physio_pack` con `now=`, leyendo antes el estado `expired` y después el `active` con la extensión aplicada.
+- Sin cambios de producción: `extend_physio_pack` ya aceptaba el instante, la prueba simplemente no lo usaba.
+- Validación: suite backend **636 pruebas: 628 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL`. Tres mutaciones del servicio —extender desde el vencimiento viejo, sellar la auditoría con `utc_now()` y regalar un día— producen tres fallos; el archivo mutado se restauró byte a byte.
+
 ## 2026-11-01 · Pruebas: custodia de la higiene de fechas
 
 - Se cerró el **dictamen de fechas** que quedó abierto con la corrección de los dos regresores conocidos: el inventario de `date(...)`, `datetime(...)` y cadenas ISO en `backend/tests` deja **108 fechas literales de 2026 en 32 archivos**, cinco fuera de 2026 (todas intencionales) y **once archivos que mezclan literales con lecturas del reloj real**. La barrida encontró cuatro caducidades más de la misma clase —dos kioscos que se ponían rojos el 2026-11-06 y el 2026-11-08, una ventana de conciliación que caducaba el 2026-11-06 y la siembra del script de purga de bandeja que caducaba el 2027-10-30— y las corrigió.

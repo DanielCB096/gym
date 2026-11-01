@@ -7,13 +7,16 @@ reception and management use it.
 """
 
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, select
 
 from app.main import app, get_session
+from app.modules.identity.models import AppUser
 from app.modules.notifications.models import MemberNotification
+from app.modules.physio import service as physio
+from app.modules.physio.models import PhysioPack
 from app.timezone import club_date
 from test_classes_api import (
     _add_member,
@@ -72,6 +75,11 @@ def _book_with_room(
 
 def _pack_detail(client: TestClient, headers: dict[str, str], pack_id: str):
     return client.get(f"/admin/physio/packs/{pack_id}", headers=headers)
+
+
+def _aware(value: datetime) -> datetime:
+    """SQLite regresa ingenuo el instante guardado; se normaliza para compararlo."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def test_room_and_specialty_catalog_feeds_the_therapist_profile() -> None:
@@ -296,7 +304,7 @@ def test_extending_a_pack_adds_days_and_audits_the_change() -> None:
             detail = extended.json()
             assert detail["pack"]["extended_days"] == 10
             new_until = datetime.fromisoformat(detail["pack"]["valid_until"])
-            assert new_until >= original_until + timedelta(days=10) - timedelta(minutes=1)
+            assert new_until == original_until + timedelta(days=10)
             assert detail["pack"]["remaining_sessions"] == 2
             assert len(detail["adjustments"]) == 1
             adjustment = detail["adjustments"][0]
@@ -326,6 +334,80 @@ def test_extending_a_pack_adds_days_and_audits_the_change() -> None:
             ).status_code == 422
     finally:
         app.dependency_overrides.clear()
+
+
+def test_an_expired_pack_extends_from_the_injected_instant() -> None:
+    """Un paquete vencido se extiende desde el instante que se le pasa, no desde su vencimiento viejo.
+
+    La regla vive en `base = max(pack.valid_until, occurred)`. Por HTTP el
+    «ahora» lo decide el reloj del proceso y la única frontera visible es la del
+    paquete vigente, así que la rama vencida se recorre llamando al servicio con
+    `now=`: el mismo instante lee el estado y sella la extensión.
+    """
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        member_id = _add_member(session, first="Ana")
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            service = _create_service(client, manager).json()
+            offer = _create_offer(
+                client,
+                manager,
+                service_id=service["id"],
+                validity_days=30,
+            ).json()
+            _open_shift(client, reception)
+            pack = _sell_pack(
+                client, reception, member_id=member_id, offer_id=offer["id"]
+            ).json()
+    finally:
+        app.dependency_overrides.clear()
+
+    pack_id = UUID(pack["id"])
+    expired_at = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
+    extended_at = expired_at + timedelta(hours=3)
+
+    with Session(engine) as session:
+        row = session.get(PhysioPack, pack_id)
+        assert row is not None
+        row.valid_until = expired_at
+        session.add(row)
+        session.commit()
+
+        manager_id = session.exec(
+            select(AppUser).where(AppUser.email == "manager@example.com")
+        ).first()
+        assert manager_id is not None
+
+        before = physio.get_physio_pack(session, pack_id, now=extended_at)
+        assert before.pack.status == "expired"
+        assert before.pack.extended_days == 0
+
+        detail = physio.extend_physio_pack(
+            session,
+            pack_id,
+            days=10,
+            reason="Reincorporación tras una lesión",
+            actor_id=manager_id.id,
+            now=extended_at,
+        )
+
+    assert detail.pack.extended_days == 10
+    assert detail.pack.status == "active"
+    # La base es el instante inyectado, no el vencimiento viejo. Con la regla
+    # invertida el nuevo vencimiento sale tres horas antes —la lectura del estado
+    # no lo notaría, la igualdad de abajo sí— y la auditoría perdería su sello.
+    assert _aware(detail.pack.valid_until) == extended_at + timedelta(days=10)
+    assert len(detail.adjustments) == 1
+    assert _aware(detail.adjustments[0].created_at) == extended_at
+
+    engine.dispose()
 
 
 def test_voiding_a_pack_cancels_future_sessions_and_never_refunds() -> None:
