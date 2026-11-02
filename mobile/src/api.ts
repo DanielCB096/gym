@@ -27,6 +27,7 @@ import type {
   MemberNotificationCategory,
   MemberNotificationPage,
   MemberNotificationPreferences,
+  MemberPaymentMethodSetup,
   MemberPhysioOverview,
   MemberProgress,
   MemberProgressPhoto,
@@ -319,6 +320,15 @@ export function updateMemberAutoRenewal(
     method: "POST",
     token,
     body: { enabled },
+  });
+}
+
+export function createMemberPaymentMethodSetup(
+  token: string,
+): Promise<MemberPaymentMethodSetup> {
+  return request<MemberPaymentMethodSetup>("/member/membership/payment-method/setup", {
+    method: "POST",
+    token,
   });
 }
 

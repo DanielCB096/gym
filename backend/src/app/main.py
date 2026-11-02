@@ -438,6 +438,13 @@ from app.modules.memberships.conekta_checkout import (
     ConektaHostedCheckout,
     ConektaCheckoutUnavailable,
 )
+from app.modules.memberships.conekta_payment_methods import (
+    ConektaPaymentMethodConfigurationError,
+    ConektaPaymentMethodSettings,
+    ConektaPaymentMethodUnavailable,
+    ConektaPaymentMethods,
+    member_payment_method_url_from_env,
+)
 from app.modules.memberships.conekta import (
     ConektaWebhookConfigurationError,
     ConektaWebhookSignatureError,
@@ -448,6 +455,9 @@ from app.modules.memberships.conekta_webhooks import (
     ConektaWebhookPayloadError,
     parse_conekta_webhook,
     safe_conekta_webhook_log_context,
+)
+from app.modules.memberships.payment_method_security import (
+    PaymentMethodEncryptionConfigurationError,
 )
 from app.modules.memberships.gateway import ChargeOutcome, ChargeStatus, VerifiedWebhook
 from app.modules.memberships.models import (
@@ -481,8 +491,11 @@ from app.modules.memberships.service import (
     assign_membership_plan,
     cancel_membership,
     collect_membership_payment,
+    complete_member_payment_method_setup,
+    create_member_payment_method_setup,
     freeze_membership,
     get_member_auto_renewal,
+    get_member_payment_method_setup,
     list_member_overview,
     member_directory_summary,
     process_verified_webhook,
@@ -2539,9 +2552,41 @@ class MemberAutoRenewalResponse(BaseModel):
     period_ends_at: datetime | None
     payment_method_ready: bool
     first_renewal_requires_member_action: bool
+    first_renewal_due: bool
+    first_renewal_charge_status: str | None
     consented_at: datetime | None
     consent_version: str
     consent_text: str
+
+
+class MemberPaymentMethodSetupStartResponse(BaseModel):
+    setup_url: str
+    plan_name: str
+    amount_cents: int
+    currency: str
+    expires_at: datetime
+
+
+class MemberPaymentMethodSetupTokenRequest(BaseModel):
+    setup_token: str = Field(min_length=40, max_length=60, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class MemberPaymentMethodSetupConfigResponse(BaseModel):
+    public_key: str
+    plan_name: str
+    amount_cents: int
+    currency: str
+
+
+class MemberPaymentMethodSetupCompleteRequest(MemberPaymentMethodSetupTokenRequest):
+    card_token: str = Field(min_length=5, max_length=254, pattern=r"^tok_[A-Za-z0-9_-]+$")
+
+
+class MemberPaymentMethodSetupCompleteResponse(BaseModel):
+    status: str
+    payment_attempt_id: UUID
+    membership_id: UUID
+    idempotent_replay: bool
 
 
 class MemberAccountResponse(BaseModel):
@@ -4716,6 +4761,116 @@ def set_member_auto_renewal_endpoint(
 
 
 @app.post(
+    "/member/membership/payment-method/setup",
+    response_model=MemberPaymentMethodSetupStartResponse,
+    tags=["member self-service"],
+)
+def create_member_payment_method_setup_endpoint(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+    response: Response,
+) -> MemberPaymentMethodSetupStartResponse:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    try:
+        ConektaPaymentMethodSettings.from_env()
+        setup_page_url = member_payment_method_url_from_env()
+        setup = create_member_payment_method_setup(session, member.member_id)
+    except (
+        ConektaPaymentMethodConfigurationError,
+        PaymentMethodEncryptionConfigurationError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+    except BillingError as error:
+        raise _billing_http_error(error) from error
+    return MemberPaymentMethodSetupStartResponse(
+        setup_url=f"{setup_page_url}#{setup.setup_token}",
+        plan_name=setup.plan_name,
+        amount_cents=setup.amount_cents,
+        currency=setup.currency,
+        expires_at=setup.expires_at,
+    )
+
+
+@app.post(
+    "/member/membership/payment-method/setup/config",
+    response_model=MemberPaymentMethodSetupConfigResponse,
+    tags=["member self-service"],
+)
+def get_member_payment_method_setup_config_endpoint(
+    request: MemberPaymentMethodSetupTokenRequest,
+    session: SessionDependency,
+    response: Response,
+) -> MemberPaymentMethodSetupConfigResponse:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    try:
+        settings = ConektaPaymentMethodSettings.from_env()
+        setup = get_member_payment_method_setup(session, request.setup_token)
+    except ConektaPaymentMethodConfigurationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+    except BillingError as error:
+        raise _billing_http_error(error) from error
+    return MemberPaymentMethodSetupConfigResponse(
+        public_key=settings.public_key,
+        plan_name=setup.plan_name,
+        amount_cents=setup.amount_cents,
+        currency=setup.currency,
+    )
+
+
+@app.post(
+    "/member/membership/payment-method/setup/complete",
+    response_model=MemberPaymentMethodSetupCompleteResponse,
+    tags=["member self-service"],
+)
+def complete_member_payment_method_setup_endpoint(
+    request: MemberPaymentMethodSetupCompleteRequest,
+    session: SessionDependency,
+    response: Response,
+) -> MemberPaymentMethodSetupCompleteResponse:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    try:
+        settings = ConektaPaymentMethodSettings.from_env()
+        result = complete_member_payment_method_setup(
+            session,
+            ConektaPaymentMethods(settings),
+            request.setup_token,
+            request.card_token,
+        )
+    except ConektaPaymentMethodConfigurationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+    except ConektaPaymentMethodUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(error),
+        ) from error
+    except PaymentMethodEncryptionConfigurationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+    except BillingError as error:
+        raise _billing_http_error(error) from error
+    return MemberPaymentMethodSetupCompleteResponse(
+        status=result.status,
+        payment_attempt_id=result.payment_attempt_id,
+        membership_id=result.membership_id,
+        idempotent_replay=result.idempotent_replay,
+    )
+
+
+@app.post(
     "/webhooks/conekta/membership",
     tags=["webhooks"],
     description=(
@@ -6566,6 +6721,8 @@ def _member_auto_renewal_response(
         period_ends_at=state.period_ends_at,
         payment_method_ready=state.payment_method_ready,
         first_renewal_requires_member_action=state.first_renewal_requires_member_action,
+        first_renewal_due=state.first_renewal_due,
+        first_renewal_charge_status=state.first_renewal_charge_status,
         consented_at=state.consented_at,
         consent_version=AUTO_RENEWAL_CONSENT_VERSION,
         consent_text=AUTO_RENEWAL_CONSENT_TEXT,

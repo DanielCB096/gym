@@ -1,8 +1,10 @@
 import hashlib
 import json
+import re
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import and_, case, func, or_
 from sqlalchemy.exc import IntegrityError
@@ -15,6 +17,7 @@ from app.modules.memberships.gateway import (
     GatewayOutcomeUnknown,
     HostedCheckout,
     HostedCheckoutGateway,
+    MemberRenewalGateway,
     PaymentGateway,
     VerifiedWebhook,
 )
@@ -22,6 +25,7 @@ from app.modules.memberships.models import (
     PAYMENT_ATTEMPT_METHODS,
     Member,
     MemberConsent,
+    MemberPaymentMethodSetup,
     Membership,
     MembershipEvent,
     Payment,
@@ -31,6 +35,10 @@ from app.modules.memberships.models import (
     Plan,
     ProviderWebhookEvent,
     utc_now,
+)
+from app.modules.memberships.payment_method_security import (
+    encrypt_payment_reference,
+    validate_payment_method_encryption_configuration,
 )
 
 
@@ -211,7 +219,34 @@ class MemberAutoRenewalState:
     period_ends_at: datetime | None
     payment_method_ready: bool
     first_renewal_requires_member_action: bool
+    first_renewal_due: bool
+    first_renewal_charge_status: str | None
     consented_at: datetime | None
+
+
+@dataclass(frozen=True)
+class MemberPaymentMethodSetupLink:
+    setup_token: str
+    plan_name: str
+    amount_cents: int
+    currency: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class MemberPaymentMethodSetupDetails:
+    status: str
+    plan_name: str
+    amount_cents: int
+    currency: str
+
+
+@dataclass(frozen=True)
+class MemberPaymentMethodSetupResult:
+    status: str
+    payment_attempt_id: UUID
+    membership_id: UUID
+    idempotent_replay: bool = False
 
 
 DEFAULT_MEMBER_PAGE_SIZE = 25
@@ -671,6 +706,19 @@ def _has_active_conekta_payment_method(session: Session, member_id: UUID) -> boo
     )
 
 
+def _latest_payment_attempt_status(session: Session, membership_id: UUID) -> str | None:
+    return session.exec(
+        select(PaymentAttempt.status)
+        .where(PaymentAttempt.membership_id == membership_id)
+        .order_by(
+            PaymentAttempt.due_at.desc(),
+            PaymentAttempt.attempt_number.desc(),
+            PaymentAttempt.id.desc(),
+        )
+        .limit(1)
+    ).first()
+
+
 def get_member_auto_renewal(
     session: Session,
     member_id: UUID,
@@ -695,6 +743,8 @@ def get_member_auto_renewal(
                 period_ends_at=None,
                 payment_method_ready=False,
                 first_renewal_requires_member_action=False,
+                first_renewal_due=False,
+                first_renewal_charge_status=None,
                 consented_at=None,
             )
         payment_method_ready = _has_active_conekta_payment_method(session, member_id)
@@ -706,6 +756,15 @@ def get_member_auto_renewal(
             period_ends_at=_as_utc(membership.ends_at),
             payment_method_ready=payment_method_ready,
             first_renewal_requires_member_action=enabled and not payment_method_ready,
+            first_renewal_due=(
+                enabled
+                and membership.status == "active"
+                and _as_utc(membership.ends_at) <= moment
+            ),
+            first_renewal_charge_status=_latest_payment_attempt_status(
+                session,
+                membership.id,
+            ),
             consented_at=_as_utc(consent.accepted_at) if consent is not None else None,
         )
 
@@ -723,6 +782,15 @@ def get_member_auto_renewal(
         period_ends_at=_as_utc(membership.ends_at),
         payment_method_ready=payment_method_ready,
         first_renewal_requires_member_action=enabled and not payment_method_ready,
+        first_renewal_due=(
+            enabled
+            and membership.status == "active"
+            and _as_utc(membership.ends_at) <= moment
+        ),
+        first_renewal_charge_status=_latest_payment_attempt_status(
+            session,
+            membership.id,
+        ),
         consented_at=_as_utc(consent.accepted_at) if consent is not None else None,
     )
 
@@ -811,6 +879,278 @@ def set_member_auto_renewal(
 
     session.commit()
     return get_member_auto_renewal(session, member_id, now=moment)
+
+
+def create_member_payment_method_setup(
+    session: Session,
+    member_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> MemberPaymentMethodSetupLink:
+    moment = _as_utc(now or utc_now())
+    _, plan = _due_auto_renewal_membership(session, member_id, moment)
+    if _has_active_conekta_payment_method(session, member_id):
+        raise AutoRenewalNotAllowed("Ya existe un método de pago activo para la renovación")
+    validate_payment_method_encryption_configuration()
+
+    pending_setups = session.exec(
+        select(MemberPaymentMethodSetup).where(
+            MemberPaymentMethodSetup.member_id == member_id,
+            MemberPaymentMethodSetup.status == "pending",
+        )
+    ).all()
+    for pending_setup in pending_setups:
+        pending_setup.status = "expired"
+        session.add(pending_setup)
+
+    raw_token = secrets.token_urlsafe(32)
+    setup = MemberPaymentMethodSetup(
+        member_id=member_id,
+        token_digest=hashlib.sha256(raw_token.encode("ascii")).hexdigest(),
+        status="pending",
+        expires_at=moment + timedelta(minutes=10),
+    )
+    session.add(setup)
+    session.commit()
+    return MemberPaymentMethodSetupLink(
+        setup_token=raw_token,
+        plan_name=plan.name,
+        amount_cents=plan.price_cents,
+        currency=plan.currency,
+        expires_at=moment + timedelta(minutes=10),
+    )
+
+
+def get_member_payment_method_setup(
+    session: Session,
+    raw_token: str,
+    *,
+    now: datetime | None = None,
+) -> MemberPaymentMethodSetupDetails:
+    moment = _as_utc(now or utc_now())
+    setup = _payment_method_setup_by_token(session, raw_token, lock=False)
+    if setup is None or setup.status != "pending":
+        raise AutoRenewalNotAllowed("El enlace de captura no existe o ya fue utilizado")
+    if _as_utc(setup.expires_at) <= moment:
+        setup.status = "expired"
+        session.add(setup)
+        session.commit()
+        raise AutoRenewalNotAllowed("El enlace de captura venció; solicita uno nuevo desde la app")
+    _, plan = _due_auto_renewal_membership(session, setup.member_id, moment)
+    return MemberPaymentMethodSetupDetails(
+        status=setup.status,
+        plan_name=plan.name,
+        amount_cents=plan.price_cents,
+        currency=plan.currency,
+    )
+
+
+def complete_member_payment_method_setup(
+    session: Session,
+    gateway: MemberRenewalGateway,
+    raw_token: str,
+    card_token: str,
+    *,
+    now: datetime | None = None,
+) -> MemberPaymentMethodSetupResult:
+    if re.fullmatch(r"tok_[A-Za-z0-9_-]{1,250}", card_token) is None:
+        raise PaymentMethodUnavailable("El token de tarjeta no es válido")
+    moment = _as_utc(now or utc_now())
+    setup = _payment_method_setup_by_token(session, raw_token, lock=True)
+    if setup is None:
+        raise AutoRenewalNotAllowed("El enlace de captura no existe o ya fue utilizado")
+    if _as_utc(setup.expires_at) <= moment:
+        if setup.status == "pending":
+            setup.status = "expired"
+            session.add(setup)
+            session.commit()
+        raise AutoRenewalNotAllowed("El enlace de captura venció; solicita uno nuevo desde la app")
+    if setup.status == "submitted" and setup.payment_attempt_id is not None:
+        attempt = session.get(PaymentAttempt, setup.payment_attempt_id)
+        membership = session.get(Membership, attempt.membership_id) if attempt is not None else None
+        if attempt is None or membership is None:
+            raise BillingError("No se encontró el intento asociado con la captura completada")
+        return MemberPaymentMethodSetupResult(
+            status=attempt.status,
+            payment_attempt_id=attempt.id,
+            membership_id=membership.id,
+            idempotent_replay=True,
+        )
+    if setup.status != "pending":
+        raise AutoRenewalNotAllowed("El enlace de captura ya no está disponible")
+
+    member = session.get(Member, setup.member_id)
+    if member is None or member.status == "inactive":
+        raise MemberNotFound("El socio no existe o está inactivo")
+    old_membership, plan = _due_auto_renewal_membership(session, member.id, moment)
+    if _has_active_conekta_payment_method(session, member.id):
+        raise AutoRenewalNotAllowed("Ya existe un método de pago activo para la renovación")
+    validate_payment_method_encryption_configuration()
+
+    saved_card = gateway.save_card(
+        member_name=f"{member.first_name} {member.last_name}",
+        member_email=member.email,
+        member_phone=member.phone,
+        card_token=card_token,
+        idempotency_key=str(setup.id),
+    )
+    payment_method_id = uuid5(setup.id, "payment-method")
+    payment_method = PaymentMethod(
+        id=payment_method_id,
+        member_id=member.id,
+        provider="conekta",
+        provider_method_id=hashlib.sha256(
+            saved_card.payment_source_id.encode("ascii")
+        ).hexdigest(),
+        encrypted_provider_token=encrypt_payment_reference(
+            member.id,
+            customer_id=saved_card.customer_id,
+            payment_source_id=saved_card.payment_source_id,
+        ),
+        status="active",
+        is_default=True,
+    )
+
+    old_ends_at = _as_utc(old_membership.ends_at)
+    old_membership.status = "expired"
+    old_membership.auto_renew = False
+    old_membership.updated_at = moment
+    session.add(old_membership)
+    session.add(
+        MembershipEvent(
+            membership_id=old_membership.id,
+            event_type="expired",
+            from_status="active",
+            to_status="expired",
+            actor_type="system",
+            event_metadata={"reason": "renewal_due"},
+            occurred_at=moment,
+        )
+    )
+
+    membership_id = uuid5(setup.id, "renewal-membership")
+    membership = Membership(
+        id=membership_id,
+        member_id=member.id,
+        plan_id=plan.id,
+        status="pending_payment",
+        starts_at=moment,
+        ends_at=moment + timedelta(days=plan.duration_days),
+        auto_renew=True,
+    )
+    attempt_id = uuid5(setup.id, "renewal-payment-attempt")
+    idempotency_key = f"renewal:{old_membership.id}:{int(old_ends_at.timestamp())}"
+    attempt = PaymentAttempt(
+        id=attempt_id,
+        membership_id=membership.id,
+        payment_method_id=payment_method.id,
+        method="card",
+        provider="conekta",
+        idempotency_key=idempotency_key,
+        request_fingerprint=_fingerprint(
+            {
+                "operation": "member_renewal",
+                "member_id": str(member.id),
+                "previous_membership_id": str(old_membership.id),
+                "plan_id": str(plan.id),
+                "payment_method_id": str(payment_method.id),
+            }
+        ),
+        attempt_number=1,
+        amount_cents=plan.price_cents,
+        currency=plan.currency,
+        status="pending",
+        due_at=old_ends_at,
+    )
+    session.add(payment_method)
+    session.flush()
+    session.add(membership)
+    session.flush()
+    session.add(attempt)
+    session.add(
+        MembershipEvent(
+            membership_id=membership.id,
+            event_type="renewal_payment_pending",
+            to_status="pending_payment",
+            actor_type="member",
+            actor_id=member.id,
+            event_metadata={"previous_membership_id": str(old_membership.id)},
+            occurred_at=moment,
+        )
+    )
+    session.add(_attempt_event(attempt, None, "pending", "created", "api"))
+    session.flush()
+
+    order = gateway.create_renewal_order(
+        customer_id=saved_card.customer_id,
+        payment_source_id=saved_card.payment_source_id,
+        plan_name=plan.name,
+        amount_cents=attempt.amount_cents,
+        currency=attempt.currency,
+        membership_id=str(membership.id),
+        payment_attempt_id=str(attempt.id),
+    )
+    attempt.provider_order_id = order.provider_order_id
+    attempt.status = "processing"
+    session.add(_attempt_event(attempt, "pending", "processing", "charge_submitted", "api"))
+    setup.status = "submitted"
+    setup.payment_method_id = payment_method.id
+    setup.payment_attempt_id = attempt.id
+    setup.completed_at = moment
+    session.add_all([attempt, setup])
+    session.commit()
+    return MemberPaymentMethodSetupResult(
+        status=attempt.status,
+        payment_attempt_id=attempt.id,
+        membership_id=membership.id,
+    )
+
+
+def _due_auto_renewal_membership(
+    session: Session,
+    member_id: UUID,
+    moment: datetime,
+) -> tuple[Membership, Plan]:
+    membership = session.exec(
+        select(Membership)
+        .where(
+            Membership.member_id == member_id,
+            Membership.status.in_(NON_TERMINAL_MEMBERSHIP_STATUSES),
+        )
+        .with_for_update()
+    ).first()
+    consent = _active_auto_renewal_consent(session, member_id)
+    if (
+        membership is None
+        or membership.status != "active"
+        or not membership.auto_renew
+        or consent is None
+        or _as_utc(membership.ends_at) > moment
+    ):
+        raise AutoRenewalNotAllowed(
+            "La captura solo está disponible al vencer una membresía vigente con autorización activa"
+        )
+    plan = session.get(Plan, membership.plan_id)
+    if plan is None or not plan.is_active or plan.price_cents <= 0:
+        raise PlanUnavailable("El plan de renovación no está disponible para cobro")
+    return membership, plan
+
+
+def _payment_method_setup_by_token(
+    session: Session,
+    raw_token: str,
+    *,
+    lock: bool,
+) -> MemberPaymentMethodSetup | None:
+    if re.fullmatch(r"[A-Za-z0-9_-]{40,60}", raw_token) is None:
+        return None
+    query = select(MemberPaymentMethodSetup).where(
+        MemberPaymentMethodSetup.token_digest
+        == hashlib.sha256(raw_token.encode("ascii")).hexdigest()
+    )
+    if lock:
+        query = query.with_for_update()
+    return session.exec(query).first()
 
 
 def update_plan_daily_entry_limit(
@@ -1911,6 +2251,23 @@ def _apply_outcome(
         membership = session.get(Membership, attempt.membership_id)
         if membership is None:
             raise BillingError("Membership for payment attempt no longer exists")
+        paid_at = outcome.occurred_at or utc_now()
+        is_first_auto_renewal = session.exec(
+            select(MembershipEvent.id)
+            .where(
+                MembershipEvent.membership_id == membership.id,
+                MembershipEvent.event_type == "renewal_payment_pending",
+            )
+            .limit(1)
+        ).first() is not None
+        if membership.status == "pending_payment" and is_first_auto_renewal:
+            plan = session.get(Plan, membership.plan_id)
+            if plan is None:
+                raise PlanUnavailable("The renewal plan no longer exists")
+            membership.starts_at = paid_at
+            membership.ends_at = paid_at + timedelta(days=plan.duration_days)
+            membership.updated_at = paid_at
+            session.add(membership)
         if payment is None:
             payment = Payment(
                 payment_attempt_id=attempt.id,
@@ -1919,7 +2276,7 @@ def _apply_outcome(
                 amount_cents=attempt.amount_cents,
                 currency=attempt.currency,
                 method=attempt.method,
-                paid_at=outcome.occurred_at or utc_now(),
+                paid_at=paid_at,
                 period_starts_at=membership.starts_at,
                 period_ends_at=membership.ends_at,
             )

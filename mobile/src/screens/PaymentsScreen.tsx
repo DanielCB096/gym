@@ -14,6 +14,7 @@ import {
 import {
   ApiError,
   createMemberCheckout,
+  createMemberPaymentMethodSetup,
   getMemberAutoRenewal,
   getMemberAccount,
   getMemberCheckoutPlans,
@@ -59,12 +60,14 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
   const [autoRenewalBusy, setAutoRenewalBusy] = useState(false);
   const [autoRenewalConsentAccepted, setAutoRenewalConsentAccepted] = useState(false);
   const [startingCheckoutPlanId, setStartingCheckoutPlanId] = useState<string | null>(null);
+  const [paymentMethodSetupBusy, setPaymentMethodSetupBusy] = useState(false);
   const [pendingCheckout, setPendingCheckout] = useState<{
     plan: MemberCheckoutPlan;
     idempotencyKey: string;
     checkoutUrl: string | null;
   } | null>(null);
   const checkoutOpenedRef = useRef(false);
+  const paymentMethodSetupOpenedRef = useRef(false);
 
   const load = useCallback(
     async (mode: "initial" | "refresh") => {
@@ -146,12 +149,20 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
-      if (nextState === "active" && checkoutOpenedRef.current) {
-        checkoutOpenedRef.current = false;
-        setCheckoutNotice(
-          "Regresaste del checkout. El gimnasio confirmará el pago cuando reciba el aviso seguro de Conekta; desliza hacia abajo para actualizar.",
-        );
-        void load("refresh");
+      if (nextState === "active") {
+        if (checkoutOpenedRef.current) {
+          checkoutOpenedRef.current = false;
+          setCheckoutNotice(
+            "Regresaste del checkout. El gimnasio confirmará el pago cuando reciba el aviso seguro de Conekta; desliza hacia abajo para actualizar.",
+          );
+          void load("refresh");
+        } else if (paymentMethodSetupOpenedRef.current) {
+          paymentMethodSetupOpenedRef.current = false;
+          setAutoRenewalNotice(
+            "Regresaste de la captura de tarjeta. El gimnasio confirmará la renovación cuando reciba el aviso seguro de Conekta; desliza hacia abajo para actualizar.",
+          );
+          void load("refresh");
+        }
       }
     });
     return () => subscription.remove();
@@ -203,6 +214,32 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
       );
     } finally {
       setStartingCheckoutPlanId(null);
+    }
+  }
+
+  async function openPaymentMethodSetup() {
+    if (paymentMethodSetupBusy) {
+      return;
+    }
+    setPaymentMethodSetupBusy(true);
+    setAutoRenewalError(null);
+    setAutoRenewalNotice(null);
+    try {
+      const setup = await createMemberPaymentMethodSetup(token);
+      paymentMethodSetupOpenedRef.current = true;
+      await Linking.openURL(setup.setup_url);
+      setAutoRenewalNotice(
+        `Se abrirá el formulario seguro de Conekta. Al terminar, se intentará el cobro normal de renovación de ${formatMoney(setup.amount_cents, setup.currency)}; no es un cargo de verificación.`,
+      );
+    } catch (setupError) {
+      paymentMethodSetupOpenedRef.current = false;
+      if (setupError instanceof ApiError && setupError.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      setAutoRenewalError(describeError(setupError));
+    } finally {
+      setPaymentMethodSetupBusy(false);
     }
   }
 
@@ -378,7 +415,16 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
           <Text style={sharedStyles.body}>
             {autoRenewal.enabled
               ? !autoRenewal.eligible
-                ? "Tu autorización sigue registrada, pero tu membresía no está activa y vigente. No se debe programar un cobro mientras siga así; puedes revocar la autorización aquí."
+                ? autoRenewal.first_renewal_due &&
+                  autoRenewal.first_renewal_requires_member_action
+                  ? `Tu periodo terminó. Para completar la renovación, captura tu tarjeta y paga el importe normal del plan${autoRenewal.period_ends_at ? ` (venció el ${formatDay(autoRenewal.period_ends_at)})` : ""}.`
+                  : autoRenewal.payment_method_ready
+                    ? autoRenewal.first_renewal_charge_status === "failed"
+                      ? "Conekta rechazó el cobro. Tu acceso permanece suspendido; comunícate con recepción para resolverlo."
+                      : autoRenewal.first_renewal_charge_status === "unknown"
+                        ? "El resultado del cobro no se pudo confirmar. No inicies otro pago; el gimnasio debe conciliarlo antes."
+                        : "La captura se completó y el cobro está pendiente de confirmación segura de Conekta. El acceso se habilitará cuando se confirme el pago."
+                    : "Tu autorización sigue registrada, pero tu membresía no está activa y vigente. No se debe programar un cobro mientras siga así; puedes revocar la autorización aquí."
                 : autoRenewal.first_renewal_requires_member_action
                 ? `Autorización activa. Tu periodo actual vence el ${autoRenewal.period_ends_at ? formatDay(autoRenewal.period_ends_at) : "día indicado en tu membresía"}. En esa fecha completarás de forma segura la captura de tarjeta y el primer cobro. Los ciclos posteriores podrán automatizarse cuando el servicio esté habilitado.`
                 : "Autorización activa y método de pago listo. Los cobros automáticos comenzarán cuando el servicio esté habilitado."
@@ -407,6 +453,30 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
                 Acepto y autorizo la renovación automática conforme a estas
                 condiciones.
               </Text>
+            </Pressable>
+          ) : null}
+          {autoRenewal.first_renewal_due &&
+          autoRenewal.first_renewal_requires_member_action ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: paymentMethodSetupBusy }}
+              disabled={paymentMethodSetupBusy}
+              onPress={() => void openPaymentMethodSetup()}
+              style={({ pressed }) => [
+                sharedStyles.primaryButton,
+                pressed && !paymentMethodSetupBusy
+                  ? sharedStyles.primaryButtonPressed
+                  : null,
+                paymentMethodSetupBusy ? sharedStyles.primaryButtonDisabled : null,
+              ]}
+            >
+              {paymentMethodSetupBusy ? (
+                <ActivityIndicator color={colors.accentText} />
+              ) : (
+                <Text style={sharedStyles.primaryButtonText}>
+                  Capturar tarjeta y pagar renovación
+                </Text>
+              )}
             </Pressable>
           ) : null}
           {autoRenewal.eligible || autoRenewal.enabled ? (

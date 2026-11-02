@@ -48,9 +48,15 @@ G --> H[Conciliar o recuperar el pago]
 
 - Política aprobada: cobro local, reintentos 1/3/5 días, sin gracia y periodo
   renovado desde la fecha efectiva del pago.
-- El consentimiento auditable desde la app está implementado. La captura
-  segura del primer método, el cobro programado, los reintentos y la suspensión
-  automática siguen pendientes de implementación y validación.
+- El consentimiento auditable desde la app está implementado. Al vencer el
+  periodo, la app abre un enlace de un solo uso para el tokenizador web; al
+  confirmar la captura, el backend guarda la referencia cifrada y solicita el
+  primer cobro normal. La renovación queda `pending_payment` hasta el webhook
+  firmado de Conekta. La captura y el cargo están cubiertos con simulaciones;
+  falta la prueba E2E real de sandbox.
+- El scheduler de ciclos posteriores, los reintentos 1/3/5, la suspensión
+  automática y la conciliación de resultados desconocidos siguen pendientes.
+  Producción continúa deshabilitada.
 
 ## KPIs
 - tasa de renovación

@@ -345,9 +345,19 @@ export type MemberAutoRenewal = {
   period_ends_at: string | null;
   payment_method_ready: boolean;
   first_renewal_requires_member_action: boolean;
+  first_renewal_due: boolean;
+  first_renewal_charge_status: string | null;
   consented_at: string | null;
   consent_version: string;
   consent_text: string;
+};
+
+export type MemberPaymentMethodSetup = {
+  setup_url: string;
+  plan_name: string;
+  amount_cents: number;
+  currency: string;
+  expires_at: string;
 };
 
 export type MemberPendingCheckout = {

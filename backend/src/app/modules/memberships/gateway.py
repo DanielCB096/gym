@@ -38,6 +38,17 @@ class HostedCheckout:
     checkout_url: str
 
 
+@dataclass(frozen=True)
+class SavedPaymentReference:
+    customer_id: str
+    payment_source_id: str
+
+
+@dataclass(frozen=True)
+class RenewalOrder:
+    provider_order_id: str
+
+
 class PaymentGateway(Protocol):
     def charge(self, attempt: PaymentAttempt, payment_method: PaymentMethod) -> ChargeOutcome:
         ...
@@ -55,6 +66,32 @@ class HostedCheckoutGateway(Protocol):
         success_url: str,
         failure_url: str,
     ) -> HostedCheckout:
+        ...
+
+
+class MemberRenewalGateway(Protocol):
+    def save_card(
+        self,
+        *,
+        member_name: str,
+        member_email: str | None,
+        member_phone: str | None,
+        card_token: str,
+        idempotency_key: str,
+    ) -> SavedPaymentReference:
+        ...
+
+    def create_renewal_order(
+        self,
+        *,
+        customer_id: str,
+        payment_source_id: str,
+        plan_name: str,
+        amount_cents: int,
+        currency: str,
+        membership_id: str,
+        payment_attempt_id: str,
+    ) -> RenewalOrder:
         ...
 
 

@@ -241,6 +241,46 @@ class PaymentMethod(SQLModel, table=True):
     )
 
 
+class MemberPaymentMethodSetup(SQLModel, table=True):
+    __tablename__ = "member_payment_method_setups"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'submitted', 'expired')",
+            name="ck_member_payment_method_setups_status",
+        ),
+        UniqueConstraint("token_digest", name="uq_member_payment_method_setups_token_digest"),
+        Index(
+            "uq_member_payment_method_setups_pending_member",
+            "member_id",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
+        Index("ix_member_payment_method_setups_expiry", "status", "expires_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    member_id: UUID = Field(
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("members.id", ondelete="RESTRICT"), nullable=False)
+    )
+    token_digest: str = Field(max_length=64)
+    status: str = Field(max_length=16)
+    payment_method_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("payment_methods.id", ondelete="RESTRICT")),
+    )
+    payment_attempt_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("payment_attempts.id", ondelete="RESTRICT")),
+    )
+    expires_at: datetime = Field(sa_type=DateTime(timezone=True))
+    completed_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
 class PaymentAttempt(SQLModel, table=True):
     __tablename__ = "payment_attempts"
     __table_args__ = (

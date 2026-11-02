@@ -1,9 +1,11 @@
 # Changelog
 
-## 2026-11-02 · Política de renovación automática
+## 2026-11-02 · Captura y primer cobro de renovación automática
 
 - ADR-087 fija el calendario local, el consentimiento explícito, los reintentos en días 1/3/5, la suspensión al vencimiento sin gracia y el inicio del nuevo periodo al confirmarse el pago.
-- La app ya permite aceptar/revocar el consentimiento de renovación y el backend conserva versión, hash y eventos de auditoría. Para socios actuales, aceptar no cobra ni guarda tarjeta anticipadamente; el primer pago se completa al vencimiento. Captura web, método tokenizado y scheduler siguen pendientes, por lo que aún no se ejecutan cobros automáticos. Las pruebas específicas de backend y el chequeo de tipos de web y móvil pasan.
+- La app ya permite aceptar/revocar el consentimiento. Al vencer, un código aleatorio de un solo uso (10 minutos) llega únicamente en el fragmento de la URL; la página lo borra antes de llamar al backend y el BFF limita y no almacena sus peticiones.
+- El tokenizador iframe de Conekta envía el token de tarjeta directo al backend; el backend crea cliente y método sandbox, cifra las referencias con AES-256-GCM y solicita el cobro normal del plan (sin cargo de verificación). Solo el webhook firmado activa la nueva membresía.
+- Se agregó la migración `20261102_0087_member_payment_method_setup`. La integración productiva está deshabilitada; falta la prueba E2E sandbox con llaves del responsable, además del scheduler y los reintentos 1/3/5.
 
 ## Preparación de staging local
 

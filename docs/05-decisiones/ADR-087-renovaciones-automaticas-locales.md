@@ -61,9 +61,17 @@ y mantener el acceso separado del resultado de un checkout o una redirección.
   activación/revocación genera un evento de membresía.
 - El panel ya no puede otorgar el consentimiento en nombre del socio. La ruta
   de autorización no cobra ni crea intentos o pagos.
-- Pendientes: tokenización web en la fecha de vencimiento, cifrado y custodia
-  del método, motor local de renovaciones/reintentos, suspensión efectiva y
-  validación sandbox. Producción no está habilitada.
+- Implementada la captura inicial en sandbox: un enlace protegido por código
+  aleatoria de 10 minutos y un solo uso llega en el fragmento URL, que la página
+  elimina inmediatamente. El formulario del iframe tokeniza directamente con
+  Conekta; la API exige autorización vigente y vencimiento, cifra el `customer_id`
+  y `payment_source_id` con AES-256-GCM, crea el cobro normal de renovación y
+  espera el webhook firmado para activar la membresía. No hay cargo de
+  verificación ni datos PAN/CVV en el backend. Las llaves `key_test_` y el modo
+  sandbox son obligatorios.
+- Pendientes: prueba E2E de este flujo con la cuenta sandbox del responsable,
+  motor local de renovaciones futuras, reintentos, suspensión automática y
+  conciliación. Producción no está habilitada.
 
 ## Referencias
 

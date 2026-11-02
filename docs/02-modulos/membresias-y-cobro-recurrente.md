@@ -64,8 +64,8 @@ Este módulo cubre la operación de alta de socios, venta de planes, pago inicia
 - Mi membresía: vigencia, plan, fecha de pago y acceso
 - Historial de pagos de membresía de solo lectura (importe, plan, periodo, método y nota)
 - Configuración de pago: aceptar o revocar la renovación automática con texto
-  explícito sobre el primer cobro y los reintentos; alta/cambio de tarjeta aún
-  pendiente
+  explícito sobre el primer cobro y los reintentos; en la fecha de vencimiento,
+  abre la captura segura de tarjeta y confirma el cobro normal de renovación
 - Recordatorios y alertas: vencimiento, cobros fallidos, cambios de plan
 
 ### Kiosco
@@ -91,6 +91,9 @@ Este módulo cubre la operación de alta de socios, venta de planes, pago inicia
 - al aceptar la renovación para una membresía ya pagada no se cobra ni se
   tokeniza una tarjeta de inmediato; el socio completa la primera renovación en
   su fecha de vencimiento y los ciclos posteriores podrán cobrarse en automático
+- la captura de tarjeta se habilita solo al vencer; guardar la tarjeta inicia
+  el cobro normal de renovación, no un cargo de verificación, y la membresía
+  solo se reactiva al confirmar Conekta por webhook
 
 ### Casos límite
 - tarjeta vencida o bloqueada
@@ -185,7 +188,7 @@ El **cobro manual de membresía** ya está implementado (2026-10-21) con la migr
 
 La primera parte de la integración de pagos en línea está implementada para sandbox. `POST /member/membership/checkout` (Bearer del socio, `plan_id` y encabezado `Idempotency-Key`) crea una orden alojada de Conekta para pago único con tarjeta, ligada a un intento interno; guarda la referencia de orden y la URL de checkout. La configuración requiere `CONEKTA_MODE=sandbox`, `CONEKTA_SANDBOX_API_KEY`, `CONEKTA_SUCCESS_URL` y `CONEKTA_FAILURE_URL`; la llave debe proceder del modo de pruebas del panel y no se permite producción. El importe y la moneda los fija el plan del servidor. Repetir la misma clave devuelve el checkout existente o reintenta la creación sin crear otro intento.
 
-El endpoint `POST /webhooks/conekta/membership` procesa la confirmación solo tras verificar RSA-SHA256 sobre el cuerpo original, `livemode=false`, el ID de orden y la coincidencia de importe y moneda. `order.paid` y `charge.paid` crean un `Payment` y activan la membresía en una transacción idempotente; un rechazo no activa el acceso. Las discrepancias firmadas se conservan como evento fallido para revisión y responden `409`. Requiere `CONEKTA_WEBHOOK_PUBLIC_KEY` del webhook sandbox y no habilita producción. El checkout alojado, el retorno a la app y la respuesta HTTP de creación no son confirmación de pago. La prueba E2E con el sandbox de Conekta se completó el 2026-10-31 con un pago de $10 MXN: el webhook firmado se validó, el intento terminó en `succeeded` y la membresía en `active`. Sigue pendiente la conciliación operativa. La renovación recurrente, métodos diferidos como SPEI, métodos de pago guardados, promociones/descuentos y prorrateo siguen pendientes. La facturación fiscal del cobro confirmado ya existe para pagos confirmados: un pago de membresía puede facturarse como CFDI 4.0 individual (`origin_type = "membership_payment"`) y acreditarse con nota de crédito desde el módulo de Facturación; el timbrado sigue siendo simulado hasta integrar el PAC real.
+El endpoint `POST /webhooks/conekta/membership` procesa la confirmación solo tras verificar RSA-SHA256 sobre el cuerpo original, `livemode=false`, el ID de orden y la coincidencia de importe y moneda. `order.paid` y `charge.paid` crean un `Payment` y activan la membresía en una transacción idempotente; un rechazo no activa el acceso. Las discrepancias firmadas se conservan como evento fallido para revisión y responden `409`. Requiere `CONEKTA_WEBHOOK_PUBLIC_KEY` del webhook sandbox y no habilita producción. El checkout alojado, el retorno a la app y la respuesta HTTP de creación no son confirmación de pago. La prueba E2E con el sandbox de Conekta se completó el 2026-10-31 con un pago de $10 MXN. La captura del primer método y el cobro de renovación están implementados con respuestas simuladas; falta el E2E de ese nuevo flujo y la conciliación operativa. Los métodos guardados se cifran y solo pueden capturarse al vencimiento; el scheduler de ciclos posteriores, reintentos, métodos diferidos como SPEI, promociones/descuentos y prorrateo siguen pendientes. La facturación fiscal del cobro confirmado ya existe para pagos confirmados: un pago de membresía puede facturarse como CFDI 4.0 individual (`origin_type = "membership_payment"`) y acreditarse con nota de crédito desde el módulo de Facturación; el timbrado sigue siendo simulado hasta integrar el PAC real.
 
 La **app del socio** consulta sus pagos de membresía desde `GET /member/payments` (Bearer, paginado, más recientes primero) con importe, moneda, método, fecha, periodo, plan y nota, sin cobrador ni turno de caja. Es de solo lectura: el cobro sigue siendo exclusivo del panel con `members.manage` y turno abierto. Ver ADR-012.
 
@@ -195,17 +198,22 @@ La app ya permite al socio aceptar o revocar la renovación desde
 `GET/POST /member/membership/auto-renewal`. El servidor conserva en
 `member_consents` la versión, el hash del texto aceptado y la fecha de revocación, actualiza
 `memberships.auto_renew` y registra el cambio en `membership_events`. Activar la
-autorización no cobra ni captura la tarjeta: para una membresía pagada, el primer
-cobro y la tokenización se completarán en el vencimiento. El panel administrativo
-ya no puede otorgar consentimiento en nombre del socio. La captura web segura
-de tarjeta, el cifrado/registro del método y el motor de reintentos siguen
-pendientes; aún no se ejecutan cargos automáticos.
+autorización no cobra ni captura la tarjeta. En la fecha de vencimiento, el
+endpoint `POST /member/membership/payment-method/setup` genera un enlace de
+10 minutos con un código aleatorio en el fragmento URL; la página lo borra antes
+de comunicarse con el backend. El iframe de Conekta tokeniza la tarjeta fuera
+del servidor; después de confirmar el importe normal del plan, se cifra la
+referencia del cliente/método y se solicita el primer cargo. La nueva membresía
+queda `pending_payment` hasta el webhook firmado. El panel administrativo ya no
+puede otorgar consentimiento en nombre del socio. La integración exige llaves
+`key_test_` y sigue sin una prueba E2E real; scheduler, reintentos y producción
+permanecen pendientes/deshabilitados.
 
 El plan ya guarda su **límite diario de entradas** (`plans.daily_entry_limit`, migración `20261028_0043`): `NULL` significa sin límite y el CHECK exige `>= 1`. Se fija o retira con `PATCH /admin/plans/{plan_id}` (`settings.manage`) desde la tarjeta «Límite diario de entradas» de la página «Kiosco» del panel; el kiosco lo aplica contando entradas autorizadas del día del club, incluidas las manuales. El alta y la edición completa de planes siguen pendientes: el panel solo expone este campo y `GET /admin/plans` lista los planes activos. Ver ADR-025.
 
 ## 14. Historial de cambios
 
-- 2026-11-02: **consentimiento de renovación automática** (ADR-087): el socio puede aceptar/revocar desde la app; la evidencia conserva versión y hash, y los eventos de membresía registran alta y baja. Aceptar no cobra ni tokeniza tarjeta; el flujo web y el motor de cobros siguen pendientes, y la selección fue probada sin crear intentos ni pagos.
+- 2026-11-02: **renovación automática en sandbox** (ADR-087): el socio acepta/revoca desde la app; al vencer, un enlace de un solo uso abre el tokenizador de Conekta y envía el cobro normal de renovación. La referencia de cliente y tarjeta se cifra; la membresía solo se activa con webhook firmado. Scheduler, reintentos y validación E2E siguen pendientes; producción permanece deshabilitada.
 - 2026-10-31: `GET /member/membership/plans` también recupera el checkout pendiente propio (plan, clave idempotente y URL) para reabrirlo o reintentarlo después de reiniciar la app.
 - 2026-10-31: la app del socio obtiene los planes de primera inscripción desde `GET /member/membership/plans` y abre el checkout alojado de Conekta. La disponibilidad queda restringida a sandbox y a socios sin membresía no terminal; el retorno de la app no confirma el pago.
 - 2026-10-28: **límite diario de entradas por plan** (`plans.daily_entry_limit`, migración `20261028_0043`, ADR-025). `PATCH /admin/plans/{plan_id}` con `settings.manage` fija o retira el límite; el kiosco lo aplica por día del club contando entradas autorizadas (también las manuales). No cambia el cobro, la vigencia ni las reglas de membresía.

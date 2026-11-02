@@ -26,17 +26,18 @@ los servicios y espera sus endpoints antes de informar que están listos.
 La app ya permite que un socio con membresía activa y vigente acepte o revoque
 su autorización en la pantalla de pagos. La evidencia queda en
 `member_consents` con versión y hash del texto, y el cambio en `membership_events`.
-Aceptar la autorización no cobra ni captura una tarjeta. Para un periodo ya
-pagado, el socio completará el primer cobro y la tokenización en la fecha de
-vencimiento; no hay periodo de gracia, el acceso se suspende al vencer y los
-reintentos acordados son en días 1, 3 y 5.
+Aceptar la autorización no cobra ni captura una tarjeta. Al vencimiento, la app
+puede solicitar un enlace de un solo uso (10 minutos) hacia el tokenizador web;
+el token queda en el fragmento de la URL, se borra al cargar la página y solo se
+envía al backend después de tokenizar en el iframe de Conekta. El backend guarda
+cifradas las referencias del cliente/método y solicita el importe normal de
+renovación, sin cargo de verificación. La nueva membresía queda en
+`pending_payment` hasta recibir el webhook firmado.
 
-Todavía no existen la página segura de tokenización, el cifrado/registro del
-método ni el job de renovaciones. Por tanto, aunque se pueda registrar el
-consentimiento, **no se ejecuta ningún cobro automático**. El siguiente trabajo
-es completar la captura de método en sandbox, el scheduler idempotente, la
-respuesta a cobros fallidos/desconocidos y las pruebas de recuperación. No
-habilitar producción.
+La integración permanece limitada a llaves `key_test_` y sandbox. Falta la
+prueba E2E de captura y pago con la cuenta del responsable, el scheduler
+idempotente de ciclos futuros, los reintentos 1/3/5 y la conciliación de estados
+fallidos/desconocidos. No habilitar producción.
 
 ## Pagos de membresía (ADR-066)
 
