@@ -2,7 +2,7 @@
 
 The application has no scheduler: the maintenance scripts run from the host's
 cron (ADR-058, ADR-062, ADR-071, ADR-073, ADR-074, ADR-075, ADR-076, ADR-079, ADR-081).
-This script renders the ten entries as one block delimited by markers, so
+This script renders the eleven entries as one block delimited by markers, so
 reinstalling after moving the app,
 changing the database password or adjusting the schedule replaces the old block
 instead of duplicating lines, and unrelated crontab entries are left untouched.
@@ -31,6 +31,7 @@ END_MARKER = "# END gimnasio-ops"
 
 DEFAULT_DAILY_AT = "03:15"
 DEFAULT_PHYSIO_CLOSE_AT = "00:30"
+DEFAULT_INCOME_REPORTS_AT = "06:00"
 DEFAULT_RECEIPTS_EVERY = 30
 DEFAULT_STAFF_PUSH_EVERY = 15
 DEFAULT_STAFF_EMAIL_EVERY = 15
@@ -58,6 +59,7 @@ _SCRIPTS = (
     "flush_staff_email.py",
     "flush_member_email.py",
     "emit_deferred_notices.py",
+    "send_scheduled_income_reports.py",
     "close_physio_day.py",
 )
 
@@ -74,6 +76,7 @@ class OpsCronConfig:
     log_dir: Path
     daily_at: str = DEFAULT_DAILY_AT
     physio_close_at: str = DEFAULT_PHYSIO_CLOSE_AT
+    income_reports_at: str = DEFAULT_INCOME_REPORTS_AT
     receipts_every: int = DEFAULT_RECEIPTS_EVERY
     staff_push_every: int = DEFAULT_STAFF_PUSH_EVERY
     staff_email_every: int = DEFAULT_STAFF_EMAIL_EVERY
@@ -133,7 +136,7 @@ def add_minutes(hour: int, minute: int, offset: int) -> tuple[int, int]:
 
 
 def build_block(config: OpsCronConfig) -> str:
-    """Render the marked crontab block for the ten maintenance jobs."""
+    """Render the marked crontab block for the eleven maintenance jobs."""
 
     database_url = config.database_url.strip()
     if not database_url:
@@ -152,6 +155,7 @@ def build_block(config: OpsCronConfig) -> str:
         hour, minute, PURGE_STAGGER_MINUTES * 3
     )
     close_hour, close_minute = parse_daily_at(config.physio_close_at)
+    reports_hour, reports_minute = parse_daily_at(config.income_reports_at)
     receipts = receipts_schedule(config.receipts_every)
     staff_push = staff_push_schedule(config.staff_push_every)
     staff_email = staff_email_schedule(config.staff_email_every)
@@ -175,7 +179,8 @@ def build_block(config: OpsCronConfig) -> str:
             f"{config.staff_email_every} min, correo de socios cada "
             f"{config.member_email_every} min, avisos diferidos con su push cada "
             f"{config.notices_every} min, cierre de fisioterapia a las "
-            f"{close_hour:02d}:{close_minute:02d} y purgas diarias a las "
+            f"{close_hour:02d}:{close_minute:02d}, reportes de ingresos a las "
+            f"{reports_hour:02d}:{reports_minute:02d} y purgas diarias a las "
             f"{hour:02d}:{minute:02d}, {second_hour:02d}:{second_minute:02d}, "
             f"{third_hour:02d}:{third_minute:02d} y "
             f"{fourth_hour:02d}:{fourth_minute:02d}."
@@ -207,6 +212,10 @@ def build_block(config: OpsCronConfig) -> str:
         (
             f"{notices} "
             f"{command('emit_deferred_notices.py', '', 'deferred-notices.log')}"
+        ),
+        (
+            f"{reports_minute} {reports_hour} * * * "
+            f"{command('send_scheduled_income_reports.py', '', 'income-reports.log')}"
         ),
         END_MARKER,
     ]
@@ -306,6 +315,7 @@ def _config_from_args(args: argparse.Namespace) -> OpsCronConfig:
         log_dir=Path(args.log_dir) if args.log_dir else app_dir / "logs",
         daily_at=args.daily_at,
         physio_close_at=args.physio_close_at,
+        income_reports_at=args.income_reports_at,
         receipts_every=args.receipts_every,
         staff_push_every=args.staff_push_every,
         staff_email_every=args.staff_email_every,
@@ -375,6 +385,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "hora local del cierre del día de fisioterapia "
             f"(por defecto {DEFAULT_PHYSIO_CLOSE_AT})"
+        ),
+    )
+    parser.add_argument(
+        "--income-reports-at",
+        default=DEFAULT_INCOME_REPORTS_AT,
+        help=(
+            "hora local de la pasada diaria de ingresos "
+            f"(por defecto {DEFAULT_INCOME_REPORTS_AT}); activa los envíos "
+            "diario, semanal y mensual según el calendario del club"
         ),
     )
     parser.add_argument(
@@ -473,7 +492,8 @@ def main(argv: list[str] | None = None) -> int:
         f"personal cada {config.staff_email_every} min, correo de socios cada "
         f"{config.member_email_every} min, avisos diferidos "
         f"cada {config.notices_every} min, cierre de fisioterapia a las "
-        f"{config.physio_close_at} y cuatro purgas diarias desde las "
+        f"{config.physio_close_at}, reportes de ingresos a las "
+        f"{config.income_reports_at} y cuatro purgas diarias desde las "
         f"{config.daily_at}. Revisa con: crontab -l"
     )
     return 0

@@ -2,7 +2,7 @@
 
 The block schedules the physiotherapy day close, the four daily purges, the
 Expo receipts pass, the staff push and email drains, the member email drain and
-the deferred-notices pass, keeps unrelated crontab lines untouched, and
+the deferred-notices pass and income report emails, keeps unrelated crontab lines untouched, and
 reinstalling replaces the old block instead of adding a second copy.
 """
 
@@ -34,7 +34,7 @@ def _block(**overrides: object) -> str:
     return ops_cron.build_block(replace(BASE, **overrides))
 
 
-def test_block_schedules_the_ten_jobs_in_order() -> None:
+def test_block_schedules_the_eleven_jobs_in_order() -> None:
     lines = _block().splitlines()
     assert lines[0] == ops_cron.BEGIN_MARKER
     assert lines[-1] == ops_cron.END_MARKER
@@ -49,6 +49,9 @@ def test_block_schedules_the_ten_jobs_in_order() -> None:
     staff_email = next(line for line in lines if "flush_staff_email.py" in line)
     member_email = next(line for line in lines if "flush_member_email.py" in line)
     notices = next(line for line in lines if "emit_deferred_notices.py" in line)
+    reports = next(
+        line for line in lines if "send_scheduled_income_reports.py" in line
+    )
 
     assert physio.startswith("30 0 * * * ")
     assert access.startswith("15 3 * * * ")
@@ -60,6 +63,7 @@ def test_block_schedules_the_ten_jobs_in_order() -> None:
     assert staff_email.startswith("*/15 * * * * ")
     assert member_email.startswith("*/15 * * * * ")
     assert notices.startswith("0 * * * * ")
+    assert reports.startswith("0 6 * * * ")
     assert lines.index(physio) < lines.index(access)
     assert lines.index(access) < lines.index(email)
     assert lines.index(email) < lines.index(push_purge)
@@ -70,6 +74,7 @@ def test_block_schedules_the_ten_jobs_in_order() -> None:
     assert lines.index(staff_email) < lines.index(notices)
     assert lines.index(staff_email) < lines.index(member_email)
     assert lines.index(member_email) < lines.index(notices)
+    assert lines.index(notices) < lines.index(reports)
     assert "--limit 200" in receipts
     assert "--limit" not in staff_push
     assert "--limit" not in staff_email
@@ -88,6 +93,7 @@ def test_block_schedules_the_ten_jobs_in_order() -> None:
         staff_email,
         member_email,
         notices,
+        reports,
     ):
         assert "cd " in line
         assert "DATABASE_URL=" in line
@@ -114,6 +120,7 @@ def test_logs_are_named_per_job() -> None:
     assert "staff-email.log" in block
     assert "member-email.log" in block
     assert "deferred-notices.log" in block
+    assert "income-reports.log" in block
 
 
 def test_daily_schedule_wraps_midnight() -> None:
@@ -136,6 +143,14 @@ def test_physio_close_accepts_another_time() -> None:
     block = _block(physio_close_at="23:45")
     physio = next(line for line in block.splitlines() if "close_physio_day.py" in line)
     assert physio.startswith("45 23 * * * ")
+
+
+def test_income_reports_accept_another_time() -> None:
+    block = _block(income_reports_at="07:25")
+    reports = next(
+        line for line in block.splitlines() if "send_scheduled_income_reports.py" in line
+    )
+    assert reports.startswith("25 7 * * * ")
 
 
 def test_receipts_schedule_accepts_steps_and_hourly() -> None:
@@ -182,6 +197,8 @@ def test_notices_schedule_accepts_steps_and_hourly() -> None:
         {"daily_at": "noche"},
         {"physio_close_at": "24:00"},
         {"physio_close_at": "0:75"},
+        {"income_reports_at": "24:00"},
+        {"income_reports_at": "0:75"},
         {"push_limit": 0},
         {"push_limit": 1001},
         {"database_url": "   "},
@@ -267,6 +284,7 @@ def test_cli_print_does_not_touch_the_crontab(monkeypatch: pytest.MonkeyPatch, c
     assert "flush_staff_email.py" in printed
     assert "flush_member_email.py" in printed
     assert "emit_deferred_notices.py" in printed
+    assert "send_scheduled_income_reports.py" in printed
     assert "close_physio_day.py" in printed
 
 
@@ -327,6 +345,7 @@ def test_cli_install_requires_every_script(monkeypatch: pytest.MonkeyPatch, caps
     assert "purge_push_data.py" in error
     assert "purge_inbox_data.py" in error
     assert "emit_deferred_notices.py" in error
+    assert "send_scheduled_income_reports.py" in error
     assert "close_physio_day.py" in error
 
 

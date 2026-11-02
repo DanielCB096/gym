@@ -753,6 +753,16 @@ from app.modules.reports import (
     build_report,
     resolve_period,
 )
+from app.modules.reports.scheduled import (
+    DEFAULT_RECIPIENT_LIMIT,
+    REPORT_LABELS as SCHEDULED_REPORT_LABELS,
+    ScheduledReportConfigurationError,
+)
+from app.modules.reports.scheduled_configuration import (
+    get_scheduled_report_configuration,
+    list_scheduled_report_configuration_events,
+    save_scheduled_report_configuration,
+)
 from app.timezone import DEFAULT_TIMEZONE, club_date, validate_club_timezone
 
 PreviewOutcome = Literal["succeeded", "failed", "unknown", "processing"]
@@ -3160,6 +3170,25 @@ class ReportPeriodResponse(BaseModel):
     date_to: date
     days: int
     timezone: str
+
+
+ScheduledReportName = Literal[
+    "overview",
+    "revenue",
+    "memberships",
+    "operations",
+    "maintenance",
+    "inventory",
+]
+
+
+class ScheduledReportRecipientRequest(BaseModel):
+    email: EmailStr
+    reports: list[ScheduledReportName] = Field(default_factory=list, max_length=6)
+
+
+class ScheduledReportConfigurationRequest(BaseModel):
+    recipients: list[ScheduledReportRecipientRequest] = Field(max_length=10)
 
 
 class ReportCountRowResponse(BaseModel):
@@ -11948,6 +11977,103 @@ def reports_export_endpoint(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/admin/reports/email-settings", tags=["reports"])
+def scheduled_report_configuration_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("finance.manage"))],
+) -> dict[str, object]:
+    try:
+        configuration = get_scheduled_report_configuration(session)
+    except ScheduledReportConfigurationError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return {
+        "source": configuration.source,
+        "allowed_domains": configuration.allowed_domains,
+        "max_recipients": DEFAULT_RECIPIENT_LIMIT,
+        "report_catalog": [
+            {"name": name, "label": SCHEDULED_REPORT_LABELS[name]}
+            for name in SCHEDULED_REPORT_LABELS
+        ],
+        "recipients": [
+            {
+                "email": recipient.email,
+                "reports": recipient.reports,
+                "allowed": recipient.allowed,
+            }
+            for recipient in configuration.recipients
+        ],
+        "updated_at": configuration.updated_at,
+    }
+
+
+@app.put("/admin/reports/email-settings", tags=["reports"])
+def save_scheduled_report_configuration_endpoint(
+    request: ScheduledReportConfigurationRequest,
+    session: SessionDependency,
+    principal: Annotated[
+        AuthenticatedUser, Depends(require_api_permission("finance.manage"))
+    ],
+) -> dict[str, object]:
+    try:
+        configuration = save_scheduled_report_configuration(
+            session,
+            recipients=[
+                (str(item.email), tuple(item.reports))
+                for item in request.recipients
+            ],
+            actor_id=principal.user_id,
+        )
+    except ScheduledReportConfigurationError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except IntegrityError as error:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="La configuración cambió en paralelo; vuelve a cargarla e inténtalo otra vez.",
+        ) from error
+    return {
+        "source": configuration.source,
+        "allowed_domains": configuration.allowed_domains,
+        "max_recipients": DEFAULT_RECIPIENT_LIMIT,
+        "report_catalog": [
+            {"name": name, "label": SCHEDULED_REPORT_LABELS[name]}
+            for name in SCHEDULED_REPORT_LABELS
+        ],
+        "recipients": [
+            {
+                "email": recipient.email,
+                "reports": recipient.reports,
+                "allowed": recipient.allowed,
+            }
+            for recipient in configuration.recipients
+        ],
+        "updated_at": configuration.updated_at,
+    }
+
+
+@app.get("/admin/reports/email-settings/events", tags=["reports"])
+def scheduled_report_configuration_events_endpoint(
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("finance.manage"))],
+) -> dict[str, object]:
+    events = list_scheduled_report_configuration_events(session)
+    return {
+        "items": [
+            {
+                "changed_at": event.changed_at,
+                "actor_email": event.actor_email,
+                "previous_recipient_count": event.previous_recipient_count,
+                "recipient_count": event.recipient_count,
+                "previous_report_counts": event.previous_report_counts,
+                "report_counts": event.report_counts,
+            }
+            for event in events
+        ]
+    }
 
 
 if PREVIEW_MODE:

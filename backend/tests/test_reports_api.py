@@ -440,6 +440,155 @@ def test_reports_require_finance_permission() -> None:
         app.dependency_overrides.clear()
 
 
+def test_scheduled_report_settings_use_permission_allowlist_and_audit(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("INCOME_REPORT_RECIPIENTS", "finance@gym.example")
+    monkeypatch.setenv("INCOME_REPORT_ALLOWED_DOMAINS", "gym.example")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            accountant = _login(client, "accountant@example.com", "accountant-strong-password")
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            initial = client.get("/admin/reports/email-settings", headers=accountant)
+            assert initial.status_code == 200, initial.text
+            assert initial.json()["source"] == "environment"
+            assert initial.json()["recipients"] == [
+                {
+                    "email": "finance@gym.example",
+                    "reports": [
+                        "overview",
+                        "revenue",
+                        "memberships",
+                        "operations",
+                        "maintenance",
+                        "inventory",
+                    ],
+                    "allowed": True,
+                }
+            ]
+            assert client.get(
+                "/admin/reports/email-settings", headers=manager
+            ).status_code == 403
+
+            request = {
+                "recipients": [
+                    {
+                        "email": "ops@gym.example",
+                        "reports": ["revenue", "maintenance"],
+                    }
+                ]
+            }
+            saved = client.put(
+                "/admin/reports/email-settings",
+                headers=accountant,
+                json=request,
+            )
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["source"] == "panel"
+            assert saved.json()["recipients"] == [
+                {
+                    "email": "ops@gym.example",
+                    "reports": ["revenue", "maintenance"],
+                    "allowed": True,
+                }
+            ]
+            assert client.put(
+                "/admin/reports/email-settings",
+                headers=manager,
+                json=request,
+            ).status_code == 403
+
+            history = client.get(
+                "/admin/reports/email-settings/events", headers=accountant
+            )
+            assert history.status_code == 200, history.text
+            assert len(history.json()["items"]) == 1
+            event = history.json()["items"][0]
+            assert event["actor_email"] == "accountant@example.com"
+            assert event["recipient_count"] == 1
+            assert event["report_counts"]["revenue"] == 1
+            assert "ops@gym.example" not in history.text
+
+            duplicate = client.put(
+                "/admin/reports/email-settings",
+                headers=accountant,
+                json={
+                    "recipients": [
+                        {"email": "ops@gym.example", "reports": ["revenue"]},
+                        {"email": "OPS@gym.example", "reports": ["inventory"]},
+                    ]
+                },
+            )
+            assert duplicate.status_code == 422
+            outside_allowlist = client.put(
+                "/admin/reports/email-settings",
+                headers=accountant,
+                json={
+                    "recipients": [
+                        {"email": "external@outside.example", "reports": ["revenue"]}
+                    ]
+                },
+            )
+            assert outside_allowlist.status_code == 422
+
+            empty = client.put(
+                "/admin/reports/email-settings",
+                headers=accountant,
+                json={"recipients": []},
+            )
+            assert empty.status_code == 200, empty.text
+            assert empty.json()["source"] == "panel"
+            assert empty.json()["recipients"] == []
+            assert len(
+                client.get(
+                    "/admin/reports/email-settings/events", headers=accountant
+                ).json()["items"]
+            ) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_scheduled_report_panel_can_be_initialized_without_environment_recipients(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("INCOME_REPORT_RECIPIENTS", raising=False)
+    monkeypatch.setenv("INCOME_REPORT_ALLOWED_DOMAINS", "gym.example")
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            owner = _login(client, "owner@example.com", "owner-strong-password")
+            initial = client.get("/admin/reports/email-settings", headers=owner)
+            assert initial.status_code == 200, initial.text
+            assert initial.json()["source"] == "environment"
+            assert initial.json()["recipients"] == []
+
+            saved = client.put(
+                "/admin/reports/email-settings",
+                headers=owner,
+                json={
+                    "recipients": [
+                        {"email": "finance@gym.example", "reports": ["revenue"]}
+                    ]
+                },
+            )
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["source"] == "panel"
+            assert saved.json()["recipients"][0]["reports"] == ["revenue"]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_overview_and_revenue_aggregate_the_period() -> None:
     engine = _build_engine()
     SQLModel.metadata.create_all(engine)

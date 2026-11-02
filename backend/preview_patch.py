@@ -92,6 +92,9 @@ ADDED_COLUMNS = {
     "member_notification_preferences": {
         "email_enabled": "BOOLEAN NOT NULL DEFAULT 0",
     },
+    "scheduled_report_deliveries": {
+        "report_name": "VARCHAR(16) NOT NULL DEFAULT 'revenue'",
+    },
 }
 
 # New RBAC rows for features added after the preview database was seeded.
@@ -679,6 +682,15 @@ def ensure_added_columns(connection: sqlite3.Connection, table: str) -> set[str]
         added.add(column)
         print(f"Added {table}.{column}")
     return added
+
+
+def ensure_scheduled_report_delivery_columns(
+    connection: sqlite3.Connection,
+) -> set[str]:
+    """Keep an existing report-delivery preview table compatible with new report types."""
+    if "scheduled_report_deliveries" not in table_names(connection):
+        return set()
+    return ensure_added_columns(connection, "scheduled_report_deliveries")
 
 
 def main(reset_maintenance: bool) -> None:

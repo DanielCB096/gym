@@ -588,6 +588,32 @@ def test_preview_upgrade_adds_the_default_off_member_email_preference() -> None:
     assert row == (1, 0)
 
 
+def test_preview_upgrade_adds_the_scheduled_report_type_without_losing_rows() -> None:
+    assert preview_patch.ADDED_COLUMNS["scheduled_report_deliveries"] == {
+        "report_name": "VARCHAR(16) NOT NULL DEFAULT 'revenue'",
+    }
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        'CREATE TABLE "scheduled_report_deliveries" ('
+        "id CHAR(32) NOT NULL PRIMARY KEY, "
+        "idempotency_key VARCHAR(64) NOT NULL)"
+    )
+    connection.execute(
+        "INSERT INTO scheduled_report_deliveries (id, idempotency_key) "
+        "VALUES ('delivery-1', 'legacy-key')"
+    )
+
+    preview_patch.ensure_scheduled_report_delivery_columns(connection)
+    preview_patch.ensure_scheduled_report_delivery_columns(connection)
+    row = connection.execute(
+        "SELECT report_name FROM scheduled_report_deliveries "
+        "WHERE id = 'delivery-1'"
+    ).fetchone()
+
+    assert row == ("revenue",)
+
+
 # The preview database stopped at the three kinds the first migration created.
 PRE_PUSH_ALERT_TABLE = (
     'CREATE TABLE "staff_notifications" (\n'
