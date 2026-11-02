@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -86,7 +87,7 @@ def _sign(private_key, payload: bytes) -> str:
     return base64.b64encode(signature).decode("ascii")
 
 
-def test_signed_sandbox_webhook_confirms_checkout_once(monkeypatch) -> None:
+def test_signed_sandbox_webhook_confirms_checkout_once(monkeypatch, caplog) -> None:
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_key_pem = private_key.public_key().public_bytes(
         encoding=serialization.Encoding.PEM,
@@ -154,7 +155,53 @@ def test_signed_sandbox_webhook_confirms_checkout_once(monkeypatch) -> None:
     }
     declined_payload = _declined_webhook_payload()
     try:
+        caplog.set_level(logging.WARNING, logger="app.main")
         with TestClient(app) as client:
+            ping_payload = json.dumps(
+                {
+                    "id": "evt_webhook_ping",
+                    "object": "event",
+                    "type": "webhook_ping",
+                    "livemode": False,
+                },
+                separators=(",", ":"),
+            ).encode()
+            ping = client.post(
+                "/webhooks/conekta/membership",
+                content=ping_payload,
+                headers={
+                    "Digest": _sign(private_key, ping_payload),
+                    "Content-Type": "application/json",
+                },
+            )
+            assert ping.status_code == 200, ping.text
+            assert ping.json() == {"status": "ignored"}
+            assert "evt_webhook_ping" not in caplog.text
+
+            unsupported_payload = json.dumps(
+                {
+                    "id": "evt_customer_created",
+                    "object": "event",
+                    "type": "customer.created",
+                    "livemode": False,
+                    "data": {"object": None},
+                    "customer_email": "private@example.com",
+                },
+                separators=(",", ":"),
+            ).encode()
+            unsupported = client.post(
+                "/webhooks/conekta/membership",
+                content=unsupported_payload,
+                headers={
+                    "Digest": _sign(private_key, unsupported_payload),
+                    "Content-Type": "application/json",
+                },
+            )
+            assert unsupported.status_code == 422, unsupported.text
+            assert "event_id=evt_customer_created" in caplog.text
+            assert "event_type=customer.created" in caplog.text
+            assert "private@example.com" not in caplog.text
+
             declined = client.post(
                 "/webhooks/conekta/membership",
                 content=declined_payload,

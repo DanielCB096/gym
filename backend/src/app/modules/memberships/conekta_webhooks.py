@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 from app.modules.memberships.gateway import ChargeOutcome, ChargeStatus
 
+_SAFE_LOG_CHARACTERS = frozenset("._-")
+
 
 class ConektaWebhookPayloadError(ValueError):
     pass
@@ -23,6 +25,33 @@ class ConektaWebhookEvent:
     outcome: ChargeOutcome | None
 
 
+def safe_conekta_webhook_log_context(payload: bytes) -> tuple[str, str]:
+    try:
+        event = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "unknown", "unknown"
+    if not isinstance(event, dict):
+        return "unknown", "unknown"
+    return (
+        _safe_log_value(event.get("id"), 160),
+        _safe_log_value(event.get("type"), 100),
+    )
+
+
+def _safe_log_value(value: object, max_length: int) -> str:
+    if (
+        not isinstance(value, str)
+        or not 0 < len(value) <= max_length
+        or not value.isascii()
+        or any(
+            not (character.isalnum() or character in _SAFE_LOG_CHARACTERS)
+            for character in value
+        )
+    ):
+        return "unknown"
+    return value
+
+
 def parse_conekta_webhook(payload: bytes) -> ConektaWebhookEvent:
     try:
         event = json.loads(payload)
@@ -37,6 +66,17 @@ def parse_conekta_webhook(payload: bytes) -> ConektaWebhookEvent:
         raise ConektaWebhookPayloadError("El evento requiere identificador y tipo válidos.")
     if event.get("livemode") is not False:
         raise ConektaWebhookPayloadError("Solo se aceptan eventos de sandbox de Conekta.")
+
+    if event_type == "webhook_ping":
+        return ConektaWebhookEvent(
+            provider_event_id=event_id,
+            event_type=event_type,
+            payload_sha256=hashlib.sha256(payload).hexdigest(),
+            provider_order_id=None,
+            amount_cents=None,
+            currency=None,
+            outcome=None,
+        )
 
     data = event.get("data")
     provider_object = data.get("object") if isinstance(data, dict) else None

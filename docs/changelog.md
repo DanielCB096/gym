@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-02 · Reportes programados: validación local de migraciones, cron y SMTP
+
+- Las migraciones `20261101_0079` a `20261101_0082` se aplicaron en PostgreSQL 16 desechable, se revirtió y reaplicó la última y `alembic check` terminó sin divergencias.
+- El cron de reportes se ejecutó en un contenedor Linux desechable con Mailpit; el envío y los reintentos se validaron sin correo externo en esa prueba.
+- En una pasada SMTP independiente, Gmail aceptó seis reportes diarios con CSV vacíos/sintéticos dirigidos al único destinatario configurado; el usuario confirmó que llegaron.
+- Las bases y redes temporales se eliminaron. No se usaron datos reales ni se validó un despliegue en staging o producción. La prueba de reportes no cubre los correos de avisos al socio.
+
+## 2026-11-02 · Conekta: identificar webhooks sandbox rechazados sin registrar su contenido
+
+- En las dos pruebas E2E, Conekta envió payloads firmados sin `data.object`, que el endpoint rechazó correctamente con `422`; el log anterior no permitía identificar tipo ni ID.
+- Ahora esos rechazos dejan una advertencia con `event_id`, `event_type` y el motivo validado por el parser. Ambos identificadores se limitan a caracteres ASCII seguros y a su longitud de contrato; valores inválidos se sustituyen por `unknown`.
+- La repetición instrumentada identificó el evento como `webhook_ping`, una verificación firmada del endpoint sin objeto de pago. Se acepta ahora como ignorado con `200`, sin persistencia ni efecto de negocio; otros payloads malformados conservan el `422`.
+- No se registra el cuerpo, la firma `Digest` ni datos personales del webhook. Los eventos válidos, el contrato HTTP y el procesamiento idempotente no cambian.
+- `test_member_conekta_webhook_api.py` comprueba que un `webhook_ping` firmado recibe `200` ignorado y que un `customer.created` firmado con forma inesperada recibe `422`, registra tipo e ID y no filtra un correo incluido en el payload.
+
 ## 2026-11-01 · Clases: la capacidad y la ventana de cancelación, también en la base
 
 - El hueco estaba anotado en `docs/deuda-tecnica.md`: techo en la petición y ninguno en el esquema. `capacity` del salón, `capacity` de la sesión (alta y edición) y `cancel_window_hours` (alta y edición) llevaban su `le=` escrito a mano cinco veces en `main.py` —500 tres veces y 168 dos—, mientras la base solo ponía suelo (`capacity > 0`, `cancel_window_hours >= 0`). El servicio cortaba el cero con `InvalidClassData` y, al actualizar, que la capacidad no bajara de las reservas confirmadas, pero nada cortaba el exceso: un seed, un script o un CLI futuro que llamara al servicio sin pasar por la petición podía guardar una sala de dos mil personas o una ventana de 90 000 horas, y cinco copias del número podían separarse sin que ninguna prueba lo notara.

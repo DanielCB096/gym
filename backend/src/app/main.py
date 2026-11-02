@@ -5,6 +5,7 @@ from hashlib import sha256
 import csv
 import io
 import json
+import logging
 import os
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
@@ -435,6 +436,7 @@ from app.modules.memberships.conekta import (
 from app.modules.memberships.conekta_webhooks import (
     ConektaWebhookPayloadError,
     parse_conekta_webhook,
+    safe_conekta_webhook_log_context,
 )
 from app.modules.memberships.gateway import ChargeOutcome, ChargeStatus, VerifiedWebhook
 from app.modules.memberships.models import (
@@ -3933,6 +3935,9 @@ async def _read_conekta_webhook_body(request: Request) -> bytes:
     return b"".join(chunks)
 
 
+logger = logging.getLogger(__name__)
+
+
 @app.post("/auth/login", response_model=LoginResponse, tags=["authentication"])
 def login(request: LoginRequest, session: SessionDependency) -> LoginResponse:
     try:
@@ -4678,6 +4683,13 @@ async def conekta_membership_webhook(
     try:
         event = parse_conekta_webhook(payload)
     except ConektaWebhookPayloadError as error:
+        event_id, event_type = safe_conekta_webhook_log_context(payload)
+        logger.warning(
+            "Rejected Conekta webhook payload: event_id=%s event_type=%s reason=%s",
+            event_id,
+            event_type,
+            error,
+        )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(error),
