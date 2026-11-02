@@ -14,9 +14,11 @@ import {
 import {
   ApiError,
   createMemberCheckout,
+  getMemberAutoRenewal,
   getMemberAccount,
   getMemberCheckoutPlans,
   getMemberPayments,
+  updateMemberAutoRenewal,
 } from "../api";
 import { describeError } from "../errors";
 import {
@@ -30,6 +32,7 @@ import {
 import { colors, radius, sharedStyles, spacing } from "../theme";
 import type {
   MemberAccount,
+  MemberAutoRenewal,
   MemberCheckoutPlan,
   MemberCheckoutPlanList,
   MemberPaymentPage,
@@ -45,11 +48,16 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
   const [payments, setPayments] = useState<MemberPaymentPage | null>(null);
   const [account, setAccount] = useState<MemberAccount | null>(null);
   const [checkoutPlans, setCheckoutPlans] = useState<MemberCheckoutPlanList | null>(null);
+  const [autoRenewal, setAutoRenewal] = useState<MemberAutoRenewal | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
+  const [autoRenewalError, setAutoRenewalError] = useState<string | null>(null);
+  const [autoRenewalNotice, setAutoRenewalNotice] = useState<string | null>(null);
+  const [autoRenewalBusy, setAutoRenewalBusy] = useState(false);
+  const [autoRenewalConsentAccepted, setAutoRenewalConsentAccepted] = useState(false);
   const [startingCheckoutPlanId, setStartingCheckoutPlanId] = useState<string | null>(null);
   const [pendingCheckout, setPendingCheckout] = useState<{
     plan: MemberCheckoutPlan;
@@ -63,12 +71,14 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
       setLoading(mode === "initial");
       setRefreshing(mode === "refresh");
       try {
-        const [nextPayments, nextAccount] = await Promise.all([
+        const [nextPayments, nextAccount, nextAutoRenewal] = await Promise.all([
           getMemberPayments(token),
           getMemberAccount(token),
+          getMemberAutoRenewal(token),
         ]);
         setPayments(nextPayments);
         setAccount(nextAccount);
+        setAutoRenewal(nextAutoRenewal);
         setError(null);
         try {
           const nextCheckoutPlans = await getMemberCheckoutPlans(token);
@@ -102,6 +112,33 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
     },
     [onSessionExpired, token],
   );
+
+  async function changeAutoRenewal(enabled: boolean) {
+    if (autoRenewalBusy || (enabled && !autoRenewalConsentAccepted)) {
+      return;
+    }
+    setAutoRenewalBusy(true);
+    setAutoRenewalError(null);
+    setAutoRenewalNotice(null);
+    try {
+      const result = await updateMemberAutoRenewal(token, enabled);
+      setAutoRenewal(result);
+      setAutoRenewalConsentAccepted(false);
+      setAutoRenewalNotice(
+        enabled
+          ? "Tu autorización quedó registrada. No se realizó ningún cobro; si ya pagaste tu periodo actual, completarás el primer cobro y la captura de tarjeta en la fecha de vencimiento. Los cobros automáticos posteriores comenzarán cuando el servicio esté habilitado."
+          : "La renovación automática quedó desactivada. Tu periodo ya pagado no cambia.",
+      );
+    } catch (updateError) {
+      if (updateError instanceof ApiError && updateError.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      setAutoRenewalError(describeError(updateError));
+    } finally {
+      setAutoRenewalBusy(false);
+    }
+  }
 
   useEffect(() => {
     void load("initial");
@@ -335,6 +372,100 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
           </Text>
         </View>
       ) : null}
+      {autoRenewal?.membership_id && (autoRenewal.eligible || autoRenewal.enabled) ? (
+        <View style={sharedStyles.card}>
+          <Text style={styles.sectionTitle}>Renovación automática</Text>
+          <Text style={sharedStyles.body}>
+            {autoRenewal.enabled
+              ? !autoRenewal.eligible
+                ? "Tu autorización sigue registrada, pero tu membresía no está activa y vigente. No se debe programar un cobro mientras siga así; puedes revocar la autorización aquí."
+                : autoRenewal.first_renewal_requires_member_action
+                ? `Autorización activa. Tu periodo actual vence el ${autoRenewal.period_ends_at ? formatDay(autoRenewal.period_ends_at) : "día indicado en tu membresía"}. En esa fecha completarás de forma segura la captura de tarjeta y el primer cobro. Los ciclos posteriores podrán automatizarse cuando el servicio esté habilitado.`
+                : "Autorización activa y método de pago listo. Los cobros automáticos comenzarán cuando el servicio esté habilitado."
+              : autoRenewal.eligible
+                ? autoRenewal.consent_text
+                : "La renovación automática solo puede activarse para una membresía activa y vigente."}
+          </Text>
+          {autoRenewal.eligible && !autoRenewal.enabled ? (
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: autoRenewalConsentAccepted }}
+              onPress={() => setAutoRenewalConsentAccepted((accepted) => !accepted)}
+              style={styles.consentRow}
+            >
+              <View
+                style={[
+                  styles.consentBox,
+                  autoRenewalConsentAccepted ? styles.consentBoxChecked : null,
+                ]}
+              >
+                {autoRenewalConsentAccepted ? (
+                  <Text style={styles.consentCheckmark}>✓</Text>
+                ) : null}
+              </View>
+              <Text style={[sharedStyles.body, styles.consentText]}>
+                Acepto y autorizo la renovación automática conforme a estas
+                condiciones.
+              </Text>
+            </Pressable>
+          ) : null}
+          {autoRenewal.eligible || autoRenewal.enabled ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{
+                disabled:
+                  autoRenewalBusy ||
+                  (!autoRenewal.enabled && !autoRenewalConsentAccepted),
+              }}
+              disabled={
+                autoRenewalBusy ||
+                (!autoRenewal.enabled && !autoRenewalConsentAccepted)
+              }
+              onPress={() => void changeAutoRenewal(!autoRenewal.enabled)}
+              style={({ pressed }) => [
+                autoRenewal.enabled
+                  ? sharedStyles.secondaryButton
+                  : sharedStyles.primaryButton,
+                pressed && !autoRenewalBusy
+                  ? autoRenewal.enabled
+                    ? sharedStyles.secondaryButtonPressed
+                    : sharedStyles.primaryButtonPressed
+                  : null,
+                autoRenewalBusy ||
+                (!autoRenewal.enabled && !autoRenewalConsentAccepted)
+                  ? sharedStyles.primaryButtonDisabled
+                  : null,
+              ]}
+            >
+              {autoRenewalBusy ? (
+                <ActivityIndicator color={colors.accentText} />
+              ) : (
+                <Text
+                  style={
+                    autoRenewal.enabled
+                      ? sharedStyles.secondaryButtonText
+                      : sharedStyles.primaryButtonText
+                  }
+                >
+                  {autoRenewal.enabled
+                    ? "Desactivar renovación automática"
+                    : "Autorizar renovación automática"}
+                </Text>
+              )}
+            </Pressable>
+          ) : null}
+          {autoRenewalError ? (
+            <Text accessibilityRole="alert" style={sharedStyles.error}>
+              {autoRenewalError}
+            </Text>
+          ) : null}
+          {autoRenewalNotice ? (
+            <Text accessibilityLiveRegion="polite" style={sharedStyles.hint}>
+              {autoRenewalNotice}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
       {loading && !account ? (
         <View style={styles.loading}>
           <ActivityIndicator color={colors.accent} />
@@ -540,6 +671,33 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     gap: spacing.sm,
     paddingTop: spacing.md,
+  },
+  consentRow: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: spacing.sm,
+  },
+  consentBox: {
+    alignItems: "center",
+    borderColor: colors.border,
+    borderRadius: 4,
+    borderWidth: 1,
+    height: 22,
+    justifyContent: "center",
+    marginTop: 2,
+    width: 22,
+  },
+  consentBoxChecked: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+  },
+  consentCheckmark: {
+    color: colors.accentText,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  consentText: {
+    flex: 1,
   },
   row: {
     borderTopColor: colors.border,

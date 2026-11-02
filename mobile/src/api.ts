@@ -6,6 +6,7 @@ import type {
   MemberAccessCode,
   MemberAccessCodeStatus,
   MemberAccount,
+  MemberAutoRenewal,
   MemberBillableOriginPage,
   MemberClassPage,
   MemberClassReservation,
@@ -304,6 +305,21 @@ export function getMemberPayments(token: string, pageSize = 20): Promise<MemberP
 
 export function getMemberCheckoutPlans(token: string): Promise<MemberCheckoutPlanList> {
   return request<MemberCheckoutPlanList>("/member/membership/plans", { token });
+}
+
+export function getMemberAutoRenewal(token: string): Promise<MemberAutoRenewal> {
+  return request<MemberAutoRenewal>("/member/membership/auto-renewal", { token });
+}
+
+export function updateMemberAutoRenewal(
+  token: string,
+  enabled: boolean,
+): Promise<MemberAutoRenewal> {
+  return request<MemberAutoRenewal>("/member/membership/auto-renewal", {
+    method: "POST",
+    token,
+    body: { enabled },
+  });
 }
 
 export function createMemberCheckout(

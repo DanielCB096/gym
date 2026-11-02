@@ -1,7 +1,8 @@
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
@@ -14,6 +15,7 @@ from app.modules.memberships.models import (
     Member,
     MemberConsent,
     Membership,
+    MembershipEvent,
     Payment,
     PaymentAttempt,
     Plan,
@@ -199,6 +201,121 @@ def test_member_can_create_only_idempotent_sandbox_checkout(
                 assert attempts[0].amount_cents == 50000
                 assert attempts[0].provider_order_id == "ord_sandbox_1"
                 assert session.exec(select(Payment)).all() == []
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        engine.dispose()
+
+
+def test_member_can_record_and_revoke_auto_renewal_consent_without_charge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PREVIEW_MODE", "true")
+    monkeypatch.setenv("SECRET_KEY", "renewal-consent-test-secret")
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    email = "renewal-member@example.com"
+    with Session(engine) as session:
+        member = Member(first_name="Ana", last_name="Demo", email=email, status="active")
+        plan = Plan(
+            code=f"RENEWAL-{uuid4().hex[:8].upper()}",
+            name="Mensual",
+            duration_days=30,
+            price_cents=50000,
+        )
+        now = datetime.now(timezone.utc)
+        membership = Membership(
+            member_id=member.id,
+            plan_id=plan.id,
+            status="active",
+            starts_at=now - timedelta(days=1),
+            ends_at=now + timedelta(days=29),
+        )
+        session.add_all([member, plan, membership])
+        session.flush()
+        session.add(
+            MemberConsent(
+                member_id=member.id,
+                consent_type="privacy_notice",
+                document_version="v1",
+                accepted_at=now - timedelta(days=1),
+            )
+        )
+        membership_id = membership.id
+        session.commit()
+
+    app.dependency_overrides[get_session] = _session_override(engine)
+    try:
+        with TestClient(app) as client:
+            headers = _member_token(client, email)
+            initial = client.get("/member/membership/auto-renewal", headers=headers)
+            assert initial.status_code == 200, initial.text
+            assert initial.json()["eligible"] is True
+            assert initial.json()["enabled"] is False
+            assert initial.json()["payment_method_ready"] is False
+            assert "No se realizará un cargo" in initial.json()["consent_text"]
+
+            enabled = client.post(
+                "/member/membership/auto-renewal",
+                headers=headers,
+                json={"enabled": True},
+            )
+            replay = client.post(
+                "/member/membership/auto-renewal",
+                headers=headers,
+                json={"enabled": True},
+            )
+            assert enabled.status_code == 200, enabled.text
+            assert enabled.json()["enabled"] is True
+            assert enabled.json()["first_renewal_requires_member_action"] is True
+            assert replay.status_code == 200, replay.text
+            assert replay.json()["enabled"] is True
+
+            with Session(engine) as session:
+                consent = session.exec(
+                    select(MemberConsent).where(
+                        MemberConsent.consent_type == "membership_auto_renewal"
+                    )
+                ).all()
+                events = session.exec(
+                    select(MembershipEvent).where(
+                        MembershipEvent.event_type == "auto_renewal_enabled"
+                    )
+                ).all()
+                assert len(consent) == 1
+                assert consent[0].evidence_digest is not None
+                assert len(consent[0].evidence_digest) == 64
+                assert len(events) == 1
+                assert events[0].membership_id == membership_id
+                assert session.exec(select(PaymentAttempt)).all() == []
+                assert session.exec(select(Payment)).all() == []
+
+            disabled = client.post(
+                "/member/membership/auto-renewal",
+                headers=headers,
+                json={"enabled": False},
+            )
+            assert disabled.status_code == 200, disabled.text
+            assert disabled.json()["enabled"] is False
+
+            with Session(engine) as session:
+                consent = session.exec(
+                    select(MemberConsent).where(
+                        MemberConsent.consent_type == "membership_auto_renewal"
+                    )
+                ).one()
+                membership = session.get(Membership, membership_id)
+                events = session.exec(
+                    select(MembershipEvent).where(
+                        MembershipEvent.event_type == "auto_renewal_revoked"
+                    )
+                ).all()
+                assert consent.revoked_at is not None
+                assert membership is not None and membership.auto_renew is False
+                assert len(events) == 1
     finally:
         app.dependency_overrides.pop(get_session, None)
         engine.dispose()

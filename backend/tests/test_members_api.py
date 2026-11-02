@@ -513,13 +513,13 @@ def test_admin_members_membership_lifecycle() -> None:
             # Changing the plan restarts the period from today.
             changed = client.post(
                 f"/admin/members/{diego_id}/membership",
-                json={"plan_id": str(annual_id), "auto_renew": True},
+                json={"plan_id": str(annual_id)},
                 headers=headers,
             ).json()
             assert changed["plan_changed"] is True
             assert changed["previous_status"] == "active"
             assert changed["plan_name"] == "Anual"
-            assert changed["auto_renew"] is True
+            assert changed["auto_renew"] is False
 
             # Freeze pauses the vigencia and resume brings it back.
             frozen = client.post(

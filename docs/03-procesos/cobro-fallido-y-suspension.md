@@ -8,20 +8,22 @@ El proceso gestiona los fallos de pago cuando el cobro recurrente no tiene éxit
 flowchart TD
 A[Cobro fallido] --> B[Registrar evento]
 B --> C[Notificar socio]
-C --> D[Reintentos 1, 3 y 5]
-D --> E{Cobro resuelto?}
-E -- Sí --> F[Reactivar al día]
-E -- No --> G[Período de gracia]
-G --> H[Suspender acceso]
-H --> I[Seguimiento y recuperación]
+C --> D[Suspender al vencimiento]
+D --> E[Reintentos días 1, 3 y 5]
+E --> F{Cobro resuelto?}
+F -- Sí --> G[Iniciar periodo desde el pago]
+F -- No --> H[Conciliar o continuar suspendido]
 ```
 
 ## Pasos
 1. La pasarela devuelve rechazo o error.
 2. Se registra la causa y el intento.
 3. Se notifican alertas.
-4. Se ejecuta política de reintentos y gracia.
-5. Si no se resuelve, se suspende la membresía según política del negocio.
+4. Se reintenta 1, 3 y 5 días después del vencimiento. No hay periodo de
+   gracia: el acceso se suspende al vencer la membresía.
+5. Si el cobro se recupera, el nuevo periodo comienza en la fecha efectiva del
+   pago; un resultado desconocido requiere conciliación y no genera un cargo
+   nuevo.
 
 ## KPIs
 - tasa de recuperación

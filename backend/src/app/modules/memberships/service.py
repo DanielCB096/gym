@@ -110,11 +110,27 @@ class MembershipPaymentNotAllowed(BillingError):
     pass
 
 
+class AutoRenewalNotAllowed(BillingError):
+    pass
+
+
 class InvalidMembershipPayment(BillingError):
     pass
 
 
 PRIVACY_NOTICE_VERSION = "privacidad-v1"
+AUTO_RENEWAL_CONSENT_TYPE = "membership_auto_renewal"
+AUTO_RENEWAL_CONSENT_VERSION = "auto-renewal-v1"
+AUTO_RENEWAL_CONSENT_TEXT = (
+    "Autorizo al gimnasio a renovar mi membresía mediante cobros a mi método "
+    "de pago tokenizado. No se realizará un cargo al aceptar esta autorización. "
+    "Si mi periodo ya está pagado, completaré el primer cobro y la captura de "
+    "tarjeta en la fecha de vencimiento. Cuando el servicio esté habilitado, "
+    "los siguientes ciclos podrán cobrarse automáticamente. Un cobro fallido "
+    "suspende mi acceso al vencer la membresía, sin periodo de gracia, y puede "
+    "reintentarse 1, 3 y 5 días después. Puedo revocar esta autorización desde "
+    "la app antes de futuros cobros."
+)
 NON_TERMINAL_MEMBERSHIP_STATUSES = ("pending_payment", "active", "frozen", "suspended")
 # Reception tenders by hand everything the attempt vocabulary knows except SPEI,
 # which only ever arrives as a gateway response.
@@ -185,6 +201,17 @@ class MembershipState:
     auto_renew: bool
     previous_status: str | None = None
     plan_changed: bool = False
+
+
+@dataclass(frozen=True)
+class MemberAutoRenewalState:
+    membership_id: UUID | None
+    eligible: bool
+    enabled: bool
+    period_ends_at: datetime | None
+    payment_method_ready: bool
+    first_renewal_requires_member_action: bool
+    consented_at: datetime | None
 
 
 DEFAULT_MEMBER_PAGE_SIZE = 25
@@ -307,6 +334,19 @@ def list_member_overview(
         .offset((page - 1) * page_size)
         .limit(page_size)
     ).all()
+    consented_member_ids = (
+        set(
+            session.exec(
+                select(MemberConsent.member_id).where(
+                    MemberConsent.consent_type == AUTO_RENEWAL_CONSENT_TYPE,
+                    MemberConsent.revoked_at.is_(None),
+                    MemberConsent.member_id.in_([member.id for member, _, _ in rows]),
+                )
+            ).all()
+        )
+        if rows
+        else set()
+    )
 
     items = [
         MemberOverview(
@@ -320,7 +360,11 @@ def list_member_overview(
             plan_name=plan.name if plan is not None else None,
             membership_starts_at=_as_utc(membership.starts_at) if membership is not None else None,
             membership_ends_at=_as_utc(membership.ends_at) if membership is not None else None,
-            auto_renew=membership.auto_renew if membership is not None else None,
+            auto_renew=(
+                membership.auto_renew and member.id in consented_member_ids
+                if membership is not None
+                else None
+            ),
         )
         for member, membership, plan in rows
     ]
@@ -588,10 +632,185 @@ def _membership_state(
         status=membership.status,
         starts_at=_as_utc(membership.starts_at),
         ends_at=_as_utc(membership.ends_at),
-        auto_renew=membership.auto_renew,
+        auto_renew=membership.auto_renew
+        and _active_auto_renewal_consent(session, membership.member_id) is not None,
         previous_status=previous_status,
         plan_changed=plan_changed,
     )
+
+
+def _active_auto_renewal_consent(
+    session: Session,
+    member_id: UUID,
+) -> MemberConsent | None:
+    return session.exec(
+        select(MemberConsent)
+        .where(
+            MemberConsent.member_id == member_id,
+            MemberConsent.consent_type == AUTO_RENEWAL_CONSENT_TYPE,
+            MemberConsent.revoked_at.is_(None),
+        )
+        .order_by(MemberConsent.accepted_at.desc(), MemberConsent.id.desc())
+        .limit(1)
+    ).first()
+
+
+def _has_active_conekta_payment_method(session: Session, member_id: UUID) -> bool:
+    return (
+        session.exec(
+            select(PaymentMethod.id)
+            .where(
+                PaymentMethod.member_id == member_id,
+                PaymentMethod.provider == "conekta",
+                PaymentMethod.status == "active",
+                PaymentMethod.is_default.is_(True),
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
+def get_member_auto_renewal(
+    session: Session,
+    member_id: UUID,
+    *,
+    now: datetime | None = None,
+) -> MemberAutoRenewalState:
+    moment = _as_utc(now or utc_now())
+    membership = _non_terminal_membership(session, member_id)
+    if membership is None:
+        membership = session.exec(
+            select(Membership)
+            .where(Membership.member_id == member_id)
+            .order_by(Membership.ends_at.desc(), Membership.id.desc())
+            .limit(1)
+        ).first()
+        consent = _active_auto_renewal_consent(session, member_id)
+        if membership is None:
+            return MemberAutoRenewalState(
+                membership_id=None,
+                eligible=False,
+                enabled=False,
+                period_ends_at=None,
+                payment_method_ready=False,
+                first_renewal_requires_member_action=False,
+                consented_at=None,
+            )
+        payment_method_ready = _has_active_conekta_payment_method(session, member_id)
+        enabled = bool(membership.auto_renew and consent is not None)
+        return MemberAutoRenewalState(
+            membership_id=membership.id,
+            eligible=False,
+            enabled=enabled,
+            period_ends_at=_as_utc(membership.ends_at),
+            payment_method_ready=payment_method_ready,
+            first_renewal_requires_member_action=enabled and not payment_method_ready,
+            consented_at=_as_utc(consent.accepted_at) if consent is not None else None,
+        )
+
+    consent = _active_auto_renewal_consent(session, member_id)
+    eligible = (
+        membership.status == "active"
+        and _as_utc(membership.ends_at) > moment
+    )
+    payment_method_ready = _has_active_conekta_payment_method(session, member_id)
+    enabled = bool(membership.auto_renew and consent is not None)
+    return MemberAutoRenewalState(
+        membership_id=membership.id,
+        eligible=eligible,
+        enabled=enabled,
+        period_ends_at=_as_utc(membership.ends_at),
+        payment_method_ready=payment_method_ready,
+        first_renewal_requires_member_action=enabled and not payment_method_ready,
+        consented_at=_as_utc(consent.accepted_at) if consent is not None else None,
+    )
+
+
+def set_member_auto_renewal(
+    session: Session,
+    member_id: UUID,
+    *,
+    enabled: bool,
+    now: datetime | None = None,
+) -> MemberAutoRenewalState:
+    moment = _as_utc(now or utc_now())
+    member = session.get(Member, member_id)
+    if member is None or member.status == "inactive":
+        raise MemberNotFound("El socio no existe o está inactivo")
+
+    membership = session.exec(
+        select(Membership)
+        .where(
+            Membership.member_id == member_id,
+            Membership.status.in_(NON_TERMINAL_MEMBERSHIP_STATUSES),
+        )
+        .with_for_update()
+    ).first()
+    consent = _active_auto_renewal_consent(session, member_id)
+
+    if enabled:
+        if (
+            membership is None
+            or membership.status != "active"
+            or _as_utc(membership.ends_at) <= moment
+        ):
+            raise AutoRenewalNotAllowed(
+                "La renovación automática requiere una membresía activa y vigente"
+            )
+        if consent is None:
+            consent = MemberConsent(
+                member_id=member_id,
+                consent_type=AUTO_RENEWAL_CONSENT_TYPE,
+                document_version=AUTO_RENEWAL_CONSENT_VERSION,
+                evidence_digest=hashlib.sha256(
+                    AUTO_RENEWAL_CONSENT_TEXT.encode("utf-8")
+                ).hexdigest(),
+                accepted_at=moment,
+            )
+            session.add(consent)
+        elif membership.auto_renew:
+            session.commit()
+            return get_member_auto_renewal(session, member_id, now=moment)
+        membership.auto_renew = True
+        membership.updated_at = moment
+        session.add(membership)
+        session.add(
+            MembershipEvent(
+                membership_id=membership.id,
+                event_type="auto_renewal_enabled",
+                actor_type="member",
+                actor_id=member_id,
+                event_metadata={
+                    "consent_version": AUTO_RENEWAL_CONSENT_VERSION,
+                    "consent_digest": consent.evidence_digest or "",
+                },
+                occurred_at=moment,
+            )
+        )
+    else:
+        if consent is not None:
+            consent.revoked_at = moment
+            session.add(consent)
+        if membership is not None:
+            was_enabled = membership.auto_renew or consent is not None
+            membership.auto_renew = False
+            membership.updated_at = moment
+            session.add(membership)
+            if was_enabled:
+                session.add(
+                    MembershipEvent(
+                        membership_id=membership.id,
+                        event_type="auto_renewal_revoked",
+                        actor_type="member",
+                        actor_id=member_id,
+                        event_metadata={},
+                        occurred_at=moment,
+                    )
+                )
+
+    session.commit()
+    return get_member_auto_renewal(session, member_id, now=moment)
 
 
 def update_plan_daily_entry_limit(
@@ -618,7 +837,7 @@ def assign_membership_plan(
     *,
     member_id: UUID,
     plan_id: UUID,
-    auto_renew: bool = False,
+    auto_renew: bool | None = None,
     starts_at: datetime | None = None,
     actor_id: UUID | None = None,
     note: str | None = None,
@@ -639,6 +858,10 @@ def assign_membership_plan(
     plan = session.get(Plan, plan_id)
     if plan is None or not plan.is_active:
         raise PlanUnavailable("El plan no existe o no está activo")
+    consent = _active_auto_renewal_consent(session, member_id)
+    if auto_renew is True and consent is None:
+        raise ConsentRequired("El socio debe autorizar la renovación automática desde su app")
+    renewal_enabled = consent is not None
     metadata: dict[str, str | bool] = {"plan_id": str(plan_id), "no_charge": True}
     if note:
         metadata["note"] = note
@@ -651,7 +874,7 @@ def assign_membership_plan(
             status="active",
             starts_at=start,
             ends_at=start + timedelta(days=plan.duration_days),
-            auto_renew=auto_renew,
+            auto_renew=renewal_enabled,
         )
         session.add(membership)
         session.add(
@@ -672,7 +895,7 @@ def assign_membership_plan(
         membership.plan_id = plan_id
         membership.starts_at = start
         membership.ends_at = start + timedelta(days=plan.duration_days)
-        membership.auto_renew = auto_renew
+        membership.auto_renew = renewal_enabled
         membership.status = "active"
         membership.updated_at = moment
         session.add(membership)
@@ -722,6 +945,12 @@ def _transition_membership(
     previous_status = membership.status
     membership.status = to_status
     membership.updated_at = moment
+    if to_status == "cancelled":
+        consent = _active_auto_renewal_consent(session, member_id)
+        if consent is not None:
+            consent.revoked_at = moment
+            session.add(consent)
+        membership.auto_renew = False
     session.add(membership)
     session.add(
         MembershipEvent(
@@ -851,6 +1080,9 @@ def collect_membership_payment(
     member = session.get(Member, member_id)
     if member is None or member.status == "inactive":
         raise MemberNotFound("El socio no existe o está inactivo")
+    consent = _active_auto_renewal_consent(session, member_id)
+    if auto_renew is True and consent is None:
+        raise ConsentRequired("El socio debe autorizar la renovación automática desde su app")
 
     cash_session = session.exec(
         select(CashSession)
@@ -896,7 +1128,7 @@ def collect_membership_payment(
             status="active",
             starts_at=period_start,
             ends_at=period_end,
-            auto_renew=bool(auto_renew) if auto_renew is not None else False,
+            auto_renew=consent is not None,
         )
         session.add(membership)
         session.flush()
@@ -913,8 +1145,7 @@ def collect_membership_payment(
         membership.status = "active"
         membership.ends_at = period_end
         membership.updated_at = moment
-        if auto_renew is not None:
-            membership.auto_renew = auto_renew
+        membership.auto_renew = consent is not None
         session.add(membership)
         event_type = "renewed"
         event_from_status = previous_status
@@ -1035,7 +1266,8 @@ def collect_membership_payment(
         period_starts_at=period_start,
         period_ends_at=period_end,
         membership_status=membership.status,
-        auto_renew=membership.auto_renew,
+        auto_renew=membership.auto_renew
+        and _active_auto_renewal_consent(session, membership.member_id) is not None,
         renewed=previous_ends_at is not None,
     )
 
@@ -1075,7 +1307,8 @@ def _manual_payment_result(
         period_starts_at=period_start,
         period_ends_at=period_end,
         membership_status=membership.status,
-        auto_renew=membership.auto_renew,
+        auto_renew=membership.auto_renew
+        and _active_auto_renewal_consent(session, membership.member_id) is not None,
         renewed=period_start > membership_start,
         idempotent_replay=idempotent_replay,
     )
@@ -1154,7 +1387,7 @@ def start_first_charge(
         status="pending_payment",
         starts_at=start,
         ends_at=start + timedelta(days=plan.duration_days),
-        auto_renew=True,
+        auto_renew=False,
     )
     attempt = PaymentAttempt(
         membership_id=membership.id,

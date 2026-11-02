@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-02 · Política de renovación automática
+
+- ADR-087 fija el calendario local, el consentimiento explícito, los reintentos en días 1/3/5, la suspensión al vencimiento sin gracia y el inicio del nuevo periodo al confirmarse el pago.
+- La app ya permite aceptar/revocar el consentimiento de renovación y el backend conserva versión, hash y eventos de auditoría. Para socios actuales, aceptar no cobra ni guarda tarjeta anticipadamente; el primer pago se completa al vencimiento. Captura web, método tokenizado y scheduler siguen pendientes, por lo que aún no se ejecutan cobros automáticos. Las pruebas específicas de backend y el chequeo de tipos de web y móvil pasan.
+
 ## Preparación de staging local
 
 - Se prepara un Compose local con PostgreSQL 16, Redis, backend, panel, kiosco, Mailpit y app móvil web opcional; todos los puertos publicados quedan limitados a `127.0.0.1`.

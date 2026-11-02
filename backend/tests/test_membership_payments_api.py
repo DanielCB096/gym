@@ -107,6 +107,18 @@ def test_manual_membership_payment_cash_card_and_close() -> None:
                     "auto_renew": True,
                 },
             )
+            assert first.status_code == 409, first.text
+
+            first = client.post(
+                f"/admin/members/{member_id}/membership/payments",
+                headers=reception,
+                json={
+                    "plan_id": str(plan_id),
+                    "payment_method": "cash",
+                    "idempotency_key": "manual-membership-first-1",
+                    "note": "Primer cobro",
+                },
+            )
             assert first.status_code == 200, first.text
             first_body = first.json()
             assert first_body["amount_cents"] == 50000
@@ -125,7 +137,6 @@ def test_manual_membership_payment_cash_card_and_close() -> None:
                     "payment_method": "cash",
                     "idempotency_key": "manual-membership-first-1",
                     "note": "Primer cobro",
-                    "auto_renew": True,
                 },
             )
             assert replay.status_code == 200, replay.text
@@ -143,7 +154,7 @@ def test_manual_membership_payment_cash_card_and_close() -> None:
             assert member["status"] == "active"
             assert member["membership_status"] == "active"
             assert member["plan_name"] == "Mensual"
-            assert member["auto_renew"] is True
+            assert member["auto_renew"] is False
 
             renewal = client.post(
                 f"/admin/members/{member_id}/membership/payments",

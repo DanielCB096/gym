@@ -68,6 +68,7 @@ TICKET_MANTENIMIENTO ||--o{ HISTORIAL_MANTENIMIENTO : documenta
 
 ### Socios, membresías, pagos y acceso
 - `Socio`, `Plan`, `MembresiaSocio`, `MetodoPago`, `IntentoCobro`, `Pago` y `ReintentoCobro` soportan el ciclo comercial y de cobro recurrente.
+- `member_consents` conserva cada autorización de renovación con tipo, versión del texto, hash de evidencia, fecha de aceptación y revocación; `membership_events` registra quién activó o revocó la renovación y la versión aceptada (ADR-087).
 - `CredencialAcceso`, `LectorAcceso` y `AccesoRegistro` soportan credenciales, lecturas autorizadas/denegadas y sincronización offline.
 - La plantilla biométrica cifrada se mantiene separada del registro de acceso; no se almacena imagen biométrica.
 

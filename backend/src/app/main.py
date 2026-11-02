@@ -460,6 +460,9 @@ from app.modules.memberships.models import (
     utc_now,
 )
 from app.modules.memberships.service import (
+    AUTO_RENEWAL_CONSENT_TEXT,
+    AUTO_RENEWAL_CONSENT_VERSION,
+    AutoRenewalNotAllowed,
     BillingError,
     CancellationReasonRequired,
     CashSessionRequired,
@@ -469,6 +472,7 @@ from app.modules.memberships.service import (
     InvalidMembershipPayment,
     InvalidMembershipTransition,
     MemberNotFound,
+    MemberAutoRenewalState,
     MembershipNotFound,
     MembershipPaymentNotAllowed,
     MembershipState,
@@ -478,6 +482,7 @@ from app.modules.memberships.service import (
     cancel_membership,
     collect_membership_payment,
     freeze_membership,
+    get_member_auto_renewal,
     list_member_overview,
     member_directory_summary,
     process_verified_webhook,
@@ -487,6 +492,7 @@ from app.modules.memberships.service import (
     retry_failed_charge,
     start_first_charge,
     start_hosted_membership_checkout,
+    set_member_auto_renewal,
     update_member,
     update_plan_daily_entry_limit,
 )
@@ -2522,6 +2528,22 @@ class MemberCheckoutPlanListResponse(BaseModel):
     pending_checkout: MemberPendingCheckoutResponse | None
 
 
+class MemberAutoRenewalRequest(BaseModel):
+    enabled: bool
+
+
+class MemberAutoRenewalResponse(BaseModel):
+    membership_id: UUID | None
+    eligible: bool
+    enabled: bool
+    period_ends_at: datetime | None
+    payment_method_ready: bool
+    first_renewal_requires_member_action: bool
+    consented_at: datetime | None
+    consent_version: str
+    consent_text: str
+
+
 class MemberAccountResponse(BaseModel):
     charges_cents: int
     credits_cents: int
@@ -3563,7 +3585,7 @@ class PlanAccessWindowsRequest(BaseModel):
 
 class AssignPlanRequest(BaseModel):
     plan_id: UUID
-    auto_renew: bool = False
+    auto_renew: bool | None = None
     note: str | None = None
 
 
@@ -4656,6 +4678,41 @@ def list_member_checkout_plans(
             else None
         ),
     )
+
+
+@app.get(
+    "/member/membership/auto-renewal",
+    response_model=MemberAutoRenewalResponse,
+    tags=["member self-service"],
+)
+def get_member_auto_renewal_endpoint(
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberAutoRenewalResponse:
+    return _member_auto_renewal_response(
+        get_member_auto_renewal(session, member.member_id)
+    )
+
+
+@app.post(
+    "/member/membership/auto-renewal",
+    response_model=MemberAutoRenewalResponse,
+    tags=["member self-service"],
+)
+def set_member_auto_renewal_endpoint(
+    request: MemberAutoRenewalRequest,
+    member: Annotated[AuthenticatedMember, Depends(get_current_member)],
+    session: SessionDependency,
+) -> MemberAutoRenewalResponse:
+    try:
+        state = set_member_auto_renewal(
+            session,
+            member.member_id,
+            enabled=request.enabled,
+        )
+    except BillingError as error:
+        raise _billing_http_error(error) from error
+    return _member_auto_renewal_response(state)
 
 
 @app.post(
@@ -6465,6 +6522,7 @@ _BILLING_ERROR_STATUS: tuple[tuple[type[BillingError], int], ...] = (
     (InvalidMemberData, status.HTTP_422_UNPROCESSABLE_ENTITY),
     (CancellationReasonRequired, status.HTTP_422_UNPROCESSABLE_ENTITY),
     (InvalidMembershipPayment, status.HTTP_422_UNPROCESSABLE_ENTITY),
+    (AutoRenewalNotAllowed, status.HTTP_409_CONFLICT),
     (DuplicateMemberEmail, status.HTTP_409_CONFLICT),
     (InvalidMembershipTransition, status.HTTP_409_CONFLICT),
     (CashSessionRequired, status.HTTP_409_CONFLICT),
@@ -6495,6 +6553,22 @@ def _membership_state_response(state: MembershipState) -> MembershipStateRespons
         auto_renew=state.auto_renew,
         previous_status=state.previous_status,
         plan_changed=state.plan_changed,
+    )
+
+
+def _member_auto_renewal_response(
+    state: MemberAutoRenewalState,
+) -> MemberAutoRenewalResponse:
+    return MemberAutoRenewalResponse(
+        membership_id=state.membership_id,
+        eligible=state.eligible,
+        enabled=state.enabled,
+        period_ends_at=state.period_ends_at,
+        payment_method_ready=state.payment_method_ready,
+        first_renewal_requires_member_action=state.first_renewal_requires_member_action,
+        consented_at=state.consented_at,
+        consent_version=AUTO_RENEWAL_CONSENT_VERSION,
+        consent_text=AUTO_RENEWAL_CONSENT_TEXT,
     )
 
 

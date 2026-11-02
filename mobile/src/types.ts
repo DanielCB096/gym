@@ -338,6 +338,18 @@ export type MemberCheckoutPlanList = {
   pending_checkout: MemberPendingCheckout | null;
 };
 
+export type MemberAutoRenewal = {
+  membership_id: string | null;
+  eligible: boolean;
+  enabled: boolean;
+  period_ends_at: string | null;
+  payment_method_ready: boolean;
+  first_renewal_requires_member_action: boolean;
+  consented_at: string | null;
+  consent_version: string;
+  consent_text: string;
+};
+
 export type MemberPendingCheckout = {
   plan: MemberCheckoutPlan;
   idempotency_key: string;

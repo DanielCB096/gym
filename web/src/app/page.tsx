@@ -15907,7 +15907,6 @@ function MemberModal({ member, onClose, onChanged }: { member: BackendMember; on
           payment_method: paymentMethod,
           idempotency_key: idempotencyKey,
           note: paymentNote.trim() || null,
-          auto_renew: autoRenew,
         }),
       });
       if (!response.ok) {
@@ -16008,10 +16007,9 @@ function MemberModal({ member, onClose, onChanged }: { member: BackendMember; on
 
         <div className="modal-section">
           <div className="modal-section-title modal-section-status"><span>Membresía</span><StatusBadge state={displayStatus} /></div>
-          <p className="member-modal-meta">{planName ? `Plan ${planName}` : "Sin plan asignado"}{endsAt ? ` · Renueva ${formatRenewalDate(endsAt)}` : ""}</p>
+          <p className="member-modal-meta">{planName ? `Plan ${planName}` : "Sin plan asignado"}{endsAt ? ` · Renueva ${formatRenewalDate(endsAt)}` : ""} · Renovación automática {autoRenew ? "autorizada" : "no autorizada"}</p>
           <label className="form-field"><span>Plan del club</span><select value={selectedPlan} onChange={(event) => { paymentKeyRef.current = null; setSelectedPlan(event.target.value); }} disabled={plans === null}><option value="">{plans === null ? "Cargando planes…" : isNonTerminal ? `Plan actual: ${planName ?? "—"}` : "Selecciona un plan"}</option>{(plans ?? []).map((option) => <option key={option.id} value={option.id}>{option.name} · {option.duration_days} días</option>)}</select></label>
           {plansError && <p className="member-modal-error">{plansError}</p>}
-          <label className="form-check"><input type="checkbox" checked={autoRenew} onChange={(event) => { paymentKeyRef.current = null; setAutoRenew(event.target.checked); }} /><span>Renovación automática (se guarda con la membresía).</span></label>
           {paymentAllowed ? (
             <>
               <div className="form-row">
@@ -16022,7 +16020,7 @@ function MemberModal({ member, onClose, onChanged }: { member: BackendMember; on
               <div className="modal-actions"><button type="button" className="button button-primary" disabled={busy !== null || !canCollect} onClick={() => { if (currentPlan && window.confirm(`¿Registrar ${isNonTerminal ? "la renovación" : "el cobro"} de ${formatMoney(currentPlan.price_cents)} con ${paymentMethodLabels[paymentMethod] ?? paymentMethod}?`)) void collectPayment(); }}>{busy === "payment" ? "Registrando cobro…" : isNonTerminal ? "Cobrar renovación" : "Cobrar y activar"}</button></div>
             </>
           ) : <p className="member-modal-meta">Reanuda o cancela el estado actual antes de registrar un cobro.</p>}
-          <div className="modal-actions"><button type="button" className="button button-secondary" disabled={busy !== null || !selectedPlan} onClick={() => { if (window.confirm("La activación sin cobro no registra ningún pago. ¿Continuar?")) void runMembershipAction("", "plan", { plan_id: selectedPlan, auto_renew: autoRenew }); }}>{busy === "plan" ? "Guardando…" : isNonTerminal ? "Cambiar plan sin cobro" : "Activar sin cobro"}</button></div>
+          <div className="modal-actions"><button type="button" className="button button-secondary" disabled={busy !== null || !selectedPlan} onClick={() => { if (window.confirm("La activación sin cobro no registra ningún pago. ¿Continuar?")) void runMembershipAction("", "plan", { plan_id: selectedPlan }); }}>{busy === "plan" ? "Guardando…" : isNonTerminal ? "Cambiar plan sin cobro" : "Activar sin cobro"}</button></div>
           {(isNonTerminal) && <label className="form-field"><span>Motivo de cancelación</span><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Ej. cambio de club" /></label>}
           <div className="member-modal-actions">
             {canFreeze && <button type="button" className="button button-secondary" disabled={busy !== null} onClick={() => runMembershipAction("/freeze", "freeze")}>{busy === "freeze" ? "Congelando…" : "Congelar"}</button>}

@@ -8,7 +8,7 @@ Este módulo cubre la operación de alta de socios, venta de planes, pago inicia
 - alta de socio y consentimiento de privacidad
 - planes: mensual, trimestral, anual, por visitas, estudiante, pareja/familiar, pase de día, cortesía, prueba
 - pagos con tarjeta, SPEI, efectivo y cargo a cuenta del socio
-- reintentos automáticos y período de gracia
+- renovación automática con consentimiento y reintentos; sin periodo de gracia
 - actualización de método de pago y cancelación simple
 - historial y auditoría completa
 
@@ -41,8 +41,10 @@ Este módulo cubre la operación de alta de socios, venta de planes, pago inicia
 ### Flujo alterno: pago fallido
 1. La pasarela devuelve error o rechazo.
 2. El sistema marca el pago como fallido.
-3. Se disparan reintentos en días 1, 3 y 5 según política.
-4. Si sigue fallando, se emite aviso y se bloquea acceso con un periodo de gracia configurable.
+3. En una renovación automática se reintenta 1, 3 y 5 días después del
+   vencimiento.
+4. No hay periodo de gracia: el acceso se suspende al vencer. Si el cobro se
+   recupera, el periodo nuevo empieza en la fecha efectiva del pago.
 
 ### Flujo de error
 - si el método de pago no está disponible, el sistema muestra error claro y no duplica cobro
@@ -61,7 +63,9 @@ Este módulo cubre la operación de alta de socios, venta de planes, pago inicia
 ### Móvil
 - Mi membresía: vigencia, plan, fecha de pago y acceso
 - Historial de pagos de membresía de solo lectura (importe, plan, periodo, método y nota)
-- Configuración de pago: agregar tarjeta, cambiar método, visualizar historial
+- Configuración de pago: aceptar o revocar la renovación automática con texto
+  explícito sobre el primer cobro y los reintentos; alta/cambio de tarjeta aún
+  pendiente
 - Recordatorios y alertas: vencimiento, cobros fallidos, cambios de plan
 
 ### Kiosco
@@ -83,6 +87,10 @@ Este módulo cubre la operación de alta de socios, venta de planes, pago inicia
 - los cupones y descuentos se validan solo si cumplen condiciones de vigencia
 - una cancelación requiere motivo, confirmación y cronología de cobros
 - el socio con baja deuda no puede acceder si la seguridad lo requiere
+- un cobro automático requiere consentimiento vigente y método tokenizado activo
+- al aceptar la renovación para una membresía ya pagada no se cobra ni se
+  tokeniza una tarjeta de inmediato; el socio completa la primera renovación en
+  su fecha de vencimiento y los ciclos posteriores podrán cobrarse en automático
 
 ### Casos límite
 - tarjeta vencida o bloqueada
@@ -155,6 +163,9 @@ Este módulo cubre la operación de alta de socios, venta de planes, pago inicia
 - la membresía queda activa solo con validación de plan y consentimiento
 - los pagos recurrentes se guardan con token y no con datos de tarjeta
 - el sistema reintenta cobros según política
+- ningún cobro se inicia sin consentimiento vigente, método activo y clave
+  idempotente por ciclo e intento
+- un resultado desconocido no crea un nuevo cargo hasta conciliar el anterior
 - el acceso se bloquea para adeudos configurados
 - el historial del socio es trazable desde el primer pago
 
@@ -178,10 +189,23 @@ El endpoint `POST /webhooks/conekta/membership` procesa la confirmación solo tr
 
 La **app del socio** consulta sus pagos de membresía desde `GET /member/payments` (Bearer, paginado, más recientes primero) con importe, moneda, método, fecha, periodo, plan y nota, sin cobrador ni turno de caja. Es de solo lectura: el cobro sigue siendo exclusivo del panel con `members.manage` y turno abierto. Ver ADR-012.
 
+### Renovación automática (ADR-087, avance 2026-11-02)
+
+La app ya permite al socio aceptar o revocar la renovación desde
+`GET/POST /member/membership/auto-renewal`. El servidor conserva en
+`member_consents` la versión, el hash del texto aceptado y la fecha de revocación, actualiza
+`memberships.auto_renew` y registra el cambio en `membership_events`. Activar la
+autorización no cobra ni captura la tarjeta: para una membresía pagada, el primer
+cobro y la tokenización se completarán en el vencimiento. El panel administrativo
+ya no puede otorgar consentimiento en nombre del socio. La captura web segura
+de tarjeta, el cifrado/registro del método y el motor de reintentos siguen
+pendientes; aún no se ejecutan cargos automáticos.
+
 El plan ya guarda su **límite diario de entradas** (`plans.daily_entry_limit`, migración `20261028_0043`): `NULL` significa sin límite y el CHECK exige `>= 1`. Se fija o retira con `PATCH /admin/plans/{plan_id}` (`settings.manage`) desde la tarjeta «Límite diario de entradas» de la página «Kiosco» del panel; el kiosco lo aplica contando entradas autorizadas del día del club, incluidas las manuales. El alta y la edición completa de planes siguen pendientes: el panel solo expone este campo y `GET /admin/plans` lista los planes activos. Ver ADR-025.
 
 ## 14. Historial de cambios
 
+- 2026-11-02: **consentimiento de renovación automática** (ADR-087): el socio puede aceptar/revocar desde la app; la evidencia conserva versión y hash, y los eventos de membresía registran alta y baja. Aceptar no cobra ni tokeniza tarjeta; el flujo web y el motor de cobros siguen pendientes, y la selección fue probada sin crear intentos ni pagos.
 - 2026-10-31: `GET /member/membership/plans` también recupera el checkout pendiente propio (plan, clave idempotente y URL) para reabrirlo o reintentarlo después de reiniciar la app.
 - 2026-10-31: la app del socio obtiene los planes de primera inscripción desde `GET /member/membership/plans` y abre el checkout alojado de Conekta. La disponibilidad queda restringida a sandbox y a socios sin membresía no terminal; el retorno de la app no confirma el pago.
 - 2026-10-28: **límite diario de entradas por plan** (`plans.daily_entry_limit`, migración `20261028_0043`, ADR-025). `PATCH /admin/plans/{plan_id}` con `settings.manage` fija o retira el límite; el kiosco lo aplica por día del club contando entradas autorizadas (también las manuales). No cambia el cobro, la vigencia ni las reglas de membresía.

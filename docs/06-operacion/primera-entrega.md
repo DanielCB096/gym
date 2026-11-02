@@ -112,11 +112,13 @@ solo describe el staging local, no la disponibilidad de producción.
 4. **Configurar recuperación:** establecer copias cifradas fuera del servidor,
    cubrir la base y los archivos críticos, alertar fallos y demostrar RPO/RTO
    mediante una restauración aislada.
-5. **Completar cobros recurrentes y operación de acceso:** diseñar consentimiento
-   explícito y revocable para futuros cargos, baja de la renovación, manejo de
-   rechazos, reintentos, periodo de gracia y conciliación. Validar webhooks,
-   duplicados, discrepancias y recuperación de eventos en sandbox; no usar
-   credenciales productivas antes de la aprobación correspondiente.
+5. **Completar cobros recurrentes y operación de acceso:** el consentimiento
+   explícito y revocable está disponible desde la app (ADR-087); falta la
+   captura web segura de tarjeta, el cifrado/registro del método y el motor
+   idempotente de cobros y reintentos. La política no contempla periodo de
+   gracia: suspende al vencimiento y reintenta los días 1, 3 y 5. Validar
+   webhooks, duplicados, discrepancias y recuperación de eventos en sandbox;
+   no usar credenciales productivas antes de la aprobación correspondiente.
 6. **Preparar operación:** configurar cron, monitoreo, alertas, bitácoras y
    manuales; comprobar caja, acceso, membresías, permisos, correo y tareas
    programadas en staging.

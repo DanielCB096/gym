@@ -1,5 +1,5 @@
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 from app.modules.memberships.gateway import ChargeOutcome, ChargeStatus, VerifiedWebhook
 from app.modules.memberships.models import (
     Member,
+    MemberConsent,
     Membership,
     Payment,
     PaymentAttempt,
@@ -18,8 +19,11 @@ from app.modules.memberships.models import (
 from app.modules.memberships.service import (
     ConsentRequired,
     IdempotencyConflict,
+    cancel_membership,
+    get_member_auto_renewal,
     process_verified_webhook,
     retry_failed_charge,
+    set_member_auto_renewal,
     start_first_charge,
 )
 
@@ -116,6 +120,53 @@ def test_duplicate_webhook_does_not_create_a_second_payment(
     assert session.get(Membership, started.membership_id).status == "active"
     assert len(session.exec(select(Payment)).all()) == 1
     assert len(session.exec(select(ProviderWebhookEvent)).all()) == 1
+
+
+def test_cancelling_membership_revokes_auto_renewal_consent(
+    session: Session,
+    seeded_ids: tuple[UUID, UUID, UUID],
+) -> None:
+    member_id, plan_id, _ = seeded_ids
+    now = datetime.now(timezone.utc)
+    membership = Membership(
+        member_id=member_id,
+        plan_id=plan_id,
+        status="active",
+        starts_at=now,
+        ends_at=now + timedelta(days=30),
+    )
+    session.add(membership)
+    session.commit()
+
+    enabled = set_member_auto_renewal(
+        session,
+        member_id,
+        enabled=True,
+        now=now,
+    )
+    assert enabled.enabled is True
+    assert get_member_auto_renewal(session, member_id, now=now).enabled is True
+
+    cancelled = cancel_membership(
+        session,
+        member_id,
+        reason="El socio solicitó la baja",
+        now=now + timedelta(days=1),
+    )
+    assert cancelled.status == "cancelled"
+    assert cancelled.auto_renew is False
+    assert get_member_auto_renewal(
+        session,
+        member_id,
+        now=now + timedelta(days=1),
+    ).enabled is False
+    consent = session.exec(
+        select(MemberConsent).where(
+            MemberConsent.consent_type == "membership_auto_renewal"
+        )
+    ).one()
+    assert consent.revoked_at is not None
+    assert consent.revoked_at.replace(tzinfo=timezone.utc) == now + timedelta(days=1)
 
 
 def test_same_first_charge_key_replays_without_calling_gateway_again(
