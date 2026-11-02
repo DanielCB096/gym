@@ -53,6 +53,8 @@ from app.modules.routines.models import (
     MAX_SET_NUMBER,
     MAX_SET_REPS,
     MAX_SET_WEIGHT_KG,
+    MAX_ROUTINE_ITEM_REST_SECONDS,
+    MAX_ROUTINE_ITEM_SETS,
     MAX_WEEKLY_FREQUENCY,
     MAX_WORKOUT_SETS,
     MIN_EFFORT,
@@ -788,13 +790,22 @@ def _validate_items(session: Session, items: list[RoutineItemInput]) -> list[Rou
             raise ExerciseNotFound("Uno de los ejercicios no existe")
         if not exercise.is_active:
             raise ExerciseUnavailable(f"El ejercicio «{exercise.name}» está inactivo")
-        if line.sets <= 0:
-            raise InvalidRoutineData("Las series deben ser mayores que cero")
+        if not (1 <= line.sets <= MAX_ROUTINE_ITEM_SETS):
+            raise InvalidRoutineData(
+                f"Las series deben estar entre 1 y {MAX_ROUTINE_ITEM_SETS}"
+            )
         reps = line.reps.strip()
         if not reps:
             raise InvalidRoutineData("Las repeticiones son obligatorias")
         if line.rest_seconds is not None and line.rest_seconds < 0:
             raise InvalidRoutineData("El descanso no puede ser negativo")
+        if (
+            line.rest_seconds is not None
+            and line.rest_seconds > MAX_ROUTINE_ITEM_REST_SECONDS
+        ):
+            raise InvalidRoutineData(
+                f"El descanso no puede superar {MAX_ROUTINE_ITEM_REST_SECONDS} segundos"
+            )
         validated.append(
             RoutineItemInput(
                 exercise_id=line.exercise_id,

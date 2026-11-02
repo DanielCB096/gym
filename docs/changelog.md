@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-02 · Rutinas: acotar series y descanso también en la base
+
+- `MAX_ROUTINE_ITEM_SETS = 50` y `MAX_ROUTINE_ITEM_REST_SECONDS = 1800` se comparten entre modelo, petición y servicio.
+- `20261102_0084` agrega restricciones máximas aditivas en `routine_items`, conservando los valores límite aceptados actualmente.
+- `test_routines_api.py` verifica los valores límite y excedidos por API, servicio y ORM; `APPLIED_CHECKS` y `ROUTE_BOUNDS` fijan esquema y contrato.
+- El ciclo completo pasó en PostgreSQL 16 desechable (`upgrade head`, `downgrade -1`, `upgrade head`, `alembic check`); la base estaba vacía, así que antes de aplicar en una base con datos hay que revisar que ninguna línea exceda 50 series o 1800 segundos de descanso. Quedan seis familias de cotas numéricas pendientes.
+
 ## 2026-11-02 · Fisioterapia: acotar duración del servicio en las tres capas
 
 - `MAX_DURATION_MINUTES = 480` vive ahora en el modelo y lo comparten la petición y las guardas del servicio.

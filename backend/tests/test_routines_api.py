@@ -1,12 +1,13 @@
 from collections.abc import Iterator
 from datetime import date, datetime, timedelta, timezone
 import struct
-from uuid import uuid4
+from uuid import UUID, uuid4
 import zlib
 
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -15,6 +16,17 @@ from app.modules.identity.models import Employee
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.memberships.models import Member
 from app.modules.routines.photo_storage import MAX_PROGRESS_PHOTO_BYTES, photo_path
+from app.modules.routines.models import (
+    MAX_ROUTINE_ITEM_REST_SECONDS,
+    MAX_ROUTINE_ITEM_SETS,
+    Routine,
+    RoutineItem,
+)
+from app.modules.routines.service import (
+    InvalidRoutineData,
+    RoutineItemInput,
+    create_routine,
+)
 
 PAST = date(2026, 1, 1)
 FUTURE = date(2099, 1, 1)
@@ -128,6 +140,110 @@ def _create_routine(client: TestClient, headers: dict[str, str], exercise_ids: l
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_routine_item_ceilings_match_api_service_and_database() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            exercise = _create_exercise(client, manager, name="Sentadilla")
+            accepted = client.post(
+                "/admin/routines",
+                headers=manager,
+                json={
+                    "name": "Límite",
+                    "items": [
+                        {
+                            "exercise_id": exercise["id"],
+                            "sets": MAX_ROUTINE_ITEM_SETS,
+                            "reps": "8",
+                            "rest_seconds": MAX_ROUTINE_ITEM_REST_SECONDS,
+                        }
+                    ],
+                },
+            )
+            assert accepted.status_code == 201, accepted.text
+            routine_id = UUID(accepted.json()["routine"]["id"])
+
+            for overrides in (
+                {"sets": MAX_ROUTINE_ITEM_SETS + 1},
+                {"rest_seconds": MAX_ROUTINE_ITEM_REST_SECONDS + 1},
+            ):
+                line = {
+                    "exercise_id": exercise["id"],
+                    "sets": MAX_ROUTINE_ITEM_SETS,
+                    "reps": "8",
+                    "rest_seconds": MAX_ROUTINE_ITEM_REST_SECONDS,
+                    **overrides,
+                }
+                rejected_create = client.post(
+                    "/admin/routines",
+                    headers=manager,
+                    json={"name": "Fuera de límite", "items": [line]},
+                )
+                assert rejected_create.status_code == 422, rejected_create.text
+                rejected_update = client.put(
+                    f"/admin/routines/{routine_id}/items",
+                    headers=manager,
+                    json={"reason": "Prueba de límite", "items": [line]},
+                )
+                assert rejected_update.status_code == 422, rejected_update.text
+
+            unchanged = client.get(
+                f"/admin/routines/{routine_id}", headers=manager
+            ).json()
+            assert unchanged["routine"]["version"] == 1
+            assert unchanged["items"][0]["sets"] == MAX_ROUTINE_ITEM_SETS
+            assert unchanged["items"][0]["rest_seconds"] == MAX_ROUTINE_ITEM_REST_SECONDS
+    finally:
+        app.dependency_overrides.clear()
+
+    exercise_id = UUID(exercise["id"])
+    with Session(engine) as session:
+        for item in (
+            RoutineItemInput(
+                exercise_id=exercise_id,
+                sets=MAX_ROUTINE_ITEM_SETS + 1,
+                reps="8",
+                rest_seconds=60,
+            ),
+            RoutineItemInput(
+                exercise_id=exercise_id,
+                sets=4,
+                reps="8",
+                rest_seconds=MAX_ROUTINE_ITEM_REST_SECONDS + 1,
+            ),
+        ):
+            with pytest.raises(InvalidRoutineData):
+                create_routine(session, name="Servicio fuera de límite", items=[item])
+            session.rollback()
+        assert session.exec(select(func.count()).select_from(Routine)).one()[0] == 1
+
+        for sets, rest_seconds, constraint_name in (
+            (MAX_ROUTINE_ITEM_SETS + 1, 60, "ck_routine_items_sets_max"),
+            (4, MAX_ROUTINE_ITEM_REST_SECONDS + 1, "ck_routine_items_rest_max"),
+        ):
+            session.add(
+                RoutineItem(
+                    routine_id=routine_id,
+                    version=1,
+                    position=2,
+                    exercise_id=exercise_id,
+                    sets=sets,
+                    reps="8",
+                    rest_seconds=rest_seconds,
+                )
+            )
+            with pytest.raises(IntegrityError, match=constraint_name):
+                session.commit()
+            session.rollback()
+        assert session.exec(select(func.count()).select_from(RoutineItem)).one()[0] == 1
 
 
 def test_exercise_library_and_permissions() -> None:

@@ -59,6 +59,8 @@ MIN_WEEKLY_FREQUENCY = 1
 MAX_WEEKLY_FREQUENCY = 7
 MIN_EFFORT = 1
 MAX_EFFORT = 10
+MAX_ROUTINE_ITEM_SETS = 50
+MAX_ROUTINE_ITEM_REST_SECONDS = 1800
 MAX_WORKOUT_SETS = 60
 MIN_SET_NUMBER = 1
 MAX_SET_NUMBER = 20
@@ -182,7 +184,15 @@ class RoutineItem(SQLModel, table=True):
         CheckConstraint("position > 0", name="ck_routine_items_position_positive"),
         CheckConstraint("sets > 0", name="ck_routine_items_sets_positive"),
         CheckConstraint(
+            f"sets <= {MAX_ROUTINE_ITEM_SETS}",
+            name="ck_routine_items_sets_max",
+        ),
+        CheckConstraint(
             "rest_seconds IS NULL OR rest_seconds >= 0", name="ck_routine_items_rest_nonnegative"
+        ),
+        CheckConstraint(
+            f"rest_seconds IS NULL OR rest_seconds <= {MAX_ROUTINE_ITEM_REST_SECONDS}",
+            name="ck_routine_items_rest_max",
         ),
         Index("uq_routine_items_line", "routine_id", "version", "position", unique=True),
         Index("ix_routine_items_version", "routine_id", "version"),

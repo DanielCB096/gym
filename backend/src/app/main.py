@@ -243,6 +243,10 @@ from app.modules.routines import (
     update_member_goal,
     update_routine,
 )
+from app.modules.routines.models import (
+    MAX_ROUTINE_ITEM_REST_SECONDS,
+    MAX_ROUTINE_ITEM_SETS,
+)
 from app.modules.routines.photo_storage import MAX_PROGRESS_PHOTO_BYTES
 from app.modules.maintenance import (
     AreaServiceStatus,
@@ -2134,9 +2138,11 @@ class UpdateExerciseRequest(BaseModel):
 
 class RoutineLineRequest(BaseModel):
     exercise_id: UUID
-    sets: int = Field(ge=1, le=50)
+    sets: int = Field(ge=1, le=MAX_ROUTINE_ITEM_SETS)
     reps: str = Field(min_length=1, max_length=20)
-    rest_seconds: int | None = Field(default=None, ge=0, le=1800)
+    rest_seconds: int | None = Field(
+        default=None, ge=0, le=MAX_ROUTINE_ITEM_REST_SECONDS
+    )
     load_note: str | None = Field(default=None, max_length=60)
     notes: str | None = Field(default=None, max_length=200)
 

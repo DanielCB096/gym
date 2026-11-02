@@ -51,13 +51,14 @@ from app.modules.reports import models as reports_models
 from app.modules.reports import scheduled as scheduled_reports
 from app.modules.reports.scheduled_configuration import _REPORT_FIELDS
 from app.modules.reports.service import build_report
+from app.modules.routines import models as routines_models
 
 # El SQL exacto que dejaron las migraciones: `20261017_0012` (equipo),
 # `20261019_0017` (ventas y devoluciones, que reemplazaron la versión de
 # `20261017_0008` y `20261018_0015`), `20261015_0001` (intentos de pago),
 # `20261025_0027` (conciliación bancaria), `20261101_0079`/`20261101_0080`
 # (reportes programados), `20261101_0082` (topes de clase) y `20261102_0083`
-# (duración máxima de fisioterapia).
+# (duración máxima de fisioterapia) y `20261102_0084` (series y descanso de rutina).
 APPLIED_CHECKS: dict[tuple[str, str], str] = {
     (
         "class_rooms",
@@ -75,6 +76,14 @@ APPLIED_CHECKS: dict[tuple[str, str], str] = {
         "physio_services",
         "ck_physio_services_duration_max",
     ): "duration_minutes <= 480",
+    (
+        "routine_items",
+        "ck_routine_items_sets_max",
+    ): "sets <= 50",
+    (
+        "routine_items",
+        "ck_routine_items_rest_max",
+    ): "rest_seconds IS NULL OR rest_seconds <= 1800",
     (
         "class_sessions",
         "ck_class_sessions_status",
@@ -297,6 +306,11 @@ def test_the_panel_offers_exactly_the_schedulable_reports() -> None:
 # importa; comparar las dos puntas del contrato es lo que prueba que el panel
 # sigue ofreciendo el número del modelo y no una copia.
 ROUTE_BOUNDS: dict[tuple[str, str], tuple[int, int]] = {
+    ("RoutineLineRequest", "sets"): (1, routines_models.MAX_ROUTINE_ITEM_SETS),
+    ("RoutineLineRequest", "rest_seconds"): (
+        0,
+        routines_models.MAX_ROUTINE_ITEM_REST_SECONDS,
+    ),
     ("CreatePhysioServiceRequest", "duration_minutes"): (
         1,
         physio_models.MAX_DURATION_MINUTES,
