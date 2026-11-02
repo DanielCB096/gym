@@ -167,6 +167,8 @@ Este módulo cubre la creación y asignación de rutinas por parte del entrenado
 
 ## 13. Implementación actual y límites
 
+Las medidas corporales aceptan hasta 500 kg y los perímetros hasta 400 cm. Estos límites se comparten entre la petición usada por el panel y por la app, el servicio y los `CHECK` `ck_body_measurements_weight_max`, `ck_body_measurements_waist_max` y `ck_body_measurements_chest_max` de `20261102_0086`; antes de aplicar la migración a una base con datos, verificar que no haya mediciones por encima de esos topes.
+
 Noveno incremento entregado (2026-10-28) con las **fotos de progreso capturadas desde la app del socio**, sobre las metas desde la app del octavo; siguen fuera de alcance la edición de registros, la mensajería y las notificaciones:
 
 - **Persistencia**: siete tablas del primer incremento (`exercises`, `routines`, `routine_items`, `routine_revisions`, `routine_assignments`, `workout_logs`, `body_measurements`) creadas por la migración `20261017_0010_routines.py`, más `member_goals` creada por `20261025_0029_member_goals.py`, `progress_photos` creada por `20261025_0030_progress_photos.py`, la columna `origin` (`staff`/`app`) en `workout_logs` y `body_measurements` agregada por `20261027_0032_member_activity_origin.py` la tabla `workout_sets` creada por `20261027_0033_workout_sets.py`, la columna `origin` (`staff`/`app`) en `member_goals` agregada por `20261027_0034_member_goal_origin.py` y la columna `origin` (`staff`/`app`) en `progress_photos` agregada por `20261028_0041_progress_photo_origin.py`. La migración `20261017_0011_routines_permissions.py` agrega los permisos `routines.read` / `routines.manage` y los otorga a dueño, gerente y entrenador; recepción, mantenimiento y contabilidad no los tienen (sección 2).

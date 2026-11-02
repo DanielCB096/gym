@@ -17,15 +17,20 @@ from app.modules.identity.service import ensure_default_access_control, register
 from app.modules.memberships.models import Member
 from app.modules.routines.photo_storage import MAX_PROGRESS_PHOTO_BYTES, photo_path
 from app.modules.routines.models import (
+    MAX_BODY_MEASUREMENT_CM,
+    MAX_BODY_WEIGHT_KG,
     MAX_ROUTINE_ITEM_REST_SECONDS,
     MAX_ROUTINE_ITEM_SETS,
+    BodyMeasurement,
     Routine,
     RoutineItem,
 )
 from app.modules.routines.service import (
+    InvalidMeasurement,
     InvalidRoutineData,
     RoutineItemInput,
     create_routine,
+    record_measurement,
 )
 
 PAST = date(2026, 1, 1)
@@ -633,6 +638,82 @@ def test_measurements_progress_and_overview() -> None:
             ).json()["total"] == 1
     finally:
         app.dependency_overrides.clear()
+
+
+def test_body_measurement_ceilings_match_api_service_and_database() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        member_id = _add_member(session, first="Ana")
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            endpoint = f"/admin/routines/members/{member_id}/measurements"
+            boundary = {
+                "weight_kg": MAX_BODY_WEIGHT_KG,
+                "waist_cm": MAX_BODY_MEASUREMENT_CM,
+                "chest_cm": MAX_BODY_MEASUREMENT_CM,
+            }
+            accepted = client.post(endpoint, headers=manager, json=boundary)
+            assert accepted.status_code == 201, accepted.text
+
+            for field, maximum in (
+                ("weight_kg", MAX_BODY_WEIGHT_KG),
+                ("waist_cm", MAX_BODY_MEASUREMENT_CM),
+                ("chest_cm", MAX_BODY_MEASUREMENT_CM),
+            ):
+                rejected = client.post(
+                    endpoint,
+                    headers=manager,
+                    json={field: maximum + 0.01},
+                )
+                assert rejected.status_code == 422, rejected.text
+    finally:
+        app.dependency_overrides.clear()
+
+    with Session(engine) as session:
+        member_uuid = UUID(member_id)
+        direct = record_measurement(
+            session,
+            member_uuid,
+            weight_kg=MAX_BODY_WEIGHT_KG,
+            waist_cm=MAX_BODY_MEASUREMENT_CM,
+            chest_cm=MAX_BODY_MEASUREMENT_CM,
+        )
+        assert direct.weight_kg == MAX_BODY_WEIGHT_KG
+        assert direct.waist_cm == MAX_BODY_MEASUREMENT_CM
+        assert direct.chest_cm == MAX_BODY_MEASUREMENT_CM
+
+        for field, maximum in (
+            ("weight_kg", MAX_BODY_WEIGHT_KG),
+            ("waist_cm", MAX_BODY_MEASUREMENT_CM),
+            ("chest_cm", MAX_BODY_MEASUREMENT_CM),
+        ):
+            with pytest.raises(InvalidMeasurement, match=str(maximum)):
+                record_measurement(
+                    session,
+                    member_uuid,
+                    **{field: maximum + 0.01},
+                )
+            session.rollback()
+
+            session.add(
+                BodyMeasurement(
+                    member_id=member_uuid,
+                    measured_at=datetime.now(timezone.utc),
+                    **{field: maximum + 0.01},
+                )
+            )
+            with pytest.raises(IntegrityError, match=f"ck_body_measurements_{field.split('_')[0]}_max"):
+                session.commit()
+            session.rollback()
+
+        assert (
+            session.exec(select(func.count()).select_from(BodyMeasurement)).one()[0] == 2
+        )
 
 
 def test_member_goals_lifecycle() -> None:

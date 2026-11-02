@@ -248,6 +248,8 @@ from app.modules.routines import (
     update_routine,
 )
 from app.modules.routines.models import (
+    MAX_BODY_MEASUREMENT_CM,
+    MAX_BODY_WEIGHT_KG,
     MAX_ROUTINE_ITEM_REST_SECONDS,
     MAX_ROUTINE_ITEM_SETS,
 )
@@ -2342,9 +2344,9 @@ class MeasurementResponse(BaseModel):
 
 class RecordMeasurementRequest(BaseModel):
     measured_at: datetime | None = None
-    weight_kg: float | None = Field(default=None, gt=0, le=500)
-    waist_cm: float | None = Field(default=None, gt=0, le=400)
-    chest_cm: float | None = Field(default=None, gt=0, le=400)
+    weight_kg: float | None = Field(default=None, gt=0, le=MAX_BODY_WEIGHT_KG)
+    waist_cm: float | None = Field(default=None, gt=0, le=MAX_BODY_MEASUREMENT_CM)
+    chest_cm: float | None = Field(default=None, gt=0, le=MAX_BODY_MEASUREMENT_CM)
     body_fat_percent: float | None = Field(default=None, ge=0, le=100)
     notes: str | None = Field(default=None, max_length=300)
 

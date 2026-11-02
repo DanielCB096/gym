@@ -57,8 +57,8 @@ from app.modules.routines import models as routines_models
 # `20261019_0017` (ventas y devoluciones, que reemplazaron la versión de
 # `20261017_0008` y `20261018_0015`), `20261015_0001` (intentos de pago),
 # `20261025_0027` (conciliación bancaria), `20261101_0079`/`20261101_0080`
-# (reportes programados), `20261101_0082` (topes de clase) y `20261102_0083`
-# (duración máxima de fisioterapia) y `20261102_0084` (series y descanso de rutina).
+# (reportes programados), `20261101_0082` (topes de clase) y
+# `20261102_0083`–`20261102_0086` (topes de fisioterapia, rutinas y medidas).
 APPLIED_CHECKS: dict[tuple[str, str], str] = {
     (
         "class_rooms",
@@ -92,6 +92,18 @@ APPLIED_CHECKS: dict[tuple[str, str], str] = {
         "routine_items",
         "ck_routine_items_rest_max",
     ): "rest_seconds IS NULL OR rest_seconds <= 1800",
+    (
+        "body_measurements",
+        "ck_body_measurements_weight_max",
+    ): "weight_kg IS NULL OR weight_kg <= 500",
+    (
+        "body_measurements",
+        "ck_body_measurements_waist_max",
+    ): "waist_cm IS NULL OR waist_cm <= 400",
+    (
+        "body_measurements",
+        "ck_body_measurements_chest_max",
+    ): "chest_cm IS NULL OR chest_cm <= 400",
     (
         "class_sessions",
         "ck_class_sessions_status",
@@ -336,6 +348,18 @@ ROUTE_BOUNDS: dict[tuple[str, str], tuple[int, int]] = {
     ("UpdatePhysioOfferRequest", "validity_days"): (
         1,
         physio_models.MAX_VALIDITY_DAYS,
+    ),
+    ("RecordMeasurementRequest", "weight_kg"): (
+        None,
+        routines_models.MAX_BODY_WEIGHT_KG,
+    ),
+    ("RecordMeasurementRequest", "waist_cm"): (
+        None,
+        routines_models.MAX_BODY_MEASUREMENT_CM,
+    ),
+    ("RecordMeasurementRequest", "chest_cm"): (
+        None,
+        routines_models.MAX_BODY_MEASUREMENT_CM,
     ),
     ("CreateClassRoomRequest", "capacity"): (1, classes_models.MAX_CLASS_CAPACITY),
     ("CreateClassSessionRequest", "capacity"): (1, classes_models.MAX_CLASS_CAPACITY),

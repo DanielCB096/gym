@@ -61,6 +61,8 @@ MIN_EFFORT = 1
 MAX_EFFORT = 10
 MAX_ROUTINE_ITEM_SETS = 50
 MAX_ROUTINE_ITEM_REST_SECONDS = 1800
+MAX_BODY_WEIGHT_KG = 500
+MAX_BODY_MEASUREMENT_CM = 400
 MAX_WORKOUT_SETS = 60
 MIN_SET_NUMBER = 1
 MAX_SET_NUMBER = 20
@@ -443,6 +445,18 @@ class BodyMeasurement(SQLModel, table=True):
         CheckConstraint("weight_kg IS NULL OR weight_kg > 0", name="ck_body_measurements_weight"),
         CheckConstraint("waist_cm IS NULL OR waist_cm > 0", name="ck_body_measurements_waist"),
         CheckConstraint("chest_cm IS NULL OR chest_cm > 0", name="ck_body_measurements_chest"),
+        CheckConstraint(
+            f"weight_kg IS NULL OR weight_kg <= {MAX_BODY_WEIGHT_KG}",
+            name="ck_body_measurements_weight_max",
+        ),
+        CheckConstraint(
+            f"waist_cm IS NULL OR waist_cm <= {MAX_BODY_MEASUREMENT_CM}",
+            name="ck_body_measurements_waist_max",
+        ),
+        CheckConstraint(
+            f"chest_cm IS NULL OR chest_cm <= {MAX_BODY_MEASUREMENT_CM}",
+            name="ck_body_measurements_chest_max",
+        ),
         CheckConstraint(
             "body_fat_percent IS NULL OR (body_fat_percent >= 0 AND body_fat_percent <= 100)",
             name="ck_body_measurements_fat_range",

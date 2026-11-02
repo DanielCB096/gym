@@ -50,6 +50,8 @@ from app.modules.routines.models import (
     GOAL_METRICS,
     GOAL_STATUSES,
     MAX_EFFORT,
+    MAX_BODY_MEASUREMENT_CM,
+    MAX_BODY_WEIGHT_KG,
     MAX_SET_NUMBER,
     MAX_SET_REPS,
     MAX_SET_WEIGHT_KG,
@@ -1699,10 +1701,16 @@ def record_measurement(
         raise InvalidMeasurement("Registra al menos una medida (peso, cintura, pecho o grasa)")
     if weight_kg is not None and weight_kg <= 0:
         raise InvalidMeasurement("El peso debe ser mayor que cero")
+    if weight_kg is not None and weight_kg > MAX_BODY_WEIGHT_KG:
+        raise InvalidMeasurement(f"El peso no puede exceder {MAX_BODY_WEIGHT_KG} kg")
     if waist_cm is not None and waist_cm <= 0:
         raise InvalidMeasurement("La cintura debe ser mayor que cero")
+    if waist_cm is not None and waist_cm > MAX_BODY_MEASUREMENT_CM:
+        raise InvalidMeasurement(f"La cintura no puede exceder {MAX_BODY_MEASUREMENT_CM} cm")
     if chest_cm is not None and chest_cm <= 0:
         raise InvalidMeasurement("El pecho debe ser mayor que cero")
+    if chest_cm is not None and chest_cm > MAX_BODY_MEASUREMENT_CM:
+        raise InvalidMeasurement(f"El pecho no puede exceder {MAX_BODY_MEASUREMENT_CM} cm")
     if body_fat_percent is not None and not (0 <= body_fat_percent <= 100):
         raise InvalidMeasurement("El porcentaje de grasa debe estar entre 0 y 100")
 

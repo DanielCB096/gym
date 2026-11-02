@@ -13,6 +13,7 @@ from app.modules.identity.service import ensure_default_access_control, register
 from app.modules.memberships.models import Member, Membership, Plan
 from app.modules.portal.routines import log_member_workout, record_member_measurement
 from app.modules.portal.service import MemberPortalError
+from app.modules.routines.models import MAX_BODY_MEASUREMENT_CM, MAX_BODY_WEIGHT_KG
 from app.modules.routines import (
     AssignmentNotFound,
     RoutineItemInput,
@@ -190,6 +191,28 @@ def test_member_logs_workout_and_measurement(monkeypatch) -> None:
             assert progress["latest_measurement"]["weight_kg"] == 68.5
             assert progress["goals"][0]["current_value"] == 68.5
             assert progress["goals"][0]["status"] == "active"
+
+            boundary_measurement = client.post(
+                "/member/progress/measurements",
+                headers=ana_headers,
+                json={
+                    "weight_kg": MAX_BODY_WEIGHT_KG,
+                    "waist_cm": MAX_BODY_MEASUREMENT_CM,
+                    "chest_cm": MAX_BODY_MEASUREMENT_CM,
+                },
+            )
+            assert boundary_measurement.status_code == 201, boundary_measurement.text
+            for field, maximum in (
+                ("weight_kg", MAX_BODY_WEIGHT_KG),
+                ("waist_cm", MAX_BODY_MEASUREMENT_CM),
+                ("chest_cm", MAX_BODY_MEASUREMENT_CM),
+            ):
+                rejected_measurement = client.post(
+                    "/member/progress/measurements",
+                    headers=ana_headers,
+                    json={field: maximum + 0.01},
+                )
+                assert rejected_measurement.status_code == 422, rejected_measurement.text
 
             foreign = client.post(
                 f"/member/routines/{active_id}/workouts",

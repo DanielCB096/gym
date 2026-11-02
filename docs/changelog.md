@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-02 · Progreso: acotar medidas corporales en tres capas
+
+- `MAX_BODY_WEIGHT_KG = 500` y `MAX_BODY_MEASUREMENT_CM = 400` se comparten entre modelo, petición y servicio.
+- `20261102_0086` agrega restricciones máximas aditivas para peso, cintura y pecho sin cambiar los límites actuales de la API.
+- Las pruebas verifican los máximos y excesos en panel, app del socio, servicio y ORM; `APPLIED_CHECKS` y `ROUTE_BOUNDS` fijan esquema y contrato.
+- Antes de desplegar en una base con datos, revisar que no haya medidas por encima de 500 kg o perímetros mayores a 400 cm. Quedan cuatro familias de cotas numéricas pendientes.
+
 ## 2026-11-02 · Fisioterapia: acotar paquetes en las tres capas
 
 - `MAX_SESSIONS = 52` y `MAX_VALIDITY_DAYS = 366` ahora se comparten entre modelo, petición y servicio.
