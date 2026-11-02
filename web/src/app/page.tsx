@@ -2600,6 +2600,23 @@ type AreaServiceStatus = {
 
 type ReportName = "overview" | "revenue" | "memberships" | "operations" | "maintenance" | "inventory";
 
+type ScheduledReportConfiguration = {
+  source: "environment" | "panel";
+  allowed_domains: string[];
+  max_recipients: number;
+  report_catalog: { name: ReportName; label: string }[];
+  recipients: { email: string; reports: ReportName[]; allowed: boolean }[];
+  updated_at: string | null;
+};
+type ScheduledReportAudit = {
+  changed_at: string;
+  actor_email: string | null;
+  previous_recipient_count: number;
+  recipient_count: number;
+  previous_report_counts: Record<ReportName, number>;
+  report_counts: Record<ReportName, number>;
+};
+
 type ReportPeriod = { date_from: string; date_to: string; days: number; timezone: string };
 type ReportCountRow = { label: string; count: number };
 type ReportAmountRow = { label: string; count: number; amount_cents: number };
@@ -12111,8 +12128,326 @@ function ReportFallback({ loading, error }: { loading: boolean; error: string })
   );
 }
 
+function scheduledReportErrorMessage(caught: unknown, fallback: string): string {
+  const message = caught instanceof Error ? caught.message : "";
+  if (
+    caught instanceof TypeError ||
+    !message ||
+    message === "Failed to fetch" ||
+    message === "Load failed" ||
+    message === "NetworkError when attempting to fetch resource." ||
+    message === "fetch failed"
+  ) {
+    return fallback;
+  }
+  return message;
+}
+
+function ScheduledReportSettings({
+  permissions,
+  onUnauthorized,
+}: {
+  permissions: string[];
+  onUnauthorized: () => void;
+}) {
+  const canManage = permissions.includes("finance.manage");
+  const [configuration, setConfiguration] = useState<ScheduledReportConfiguration | null>(null);
+  const [recipients, setRecipients] = useState<ScheduledReportConfiguration["recipients"]>([]);
+  const [events, setEvents] = useState<ScheduledReportAudit[]>([]);
+  const emailInputRef = useRef<HTMLInputElement>(null);
+  const removeRecipientRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [email, setEmail] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [addError, setAddError] = useState("");
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    if (!canManage) return;
+    let active = true;
+    const load = async () => {
+      setLoading(true);
+      setError("");
+      setStatus("Cargando configuración de reportes…");
+      try {
+        const [configurationResponse, eventsResponse] = await Promise.all([
+          fetch("/api/admin/reports/email-settings", { cache: "no-store" }),
+          fetch("/api/admin/reports/email-settings/events", { cache: "no-store" }),
+        ]);
+        if (configurationResponse.status === 401 || eventsResponse.status === 401) {
+          onUnauthorized();
+          return;
+        }
+        const configurationPayload = await configurationResponse.json().catch(() => ({})) as ScheduledReportConfiguration & { detail?: string };
+        if (!configurationResponse.ok) {
+          throw new Error(configurationPayload.detail || "No se pudo cargar la configuración de reportes.");
+        }
+        const eventsPayload = await eventsResponse.json().catch(() => ({})) as { items?: ScheduledReportAudit[]; detail?: string };
+        if (!eventsResponse.ok) {
+          throw new Error(eventsPayload.detail || "No se pudo cargar la bitácora de configuración.");
+        }
+        if (!active) return;
+        setConfiguration(configurationPayload);
+        setRecipients(configurationPayload.recipients);
+        setEvents(eventsPayload.items ?? []);
+        setStatus("Configuración de reportes cargada.");
+      } catch (caught) {
+        if (active) {
+          setStatus("");
+          setError(scheduledReportErrorMessage(
+            caught,
+            "No se pudo cargar la configuración. Verifica tu conexión y recarga la página para volver a intentarlo.",
+          ));
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [canManage, onUnauthorized]);
+
+  if (!canManage) return null;
+
+  const addRecipient = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const address = email.trim();
+    if (recipients.some((recipient) => recipient.email.toLowerCase() === address.toLowerCase())) {
+      setAddError("Ese correo ya está en la lista.");
+      setStatus("");
+      return;
+    }
+    if (configuration && recipients.length >= configuration.max_recipients) {
+      setAddError(`El máximo es de ${configuration.max_recipients} destinatarios.`);
+      setStatus("");
+      return;
+    }
+    setRecipients((current) => [
+      ...current,
+      { email: address, reports: REPORT_TABS.map((report) => report.value), allowed: true },
+    ]);
+    setEmail("");
+    setAddError("");
+    setError("");
+    setStatus("Destinatario agregado al borrador. Guarda para aplicar los cambios.");
+  };
+
+  const toggleReport = (recipientIndex: number, reportName: ReportName, enabled: boolean) => {
+    setRecipients((current) => current.map((recipient, index) => {
+      if (index !== recipientIndex) return recipient;
+      const reports = enabled
+        ? [...new Set([...recipient.reports, reportName])]
+        : recipient.reports.filter((name) => name !== reportName);
+      return { ...recipient, reports, allowed: recipient.allowed };
+    }));
+    setError("");
+    setStatus("");
+  };
+
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    setStatus("Guardando configuración…");
+    try {
+      const response = await fetch("/api/admin/reports/email-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipients: recipients.map(({ email: recipientEmail, reports }) => ({
+            email: recipientEmail,
+            reports,
+          })),
+        }),
+      });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const payload = await response.json().catch(() => ({})) as ScheduledReportConfiguration & { detail?: string };
+      if (!response.ok) {
+        throw new Error(payload.detail || "No se pudo guardar. Verifica tu conexión e inténtalo de nuevo.");
+      }
+      setConfiguration(payload);
+      setRecipients(payload.recipients);
+      setStatus("Configuración guardada. Actualizando el historial…");
+      try {
+        const eventsResponse = await fetch("/api/admin/reports/email-settings/events", { cache: "no-store" });
+        if (eventsResponse.status === 401) {
+          onUnauthorized();
+          return;
+        }
+        const eventsPayload = await eventsResponse.json().catch(() => ({})) as { items?: ScheduledReportAudit[] };
+        if (eventsResponse.ok) {
+          setEvents(eventsPayload.items ?? []);
+          setStatus("Configuración guardada. El historial también está actualizado.");
+        } else {
+          setStatus("La configuración se guardó, pero no se pudo actualizar el historial. Recarga la página para volver a intentarlo.");
+        }
+      } catch {
+        setStatus("La configuración se guardó, pero no se pudo actualizar el historial. Recarga la página para volver a intentarlo.");
+      }
+    } catch (caught) {
+      setStatus("");
+      setError(scheduledReportErrorMessage(
+        caught,
+        "No se pudo guardar. Verifica tu conexión e inténtalo de nuevo.",
+      ));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reportSummary = (counts: Record<ReportName, number>) =>
+    configuration?.report_catalog
+      .filter((report) => (counts[report.name] ?? 0) > 0)
+      .map((report) => `${report.label}: ${counts[report.name]}`)
+      .join(" · ") || "Ningún reporte habilitado";
+
+  return (
+    <section className="panel full-panel scheduled-report-settings">
+      <div className="panel-header access-list-heading">
+        <div>
+          <p className="section-kicker">ENVÍO PROGRAMADO</p>
+          <h2>Destinatarios y reportes</h2>
+        </div>
+        {configuration && <span className="table-hint">{recipients.length} de {configuration.max_recipients} destinatarios</span>}
+      </div>
+      <p className="scheduled-report-message scheduled-report-live-region" role="status">{status}</p>
+      <p className="scheduled-report-message scheduled-report-live-region" role="alert">{error}</p>
+      {!loading && configuration ? (
+        <>
+          <p className="scheduled-report-description" id="scheduled-report-scope">
+            {configuration.source === "environment"
+              ? "Esta lista viene de la configuración del entorno y se usa como base. Al guardar desde aquí, el panel será la fuente principal."
+              : "La configuración guardada aquí es la que usará el próximo envío programado."}
+            {" "}Los dominios permitidos siguen siendo: {configuration.allowed_domains.join(", ")}.
+            Se conservan las cadencias diarias, semanales y mensuales.
+          </p>
+          {configuration.recipients.some((recipient) => !recipient.allowed) && (
+            <p className="scheduled-report-message" role="status">
+              Hay direcciones que ya no están permitidas por la allowlist del entorno. Quítalas o reemplázalas antes de guardar.
+            </p>
+          )}
+          <form className="scheduled-report-add-form" onSubmit={addRecipient}>
+            <label className="form-field" htmlFor="scheduled-report-email">
+              <span>Correo interno (obligatorio)</span>
+              <input
+                autoComplete="email"
+                id="scheduled-report-email"
+                ref={emailInputRef}
+                maxLength={254}
+                type="email"
+                value={email}
+                disabled={saving}
+                aria-describedby="scheduled-report-email-help scheduled-report-email-error"
+                aria-invalid={Boolean(addError)}
+                onChange={(event) => {
+                  setEmail(event.target.value);
+                  setAddError("");
+                  setStatus("");
+                }}
+                required
+              />
+            </label>
+            <button
+              className="button button-secondary"
+              type="submit"
+              disabled={saving || recipients.length >= configuration.max_recipients}
+            >
+              Agregar destinatario
+            </button>
+          </form>
+          <p className="scheduled-report-description" id="scheduled-report-email-help">
+            Una dirección nueva inicia con los seis reportes seleccionados. El backend rechazará cualquier dominio fuera de la allowlist.
+          </p>
+          <p className="scheduled-report-message scheduled-report-live-region" id="scheduled-report-email-error" role="status">{addError}</p>
+
+          <form onSubmit={save}>
+            <ul className="scheduled-report-recipient-list">
+              {recipients.map((recipient, recipientIndex) => (
+                <li className="scheduled-report-recipient" key={recipient.email.toLowerCase()}>
+                  <div className="scheduled-report-recipient-heading">
+                    <h3>{recipient.email}</h3>
+                    <button
+                      className="button button-secondary"
+                      type="button"
+                      aria-label={`Quitar ${recipient.email} de destinatarios`}
+                      ref={(element) => { removeRecipientRefs.current[recipientIndex] = element; }}
+                      disabled={saving}
+                      onClick={() => {
+                        setRecipients((current) => current.filter((_, index) => index !== recipientIndex));
+                        setError("");
+                        setAddError("");
+                        setStatus("Destinatario eliminado del borrador. Guarda para aplicar los cambios.");
+                        const nextFocusIndex = recipients.length <= 1
+                          ? null
+                          : Math.min(recipientIndex, recipients.length - 2);
+                        window.requestAnimationFrame(() => {
+                          if (nextFocusIndex === null) emailInputRef.current?.focus();
+                          else removeRecipientRefs.current[nextFocusIndex]?.focus();
+                        });
+                      }}
+                    >
+                      Quitar
+                    </button>
+                  </div>
+                  {!recipient.allowed && <p className="scheduled-report-message" role="status">Dominio no permitido por la configuración actual del entorno.</p>}
+                  <fieldset className="scheduled-report-checkboxes" aria-describedby="scheduled-report-scope" disabled={saving}>
+                    <legend>Reportes para {recipient.email}</legend>
+                    {configuration.report_catalog.map((report) => {
+                      const id = `scheduled-report-${recipientIndex}-${report.name}`;
+                      return (
+                        <label htmlFor={id} key={report.name}>
+                          <input
+                            checked={recipient.reports.includes(report.name)}
+                            id={id}
+                            type="checkbox"
+                            onChange={(event) => toggleReport(recipientIndex, report.name, event.target.checked)}
+                          />
+                          {report.label}
+                        </label>
+                      );
+                    })}
+                  </fieldset>
+                </li>
+              ))}
+            </ul>
+            {recipients.length === 0 && (
+              <p className="scheduled-report-description">No hay destinatarios. Los envíos programados quedarán detenidos hasta agregar uno.</p>
+            )}
+            <button className="button button-primary" type="submit" disabled={saving || loading}>
+              {saving ? "Guardando…" : "Guardar configuración"}
+            </button>
+          </form>
+
+          <section className="scheduled-report-history" aria-labelledby="scheduled-report-history-title">
+            <h3 id="scheduled-report-history-title">Historial de cambios</h3>
+            {events.length === 0 ? (
+              <p className="scheduled-report-description">Aún no hay cambios guardados desde el panel.</p>
+            ) : (
+              <ol>
+                {events.map((event, index) => (
+                  <li key={`${event.changed_at}-${event.actor_email ?? "system"}-${index}`}>
+                    <strong>{event.actor_email ?? "Sistema"} · {new Intl.DateTimeFormat("es-MX", { dateStyle: "medium", timeStyle: "short" }).format(new Date(event.changed_at))}</strong>
+                    <span>{event.previous_recipient_count} → {event.recipient_count} destinatarios</span>
+                    <span>Antes: {reportSummary(event.previous_report_counts)}</span>
+                    <span>Después: {reportSummary(event.report_counts)}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function ReportsView({ permissions, onUnauthorized, onToast }: { permissions: string[]; onUnauthorized: () => void; onToast: (message: string) => void }) {
   const canExport = permissions.includes("finance.read");
+  const canManageScheduledReports = permissions.includes("finance.manage");
 
   const [tab, setTab] = useState<ReportName>("overview");
   const [range, setRange] = useState<"7" | "30" | "90" | "custom">("30");
@@ -12558,6 +12893,12 @@ function ReportsView({ permissions, onUnauthorized, onToast }: { permissions: st
           </section>
         </>
       ) : <ReportFallback loading={loading} error={error} />)}
+      {canManageScheduledReports && (
+        <ScheduledReportSettings
+          permissions={permissions}
+          onUnauthorized={onUnauthorized}
+        />
+      )}
     </>
   );
 }

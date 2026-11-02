@@ -254,6 +254,28 @@ h1 { margin-bottom: 5px; font-size: 29px; line-height: 1.1; letter-spacing: -.45
 .staff-void-marks { display: grid; gap: 8px; margin: 0 0 10px; padding: 10px 12px; border: 1px solid #edf0ed; border-radius: 6px; }
 .staff-void-marks legend { padding: 0 4px; color: #8b968e; font-size: 9px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase; }
 .staff-void-marks label { display: flex; align-items: center; gap: 8px; color: #5f6c63; font-size: 10px; }
+.scheduled-report-settings { margin-top: 16px; }
+.scheduled-report-settings .section-kicker, .scheduled-report-settings .table-hint { color: #5f6c63; }
+.scheduled-report-description { margin: 0 0 12px; color: var(--ink-soft); font-size: 12px; line-height: 1.55; }
+.scheduled-report-message { margin: 10px 0; color: var(--ink); font-size: 12px; line-height: 1.5; }
+.scheduled-report-live-region:empty { margin: 0; }
+.scheduled-report-add-form { display: flex; align-items: flex-end; gap: 10px; }
+.scheduled-report-add-form .form-field { flex: 1; margin: 4px 0 8px; }
+.scheduled-report-add-form .form-field input { border-color: #6f7d74; }
+.scheduled-report-recipient-list { display: grid; gap: 12px; margin: 12px 0; padding: 0; list-style: none; }
+.scheduled-report-recipient { min-width: 0; padding: 13px; border: 1px solid var(--line); border-radius: 6px; }
+.scheduled-report-recipient-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.scheduled-report-recipient-heading h3 { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 14px; }
+.scheduled-report-checkboxes { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px 12px; margin: 0; padding: 8px 10px 10px; border: 1px solid var(--line); border-radius: 5px; }
+.scheduled-report-checkboxes legend { padding: 0 5px; color: var(--ink-soft); font-size: 12px; font-weight: 600; }
+.scheduled-report-checkboxes label { min-height: 34px; display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 12px; }
+.scheduled-report-checkboxes input { width: 18px; height: 18px; flex: 0 0 18px; }
+.scheduled-report-history { padding-top: 14px; margin-top: 16px; border-top: 1px solid var(--line); }
+.scheduled-report-history h3 { margin: 0 0 10px; font-size: 14px; }
+.scheduled-report-history ol { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.scheduled-report-history li { display: grid; gap: 4px; padding: 10px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink-soft); font-size: 12px; line-height: 1.45; }
+.scheduled-report-history li strong { color: var(--ink); font-size: 12px; }
+.scheduled-report-settings :focus-visible { outline: 3px solid var(--brand); outline-offset: 2px; }
 .staff-request-current { display: block; margin-top: 3px; color: #8b968e; font-size: 9px; }
 .request-overdue { display: block; margin-top: 3px; color: #b4553f; font-size: 9px; font-weight: 600; }
 .staff-request-decision { display: grid; gap: 2px; }
@@ -741,6 +763,8 @@ th.sortable-header .sort-indicator { font-size: 8px; color: #23509a; }
 
 @media (max-width: 720px) {
   .form-grid, .detail-columns, .progress-stat-grid, .detail-meta-grid { grid-template-columns: 1fr; }
+  .scheduled-report-add-form { align-items: stretch; flex-direction: column; }
+  .scheduled-report-add-form > .button { align-self: flex-start; }
   .routine-builder-head { display: none; }
   .routine-builder-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workout-row { grid-template-columns: 1fr auto; }
