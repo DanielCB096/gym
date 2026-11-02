@@ -77,8 +77,6 @@ DAYS_PER_MONTH = 30
 EXPIRING_SOON_DAYS = 7
 TOP_PRODUCT_LIMIT = 10
 
-REPORT_NAMES = ("overview", "revenue", "memberships", "operations", "maintenance", "inventory")
-
 # Membership events that add a live membership versus the ones that end one.
 ACTIVATION_EVENTS = ("payment_confirmed", "manual_activation")
 TERMINATION_EVENTS = ("cancelled", "frozen")

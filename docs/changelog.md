@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-01 · Reportes programados: el nombre del reporte, una sola tupla
+
+- ADR-082 y ADR-083 dejaron la lista de los seis reportes copiada seis veces: `REPORT_NAMES` en `reports/service.py`, el `CHECK` de `scheduled_report_deliveries.report_name` reescrito a mano en `reports/models.py`, `REPORT_LABELS` y `REPORT_FILENAME_LABELS` repetiendo las claves, `_REPORT_FIELDS` repitiendo los nombres de columna de `scheduled_report_recipients`, y `main.py` repitiéndola dos veces más —el `Literal` de la petición y su `max_length=6` escrito a mano—. La tupla pasa a `reports/models.py` con `REPORT_FREQUENCIES`, los dos `CHECK` se renderizan con `sql_in_list`, `_REPORT_FIELDS` sale de una comprensión y el tope del arreglo pasa a ser `len(REPORT_NAMES)`; el contrato OpenAPI sale idéntico.
+- `tests/test_catalog_single_source.py` pasa de 12 a **18 pruebas**: fija byte a byte el SQL de `20261101_0079` y `20261101_0080`, exige que las etiquetas del sobre, del archivo y de la frecuencia cubran la tupla en su orden, que cada nombre tenga su columna real, que las ramas `if report == "…"` de `build_report` sean esa misma lista, y que el arreglo `reports` del panel ofrezca esos seis valores con `maxItems` igual a la longitud de la tupla.
+- Lo que justifica el corte: un nombre en la tupla sin su rama en `build_report` pasa el `CHECK`, la entrega se encola y el fallo aparece a las seis de la mañana, cuando el cron arma el CSV. Nada de esto se veía desde el panel.
+- Llamadores actualizados: `scheduled.py`, `scheduled_configuration.py`, `send_scheduled_income_reports.py` y las pruebas importan la tupla de `reports.models`.
+- Queda anotado, no corregido: `gym_preview.db` no tiene las tablas de los reportes programados y las migraciones `20261101_0079` a `20261101_0081` siguen sin aplicarse en PostgreSQL, así que la función nueva no se ha recorrido en vista previa.
+- Validación: suite backend **675 pruebas: 667 aprobadas y 8 omitidas**, sin `TEST_POSTGRES_URL`. Ocho mutaciones producen ocho fallos y el control sin mutaciones pasó; los archivos mutados volvieron a su contenido byte a byte.
+
 ## 2026-11-01 · Conciliación: los estados bancarios, una sola tupla
 
 - El vocabulario de la conciliación estaba escrito en cinco sitios a la vez: las tres tuplas de `finance/models.py`, sus tres `CHECK` copiados a mano en el mismo archivo, la guarda de `flag_bank_movement` con su terna escrita aparte, y el `Literal` del panel. Ahora los `CHECK` de `bank_accounts.status`, `bank_movements.status` y `bank_movement_events.event_type` se renderizan con `sql_in_list` desde la tupla del modelo, igual que los cinco catálogos del corte anterior.

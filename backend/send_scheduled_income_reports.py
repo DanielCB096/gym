@@ -19,6 +19,7 @@ load_dotenv(Path(__file__).with_name(".env"), override=False)
 sys.path.insert(0, str(Path(__file__).with_name("src")))
 
 import app.modules  # noqa: E402
+from app.modules.reports.models import REPORT_NAMES  # noqa: E402
 from app.modules.reports.scheduled import (  # noqa: E402
     ScheduledReportConfigurationError,
     configured_recipients,
@@ -28,7 +29,6 @@ from app.modules.reports.scheduled import (  # noqa: E402
 from app.modules.reports.scheduled_configuration import (  # noqa: E402
     get_scheduled_report_subscriptions,
 )
-from app.modules.reports.service import REPORT_NAMES  # noqa: E402
 from app.timezone import club_date  # noqa: E402
 
 PREVIEW_DATABASE_URL = "sqlite:///./gym_preview.db"

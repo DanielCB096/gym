@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 
 from app.modules.identity.models import AppUser
 from app.modules.reports.models import (
+    REPORT_NAMES,
     ScheduledReportConfiguration,
     ScheduledReportConfigurationEvent,
     ScheduledReportRecipient,
@@ -24,16 +25,10 @@ from app.modules.reports.scheduled import (
     configured_allowed_domains,
     configured_recipients,
 )
-from app.modules.reports.service import REPORT_NAMES
 
-_REPORT_FIELDS = {
-    "overview": "overview_enabled",
-    "revenue": "revenue_enabled",
-    "memberships": "memberships_enabled",
-    "operations": "operations_enabled",
-    "maintenance": "maintenance_enabled",
-    "inventory": "inventory_enabled",
-}
+# One boolean column per report name, so a seventh report is a new column plus
+# the tuple entry — never a fourth copy of the list.
+_REPORT_FIELDS = {report_name: f"{report_name}_enabled" for report_name in REPORT_NAMES}
 
 
 @dataclass(frozen=True)

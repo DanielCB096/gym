@@ -15,9 +15,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.mailer import EmailAttachment, MailerError, send_email
-from app.modules.reports.models import ScheduledReportDelivery
+from app.modules.reports.models import REPORT_NAMES, ScheduledReportDelivery
 from app.modules.reports.service import (
-    REPORT_NAMES,
     ReportPeriod,
     build_export,
     build_report,

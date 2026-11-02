@@ -2,22 +2,27 @@
 
 Cada vocabulario que estaba escrito a la vez en dos o tres sitios —las formas de
 pago del mostrador, los métodos con que se recibe un pago de cuenta, los estados
-del equipo, los estados de una línea de estado de cuenta y los tipos de su
-bitácora— es un modo de que la validación del servicio y el ``CHECK`` de la base
-discrepen —el servicio acepta un valor que el esquema rechaza, o al revés— sin
-que ninguna prueba lo note hasta que alguien lo usa.
+del equipo, los estados de una línea de estado de cuenta, los tipos de su
+bitácora y los nombres de los reportes programados— es un modo de que la
+validación del servicio y el ``CHECK`` de la base discrepen —el servicio acepta
+un valor que el esquema rechaza, o al revés— sin que ninguna prueba lo note
+hasta que alguien lo usa.
 
 Hoy el ``CHECK`` se renderiza desde la misma tupla que valida el servicio
 (``app.constraints.sql_in_list``), así que la lista vive una sola vez. Esta
-custodia fija tres cosas: que el SQL que produce el modelo siga siendo
+custodia fija cuatro cosas: que el SQL que produce el modelo siga siendo
 **byte a byte** el que ya está aplicado en la base —cambiar una tupla cambia el
 ``CHECK`` y exige una migración, no puede hacerse de pasada—, que el valor de
-más o de menos en cada vocabulario siga siendo el documentado, y que la lista
-que ofrece el panel —el ``Literal`` de la petición, visible en el contrato
-OpenAPI— sea esa misma tupla y no una cuarta copia.
+más o de menos en cada vocabulario siga siendo el documentado, que las etiquetas
+y las ramas que consumen esa lista la cubran exactamente, y que la lista que
+ofrece el panel —el ``Literal`` de la petición, visible en el contrato
+OpenAPI— sea esa misma tupla y no una copia más.
 """
 
 from __future__ import annotations
+
+import inspect
+import re
 
 import pytest
 from sqlalchemy import CheckConstraint
@@ -32,11 +37,16 @@ from app.modules.maintenance import models as maintenance_models
 from app.modules.maintenance import service as maintenance_service
 from app.modules.memberships import models as membership_models
 from app.modules.memberships import service as membership_service
+from app.modules.reports import models as reports_models
+from app.modules.reports import scheduled as scheduled_reports
+from app.modules.reports.scheduled_configuration import _REPORT_FIELDS
+from app.modules.reports.service import build_report
 
 # El SQL exacto que dejaron las migraciones: `20261017_0012` (equipo),
 # `20261019_0017` (ventas y devoluciones, que reemplazaron la versión de
-# `20261017_0008` y `20261018_0015`), `20261015_0001` (intentos de pago) y
-# `20261025_0027` (conciliación bancaria).
+# `20261017_0008` y `20261018_0015`), `20261015_0001` (intentos de pago),
+# `20261025_0027` (conciliación bancaria) y `20261101_0079`/`20261101_0080`
+# (reportes programados).
 APPLIED_CHECKS: dict[tuple[str, str], str] = {
     (
         "equipment",
@@ -70,6 +80,14 @@ APPLIED_CHECKS: dict[tuple[str, str], str] = {
         "bank_movement_events",
         "ck_bank_movement_events_type",
     ): "event_type IN ('imported', 'matched', 'unmatched', 'flagged', 'reopened')",
+    (
+        "scheduled_report_deliveries",
+        "ck_scheduled_report_deliveries_report_name",
+    ): "report_name IN ('overview', 'revenue', 'memberships', 'operations', 'maintenance', 'inventory')",
+    (
+        "scheduled_report_deliveries",
+        "ck_scheduled_report_deliveries_frequency",
+    ): "frequency IN ('daily', 'weekly', 'monthly')",
 }
 
 
@@ -110,6 +128,33 @@ def test_the_service_uses_the_models_tuple_not_a_copy() -> None:
 def test_the_bank_labels_cover_exactly_the_movement_statuses() -> None:
     """La bandeja traduce cada estado con `STATUS_LABELS`; una clave de más o de menos se ve aquí."""
     assert tuple(finance_service.STATUS_LABELS) == finance_models.BANK_MOVEMENT_STATUSES
+
+
+def test_the_report_labels_cover_exactly_the_catalog() -> None:
+    """El asunto del correo, el nombre del archivo y la frecuencia escrita salen de la misma lista."""
+    assert tuple(scheduled_reports.REPORT_LABELS) == reports_models.REPORT_NAMES
+    assert tuple(scheduled_reports.REPORT_FILENAME_LABELS) == reports_models.REPORT_NAMES
+    assert tuple(scheduled_reports.FREQUENCY_LABELS) == reports_models.REPORT_FREQUENCIES
+
+
+def test_every_report_has_its_own_recipient_column() -> None:
+    """`_REPORT_FIELDS` se deriva de la tupla; si la columna no existe, el alta del destinatario revienta."""
+    columns = SQLModel.metadata.tables["scheduled_report_recipients"].columns
+    assert _REPORT_FIELDS == {name: f"{name}_enabled" for name in reports_models.REPORT_NAMES}
+    for report_name, column_name in _REPORT_FIELDS.items():
+        assert column_name in columns, (
+            f"{report_name} está en el catálogo pero {column_name} no es una columna de "
+            "scheduled_report_recipients: hace falta su migración."
+        )
+
+
+def test_the_builder_handles_every_report_name() -> None:
+    """`build_report` encadena `if report == "…"`: un nombre sin rama pasa el `CHECK` y falla al enviar."""
+    branches = re.findall(r'^    if report == "([a-z_]+)":$', inspect.getsource(build_report), re.MULTILINE)
+    assert branches, "build_report cambió de forma y esta custodia dejó de leerlo"
+    assert tuple(branches) == reports_models.REPORT_NAMES, (
+        "la tupla y las ramas del constructor de reportes ya no coinciden."
+    )
 
 
 def test_each_vocabulary_gains_only_the_documented_value() -> None:
@@ -163,3 +208,18 @@ def test_the_panel_payload_enums_are_the_same_lists() -> None:
             f"{model}.{prop} ofrece {sorted(offered)} y el catálogo del modelo es {sorted(expected)}: "
             "el panel y el servicio no validan la misma lista."
         )
+
+
+def test_the_panel_offers_exactly_the_schedulable_reports() -> None:
+    """La lista de reportes del panel es un arreglo del `Literal`, con su tope: las dos cosas se comparan."""
+    reports = app.openapi()["components"]["schemas"]["ScheduledReportRecipientRequest"]["properties"][
+        "reports"
+    ]
+    offered = _enum_values(reports["items"])
+    assert offered == set(reports_models.REPORT_NAMES), (
+        f"el panel ofrece {sorted(offered)} y el catálogo es {sorted(reports_models.REPORT_NAMES)}."
+    )
+    assert reports["maxItems"] == len(reports_models.REPORT_NAMES), (
+        "el tope del arreglo se escribió a mano y ya no coincide con la tupla: "
+        "el operador no puede marcar todos los reportes a la vez."
+    )

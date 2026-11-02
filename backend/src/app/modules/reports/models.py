@@ -21,6 +21,15 @@ from sqlalchemy import (
 )
 from sqlmodel import Field, SQLModel
 
+from app.constraints import sql_in_list
+
+# The reports the panel can schedule. This tuple is the vocabulary: the delivery
+# ``CHECK``, the envelope labels, the per-recipient columns and the request
+# ``Literal`` all have to agree with it.
+REPORT_NAMES = ("overview", "revenue", "memberships", "operations", "maintenance", "inventory")
+
+REPORT_FREQUENCIES = ("daily", "weekly", "monthly")
+
 
 class ScheduledReportDelivery(SQLModel, table=True):
     __tablename__ = "scheduled_report_deliveries"
@@ -32,11 +41,11 @@ class ScheduledReportDelivery(SQLModel, table=True):
         ),
         UniqueConstraint("idempotency_key", name="uq_scheduled_report_delivery_key"),
         CheckConstraint(
-            "report_name IN ('overview', 'revenue', 'memberships', 'operations', 'maintenance', 'inventory')",
+            f"report_name IN {sql_in_list(REPORT_NAMES)}",
             name="ck_scheduled_report_deliveries_report_name",
         ),
         CheckConstraint(
-            "frequency IN ('daily', 'weekly', 'monthly')",
+            f"frequency IN {sql_in_list(REPORT_FREQUENCIES)}",
             name="ck_scheduled_report_deliveries_frequency",
         ),
         CheckConstraint(

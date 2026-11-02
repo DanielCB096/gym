@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 
 from app.mailer import MailDeliveryFailed
 from app.modules.identity.service import ensure_default_access_control, register_user
-from app.modules.reports.models import ScheduledReportDelivery
+from app.modules.reports.models import REPORT_NAMES, ScheduledReportDelivery
 from app.modules.reports.scheduled import (
     ScheduledReportConfigurationError,
     configured_recipients,
@@ -16,7 +16,6 @@ from app.modules.reports.scheduled_configuration import (
     get_scheduled_report_subscriptions,
     save_scheduled_report_configuration,
 )
-from app.modules.reports.service import REPORT_NAMES
 
 
 def test_recipients_require_an_internal_domain_allow_list() -> None:

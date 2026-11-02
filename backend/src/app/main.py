@@ -753,6 +753,7 @@ from app.modules.reports import (
     build_report,
     resolve_period,
 )
+from app.modules.reports.models import REPORT_NAMES as SCHEDULED_REPORT_NAMES
 from app.modules.reports.scheduled import (
     DEFAULT_RECIPIENT_LIMIT,
     REPORT_LABELS as SCHEDULED_REPORT_LABELS,
@@ -3184,7 +3185,9 @@ ScheduledReportName = Literal[
 
 class ScheduledReportRecipientRequest(BaseModel):
     email: EmailStr
-    reports: list[ScheduledReportName] = Field(default_factory=list, max_length=6)
+    reports: list[ScheduledReportName] = Field(
+        default_factory=list, max_length=len(SCHEDULED_REPORT_NAMES)
+    )
 
 
 class ScheduledReportConfigurationRequest(BaseModel):
