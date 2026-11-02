@@ -6,8 +6,10 @@ La primera entrega es para un solo gimnasio. Incluye la operación no fiscal del
 sistema y queda sujeta a las barreras de staging, seguridad, respaldo y
 aceptación descritas abajo.
 
-La fase de definición de alcance está avanzada, pero no cerrada: falta elegir
-hosting y asignar responsables de negocio y operación.
+La fase de definición de alcance está cerrada. Se eligió VPS y el dueño asumirá
+las responsabilidades de negocio, operación técnica y autorización de
+recuperaciones. Aún falta seleccionar proveedor, región/plan, presupuesto y
+dominio antes de provisionar staging.
 
 ### Incluido
 
@@ -40,7 +42,8 @@ hosting y asignar responsables de negocio y operación.
 
 | Tema | Decisión | Estado |
 | --- | --- | --- |
-| Hosting | Se difiere la elección entre Azure administrado y VPS. | Pendiente; bloquea la configuración de staging. |
+| Hosting | VPS. | Tipo elegido; faltan proveedor, región/plan, presupuesto y dominio para provisionar staging. |
+| Responsables | El dueño asume aprobación de negocio, operación técnica y autorización de recuperaciones. | Asignados; el procedimiento permite que una persona cubra varios roles. |
 | Cobro de membresía | Incluir renovación automática además del pago inicial. | Alcance aprobado; diseño, implementación y validación pendientes. |
 | Método de acceso | Código numérico de seis dígitos capturado en el kiosco existente. | Aprobado; sin lector QR ni torniquete. |
 | Terminal bancaria | No integrar hardware; los cobros externos se registran manualmente. | Aprobado para esta entrega. |
@@ -56,9 +59,9 @@ una estrategia equivalente y probar su restauración.
 
 ## Plan de ejecución
 
-1. **Cerrar decisiones de preparación:** elegir hosting y dominio; nombrar al
-   responsable de operación técnica, al aprobador de negocio y a quien autoriza
-   una recuperación.
+1. **Cerrar detalles de infraestructura:** seleccionar proveedor VPS,
+   región/plan, presupuesto y dominio; definir cómo se administrarán DNS y
+   secretos.
 2. **Preparar staging:** reproducir backend, PostgreSQL, Redis, panel y procesos
    programados con HTTPS, secretos aislados, despliegue repetible y datos
    sintéticos.
@@ -82,8 +85,8 @@ una estrategia equivalente y probar su restauración.
 
 ## Pendientes que bloquean la salida
 
-- Elegir proveedor de hosting y dominio; definir quién administra la
-  infraestructura y los secretos.
+- Seleccionar proveedor VPS, región/plan, presupuesto y dominio; configurar la
+  administración de DNS y secretos.
 - Diseñar, implementar y probar renovaciones automáticas con consentimiento
   explícito, cancelación clara y manejo de cobros fallidos. La integración
   existente de Conekta solo cubre un pago inicial en sandbox.
@@ -92,8 +95,7 @@ una estrategia equivalente y probar su restauración.
   aprobados, incluyendo fotos de progreso si se conservan en archivos aparte.
 - Validar en staging las migraciones, tareas programadas, correo, cobros y
   operación diaria del alcance no fiscal.
-- Confirmar responsables de negocio y operación, condiciones comerciales de
-  proveedores y autorización de salida.
+- Confirmar condiciones comerciales de proveedores y autorización de salida.
 
 No se deben realizar cobros productivos ni cargar datos reales hasta cerrar esos
 pendientes y aprobar la salida.

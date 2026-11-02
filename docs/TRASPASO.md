@@ -4,6 +4,17 @@ Actualizado: 2026-11-01 · Rama: `main` · ADR-082 a ADR-084 en `756c5ff` (backe
 
 Esta nota es el punto de entrada para otra persona o IA. El estado detallado vive en [README.md](README.md#estado-del-proyecto) y el histórico en [changelog.md](changelog.md); aquí solo se resume qué está hecho, qué sigue y qué no debe tocarse sin pedirlo.
 
+## Preparación de la primera entrega (ADR-086)
+
+El alcance de producto quedó acordado: renovaciones automáticas (todavía no
+implementadas), acceso por código numérico en el kiosco, sin terminal ni
+torniquete, sin facturación fiscal, y apertura a todos los socios tras
+aceptación interna en staging. Se eligió VPS; el dueño asume los roles de
+negocio, operación técnica y autorización de recuperaciones. Antes de provisionar
+staging faltan proveedor, región/plan, presupuesto y dominio. Los objetivos de
+recuperación son RPO de 15 minutos y RTO de 4 horas, aún no demostrados. El plan
+y los criterios están en [primera-entrega.md](06-operacion/primera-entrega.md).
+
 ## Pagos de membresía (ADR-066)
 
 Ya existe `POST /member/membership/checkout`: socio autenticado, orden `HostedPayment` de tarjeta, importe derivado del plan e idempotencia interna y del proveedor. Funciona solo con `CONEKTA_MODE=sandbox` y `CONEKTA_SANDBOX_API_KEY`; la migración `20261031_0075` persiste el ID de orden y la URL. La orden deja el intento y la membresía en `pending_payment`.

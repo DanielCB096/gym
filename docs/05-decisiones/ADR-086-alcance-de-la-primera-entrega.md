@@ -35,9 +35,10 @@ capacidades ya implementadas.
 - Los objetivos de recuperación son RPO máximo de 15 minutos y RTO máximo de 4
   horas. Son objetivos por demostrar, no una afirmación sobre la infraestructura
   actual.
-- Se difiere la elección entre Azure administrado y VPS. La decisión de hosting
-  y los responsables de operar y aprobar producción deben quedar registrados
-  antes de configurar staging.
+- Se eligió VPS. El proveedor, región/plan, presupuesto y dominio quedan por
+  seleccionar antes de provisionar staging.
+- El dueño asume los roles de aprobación de negocio, operación técnica y
+  autorización de recuperaciones.
 
 ## Consecuencias
 
@@ -53,8 +54,8 @@ capacidades ya implementadas.
 - El RPO de 15 minutos requiere una estrategia distinta de un respaldo diario
   aislado, como recuperación a un punto en el tiempo, y una restauración
   verificable.
-- La selección del hosting bloquea la configuración de staging y la concreción
-  del respaldo; la fase de preparación permanece abierta hasta elegirlo.
+- La selección del proveedor, región/plan y dominio bloquea la configuración
+  de staging y la concreción del respaldo.
 
 ## Referencias
 
