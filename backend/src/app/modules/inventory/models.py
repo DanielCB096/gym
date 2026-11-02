@@ -20,12 +20,21 @@ from sqlalchemy import (
 )
 from sqlmodel import Field, SQLModel
 
+from app.constraints import sql_in_list
+
 # Single-register first version: every product keeps its stock in this location.
 # The schema already isolates stock per location so a second point of sale can be
 # added without reshaping the tables.
 DEFAULT_LOCATION = "Mostrador"
 
 PRODUCT_CATEGORY_DEFAULT = "General"
+
+# Ways a sale can be tendered. "account" charges the goods to the member's
+# account instead of collecting money at the counter, so it is not one of the
+# methods that settle that account afterwards. These two tuples are the single
+# source for the service validation and for the CHECK constraints below.
+PAYMENT_METHODS = ("cash", "card", "transfer")
+SALE_PAYMENT_METHODS = (*PAYMENT_METHODS, "account")
 
 
 def utc_now() -> datetime:
@@ -199,7 +208,7 @@ class Sale(SQLModel, table=True):
     __tablename__ = "sales"
     __table_args__ = (
         CheckConstraint(
-            "payment_method IN ('cash', 'card', 'transfer', 'account')",
+            f"payment_method IN {sql_in_list(SALE_PAYMENT_METHODS)}",
             name="ck_sales_payment_method",
         ),
         CheckConstraint("status IN ('completed', 'refunded')", name="ck_sales_status"),
@@ -331,7 +340,7 @@ class SaleReturn(SQLModel, table=True):
     __tablename__ = "sale_returns"
     __table_args__ = (
         CheckConstraint(
-            "refund_method IN ('cash', 'card', 'transfer', 'account')",
+            f"refund_method IN {sql_in_list(SALE_PAYMENT_METHODS)}",
             name="ck_sale_returns_method",
         ),
         CheckConstraint("total_refund_cents >= 0", name="ck_sale_returns_total_nonnegative"),
@@ -409,8 +418,9 @@ class SaleReturnItem(SQLModel, table=True):
 # A member account ("cuenta del socio") has no stored balance: it is the sum of
 # the sales tendered with ``payment_method = "account"`` minus the returns
 # credited back to the account and the payments recorded in this table. Keeping
-# each event in its natural table avoids a second ledger that could drift.
-MEMBER_ACCOUNT_PAYMENT_METHODS = ("cash", "card", "transfer")
+# each event in its natural table avoids a second ledger that could drift. The
+# methods that settle the account are ``PAYMENT_METHODS`` above: "account" is
+# what an account payment pays off, not a way to pay it.
 
 
 class MemberAccountPayment(SQLModel, table=True):
@@ -424,7 +434,7 @@ class MemberAccountPayment(SQLModel, table=True):
     __tablename__ = "member_account_payments"
     __table_args__ = (
         CheckConstraint(
-            "method IN ('cash', 'card', 'transfer')",
+            f"method IN {sql_in_list(PAYMENT_METHODS)}",
             name="ck_member_account_payments_method",
         ),
         CheckConstraint(

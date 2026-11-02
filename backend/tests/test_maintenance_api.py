@@ -2,6 +2,7 @@ from collections.abc import Iterator
 from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
@@ -10,7 +11,13 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.main import app, get_session
 from app.modules.identity.models import Employee
 from app.modules.identity.service import ensure_default_access_control, register_user
-from app.modules.maintenance.service import create_equipment, create_ticket
+from app.modules.maintenance.service import (
+    InvalidEquipmentData,
+    InvalidEquipmentState,
+    create_equipment,
+    create_ticket,
+    set_equipment_status,
+)
 
 YESTERDAY = date.today() - timedelta(days=1)
 IN_30_DAYS = date.today() + timedelta(days=30)
@@ -617,4 +624,27 @@ def test_ticket_code_carries_the_club_calendar_day() -> None:
             now=datetime(2026, 10, 19, 2, 0, tzinfo=timezone.utc),
         )
         assert ticket.code.startswith("MT-20261018-"), ticket.code
+    engine.dispose()
+
+
+def test_manual_status_change_leaves_retiring_to_its_own_action() -> None:
+    """The status change cannot retire a machine or invent a state.
+
+    The panel route pins the payload to a ``Literal`` of the live statuses, so
+    both rejections are reachable through the service only — and the same tuple
+    is what the ticket-resolution fallback consults before restoring a
+    ``previous_status`` that is no longer settable.
+    """
+
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        equipment = create_equipment(session, name="Rack de sentadillas", category="Fuerza")
+
+        with pytest.raises(InvalidEquipmentState, match="baja"):
+            set_equipment_status(session, equipment.id, status="retired")
+        with pytest.raises(InvalidEquipmentData, match="inválido"):
+            set_equipment_status(session, equipment.id, status="en_reparacion")
+
+        assert equipment.status == "operational"
     engine.dispose()

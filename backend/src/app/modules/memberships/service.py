@@ -19,6 +19,7 @@ from app.modules.memberships.gateway import (
     VerifiedWebhook,
 )
 from app.modules.memberships.models import (
+    PAYMENT_ATTEMPT_METHODS,
     Member,
     MemberConsent,
     Membership,
@@ -115,7 +116,11 @@ class InvalidMembershipPayment(BillingError):
 
 PRIVACY_NOTICE_VERSION = "privacidad-v1"
 NON_TERMINAL_MEMBERSHIP_STATUSES = ("pending_payment", "active", "frozen", "suspended")
-MANUAL_MEMBERSHIP_PAYMENT_METHODS = ("cash", "card", "transfer")
+# Reception tenders by hand everything the attempt vocabulary knows except SPEI,
+# which only ever arrives as a gateway response.
+MANUAL_MEMBERSHIP_PAYMENT_METHODS = tuple(
+    method for method in PAYMENT_ATTEMPT_METHODS if method != "spei"
+)
 
 
 @dataclass(frozen=True)

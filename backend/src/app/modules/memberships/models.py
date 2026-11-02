@@ -22,6 +22,12 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import JSON
 from sqlmodel import Field, SQLModel
 
+from app.constraints import sql_in_list
+
+# Ways a membership charge can be tendered. "spei" only ever arrives through the
+# gateway, so it is not one of the methods reception records by hand.
+PAYMENT_ATTEMPT_METHODS = ("card", "spei", "cash", "transfer")
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -238,7 +244,9 @@ class PaymentMethod(SQLModel, table=True):
 class PaymentAttempt(SQLModel, table=True):
     __tablename__ = "payment_attempts"
     __table_args__ = (
-        CheckConstraint("method IN ('card', 'spei', 'cash', 'transfer')", name="ck_payment_attempts_method"),
+        CheckConstraint(
+            f"method IN {sql_in_list(PAYMENT_ATTEMPT_METHODS)}", name="ck_payment_attempts_method"
+        ),
         CheckConstraint(
             "status IN ('pending', 'processing', 'succeeded', 'failed', 'unknown', 'cancelled')",
             name="ck_payment_attempts_status",

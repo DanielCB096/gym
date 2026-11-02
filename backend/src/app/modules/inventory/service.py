@@ -23,11 +23,12 @@ from sqlmodel import Session, select
 from app.modules.identity.models import AppUser
 from app.modules.inventory.models import (
     DEFAULT_LOCATION,
-    MEMBER_ACCOUNT_PAYMENT_METHODS,
     OPEN_PURCHASE_ORDER_STATUSES,
+    PAYMENT_METHODS,
     PRODUCT_CATEGORY_DEFAULT,
     PURCHASE_ORDER_STATUSES,
     RETURN_DISPOSITIONS,
+    SALE_PAYMENT_METHODS,
     CashSession,
     InventoryMovement,
     InventoryStock,
@@ -52,10 +53,6 @@ DEFAULT_SUPPLIER_PAGE_SIZE = 25
 DEFAULT_PURCHASE_ORDER_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
 PRODUCT_STATES = ("active", "low", "out", "inactive")
-# Ways a sale can be tendered. "account" charges the goods to the member's
-# account instead of collecting money at the counter.
-PAYMENT_METHODS = ("cash", "card", "transfer")
-SALE_PAYMENT_METHODS = (*PAYMENT_METHODS, "account")
 # Service lines (a premium class) share the sales ledger but never touch stock.
 SERVICE_SKU = "CLASE"
 MANUAL_MOVEMENT_TYPES = ("intake", "adjustment", "waste")
@@ -2193,7 +2190,7 @@ def register_member_account_payment(
     the expected cash at close. Overpaying is rejected: an account never holds a
     credit created by a payment (a negative balance can only come from returns).
     """
-    if method not in MEMBER_ACCOUNT_PAYMENT_METHODS:
+    if method not in PAYMENT_METHODS:
         raise InvalidAccountPayment("Forma de pago no válida")
     if amount_cents <= 0:
         raise InvalidAccountPayment("El monto del pago debe ser mayor a cero")

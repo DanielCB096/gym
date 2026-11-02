@@ -52,8 +52,9 @@ from app.timezone import club_date, club_day_stamp
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
 
-# Statuses a manual status change may set (retiring has its own action).
-MANUAL_EQUIPMENT_STATUSES = ("operational", "maintenance", "out_of_service", "inspection")
+# Statuses a manual status change may set (retiring has its own action): the
+# whole live fleet, so a new status is decided once, in the model's vocabulary.
+MANUAL_EQUIPMENT_STATUSES = LIVE_EQUIPMENT_STATUSES
 
 UNSET: object = object()
 

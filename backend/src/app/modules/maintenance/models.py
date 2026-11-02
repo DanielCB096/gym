@@ -44,9 +44,12 @@ from sqlalchemy import (
 )
 from sqlmodel import Field, SQLModel
 
+from app.constraints import sql_in_list
+
 EQUIPMENT_STATUSES = ("operational", "maintenance", "out_of_service", "inspection", "retired")
-# Anything but ``retired`` still counts as part of the working fleet.
-LIVE_EQUIPMENT_STATUSES = ("operational", "maintenance", "out_of_service", "inspection")
+# Anything but ``retired`` still counts as part of the working fleet, and a unit
+# is only ever taken out of it by retiring.
+LIVE_EQUIPMENT_STATUSES = tuple(status for status in EQUIPMENT_STATUSES if status != "retired")
 # Equipment members cannot use right now (drives the service status per area).
 UNAVAILABLE_EQUIPMENT_STATUSES = ("maintenance", "out_of_service")
 
@@ -72,7 +75,7 @@ class Equipment(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint("length(trim(name)) > 0", name="ck_equipment_name_nonempty"),
         CheckConstraint(
-            "status IN ('operational', 'maintenance', 'out_of_service', 'inspection', 'retired')",
+            f"status IN {sql_in_list(EQUIPMENT_STATUSES)}",
             name="ck_equipment_status",
         ),
         CheckConstraint("purchase_cost_cents >= 0", name="ck_equipment_cost_nonnegative"),

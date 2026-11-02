@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-01 · Catálogos: una sola lista por vocabulario
+
+- `backend/src/app/constraints.py` (nuevo) renderiza la lista de un `CHECK` desde la tupla del modelo (`sql_in_list`). Los cinco `CHECK` de pagos del mostrador, ventas y devoluciones, pagos de cuenta, intentos de pago y estados del equipo se generan ahora desde esa tupla, así que la validación del servicio y el esquema no pueden ya escribir vocabularios distintos.
+- Los servicios dejan de copiar el vocabulario: `maintenance`, `inventory` y `memberships` importan la tupla del modelo, y donde el catálogo guarda un valor que la pantalla no ofrece (`retired`, `spei`) derivan su subconjunto con una comprensión sobre la misma tupla.
+- `tests/test_catalog_single_source.py` (8 pruebas) fija el SQL **byte a byte** contra el que dejaron las migraciones aplicadas, la identidad de las listas entre modelo y servicio, el valor extra documentado de cada vocabulario y que los `Literal` de las peticiones del panel sean esa misma lista —comprobada por el contrato OpenAPI, sin tocar `main.py`—.
+- `test_maintenance_api.py` estrena la frontera que solo vivía en el servicio: cambiar el estado no puede dar de baja un equipo ni inventar un estado.
+- Sin cambios hacia afuera: firmas, rutas y payloads del panel quedan iguales; cambiar una tupla sigue exigiendo su migración, y la custodia lo recuerda con el mensaje.
+- Validación: suite backend **646 pruebas: 638 aprobadas y 8 omitidas**, sin `TEST_POSTGRES_URL`. Seis mutaciones producen siete detecciones y cada archivo mutado volvió a su contenido byte a byte.
+
 ## 2026-11-01 · Jornada: la anulación acepta su instante
 
 - `void_attendance_mark` y `decide_attendance_request` (`backend/src/app/modules/staffing/service.py`) reciben `now=`; la aprobación sella la anulación que aplica con su propio instante, así que la decisión y el cambio que aprueba ya no se separan por dos lecturas del reloj.
