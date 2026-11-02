@@ -2,7 +2,7 @@
 
 - Fecha: 2026-10-31
 - Estado: aceptada para diseño e implementación en sandbox; producción pendiente de validación
-- Complementa ADR-003 (pasarela de pago) sin activar cobros recurrentes
+- Complementa ADR-003 (pasarela de pago); el alcance de producto posterior se amplía en ADR-086
 
 ## Contexto
 
@@ -13,12 +13,12 @@ La primera integración debe permitir cobrar una membresía sin almacenar datos 
 ## Decisión
 
 - **Conekta es el proveedor de la primera etapa**, sujeto a completar onboarding y validar las condiciones comerciales y técnicas antes de producción.
-- **El primer alcance es un pago único de membresía mediante checkout alojado por Conekta**, creado por el backend para una orden e intento internos concretos. No se reutiliza un enlace genérico de pago ni se habilita renovación automática en esta etapa.
+- **El alcance técnico de este incremento es un pago único de membresía mediante checkout alojado por Conekta**, creado por el backend para una orden e intento internos concretos. No se reutiliza un enlace genérico de pago. La primera entrega del producto incluye renovación automática según ADR-086, pero requiere un flujo técnico y aprobación separados; esta decisión no afirma que ya esté implementada.
 - **El monto, la moneda y el concepto se toman del plan y del intento interno**; no se aceptan montos enviados por el cliente como fuente de autoridad. El backend guarda la referencia de orden del proveedor y una relación inequívoca con el intento.
 - **El retorno del navegador o de la app solo informa al usuario**. No confirma el pago ni activa la membresía. La activación ocurre únicamente después de verificar criptográficamente el webhook, validar que orden, monto, moneda y estado corresponden al intento, y procesarlo de forma idempotente.
 - **Los resultados pendientes no se tratan como pagos fallidos**: SPEI u otros métodos diferidos mantienen la membresía en `pending_payment` hasta una confirmación válida o una conciliación explícita. Los pagos fallidos tampoco activan acceso.
 - **No se guardan PAN, CVV ni credenciales del proveedor en base de datos o código.** La llave privada se configura por entorno; cualquier token necesario para cobros futuros requiere un flujo separado, revisión de cifrado y consentimiento explícito.
-- **La renovación recurrente, el guardado de tarjetas y los reintentos automáticos quedan fuera de este primer incremento.** Se decidirán después de validar el flujo puntual en sandbox.
+- **La renovación recurrente y los reintentos automáticos no forman parte del incremento de pago único documentado aquí.** ADR-086 los incluye en el alcance de producto y exige diseñarlos y validarlos antes de producción. Cualquier credencial o token de pago futuro requiere protección adecuada y consentimiento explícito.
 - **No se habilita producción por configuración accidental.** El modo productivo requiere secretos del entorno productivo, webhook registrado, conciliación probada y aprobación explícita del responsable del gimnasio.
 
 ## Consecuencias

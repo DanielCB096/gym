@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-02 · Alcance de la primera entrega
+
+- ADR-086 registra el alcance acordado: renovaciones automáticas pendientes de implementación, kiosco con código numérico, sin terminal física, despliegue a todos los socios tras aceptación y exclusión fiscal.
+- Se fijaron objetivos de recuperación de RPO 15 minutos y RTO 4 horas; falta demostrar que la infraestructura elegida los cumple.
+- La elección de hosting y los responsables operativos siguen pendientes y bloquean la preparación de staging.
+
 ## 2026-11-02 · Progreso: acotar medidas corporales en tres capas
 
 - `MAX_BODY_WEIGHT_KG = 500` y `MAX_BODY_MEASUREMENT_CM = 400` se comparten entre modelo, petición y servicio.

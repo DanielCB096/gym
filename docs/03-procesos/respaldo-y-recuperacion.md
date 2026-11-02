@@ -20,7 +20,7 @@ Una sola persona puede asumir más de un rol si el club es pequeño, pero las re
 
 ## Preparación de respaldos
 
-1. Acordar con el negocio los objetivos de punto de recuperación (**RPO**) y tiempo de recuperación (**RTO**). No hay valores aprobados por este documento.
+1. Aplicar los objetivos aprobados para la primera entrega: RPO máximo de 15 minutos y RTO máximo de 4 horas (ADR-086). Confirmar con negocio si cambian antes de contratar o configurar infraestructura.
 2. Elegir un método de respaldo compatible con la infraestructura de PostgreSQL y documentar su responsable, frecuencia, retención, cifrado y ubicación.
 3. Incluir la base de datos y los archivos críticos que no se puedan reconstruir desde ella. En particular, confirmar si `PROGRESS_PHOTOS_DIR` contiene fotos de socios y proteger esa carpeta junto con su metadato en base de datos.
 4. Guardar copias cifradas fuera del servidor principal, con acceso limitado a personal autorizado y protección frente a borrado o modificación no autorizados.
@@ -83,4 +83,5 @@ Registrar:
 - El proyecto documenta tareas cron para purgas operativas y consulta de acuses, pero estas no hacen respaldo.
 - El documento operativo [respaldos-y-recuperacion.md](../06-operacion/respaldos-y-recuperacion.md) recomienda copias periódicas y pruebas de restauración, pero la herramienta y configuración final dependen de la infraestructura.
 - No se asume que haya respaldos automáticos, retención probada, recuperación a un punto en el tiempo ni restauraciones verificadas hasta que el operador lo confirme en el entorno real.
-- Deben acordarse RPO, RTO, frecuencia, retención, cifrado, ubicación externa y frecuencia de pruebas de restauración antes de producción.
+- Para la primera entrega se acordaron RPO máximo de 15 minutos y RTO máximo de 4 horas; aún no se ha elegido infraestructura ni demostrado que esos objetivos se cumplan.
+- Deben definirse frecuencia, retención, cifrado, ubicación externa y pruebas de restauración antes de producción. Un respaldo diario por sí solo no cumple el RPO aprobado.

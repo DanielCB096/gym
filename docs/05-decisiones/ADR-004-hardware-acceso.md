@@ -15,7 +15,7 @@ El gimnasio necesita lectores de alta velocidad con soporte local y operación s
 
 ## Decisión
 
-Se recomienda una solución híbrida con lector QR + RFID + huella en una controladora local y un torniquete que responda en <1 s. Para la fase inicial, la variación económica mantiene QR + RFID como base con la posibilidad de sumar huella en puntos críticos.
+Como recomendación futura se mantiene una solución híbrida con lector QR + RFID + huella en una controladora local y un torniquete que responda en <1 s. Para la primera entrega, ADR-086 acota el alcance al kiosco actual con código numérico de seis dígitos, sin lector ni torniquete.
 
 ## Consecuencias
 
