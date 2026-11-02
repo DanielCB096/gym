@@ -33,6 +33,10 @@ Gestionar la operación completa de un gimnasio con foco en:
 │   └── README.md
 ├── kiosk/
 │   └── README.md
+├── demo/
+│   ├── README.md
+│   ├── start-demo.ps1
+│   └── GUION-DEMO.md
 ├── docs/
 │   ├── README.md
 │   ├── roadmap.md
@@ -96,6 +100,9 @@ git commit -m "feat: agrega alta de socio con consentimientos"
 5. Ejecutar migraciones.
 6. Correr pruebas unitarias y de integración.
 7. Iniciar web, móvil y kiosco por separado.
+
+Para una demostración guiada del panel, app del socio y kiosco sobre una copia
+desechable de los datos de vista previa, consulta [demo/README.md](demo/README.md).
 
 ## Verificación
 

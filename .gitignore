@@ -21,6 +21,7 @@ coverage/
 # Databases and local services
 *.sqlite3
 *.db
+backend/.demo_runtime/
 postgres_data/
 redis_data/
 

@@ -7,6 +7,13 @@
 - Las pruebas verifican los máximos y excesos en panel, app del socio, servicio y ORM; `APPLIED_CHECKS` y `ROUTE_BOUNDS` fijan esquema y contrato.
 - Antes de desplegar en una base con datos, revisar que no haya medidas por encima de 500 kg o perímetros mayores a 400 cm. Quedan cuatro familias de cotas numéricas pendientes.
 
+## 2026-11-02 · Demo comercial local
+
+- Se documentó un recorrido guiado del panel, la app del socio y el kiosco sobre una copia aislada de la base de vista previa; no modifica la base curada.
+- `demo/start-demo.ps1`, `check-demo.ps1` y `stop-demo.ps1` preparan, verifican y apagan la demo; el apagado comprueba los PID y detiene solo los árboles de proceso registrados.
+- `backend/seed_demo.py` prepara cuentas, membresías y fisioterapia; los fallos de agenda se reportan explícitamente y la ruta del token de kiosco se puede aislar para validar sin afectar el runtime.
+- Se validó el sembrado sobre una copia SQLite temporal y el chequeo de disponibilidad del backend, panel, kiosco, login y OTP. La app móvil es opcional y no estaba iniciada durante esa comprobación.
+
 ## 2026-11-02 · Fisioterapia: acotar paquetes en las tres capas
 
 - `MAX_SESSIONS = 52` y `MAX_VALIDITY_DAYS = 366` ahora se comparten entre modelo, petición y servicio.
