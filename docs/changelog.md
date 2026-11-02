@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-02 · Fisioterapia: acotar paquetes en las tres capas
+
+- `MAX_SESSIONS = 52` y `MAX_VALIDITY_DAYS = 366` ahora se comparten entre modelo, petición y servicio.
+- `20261102_0085` agrega restricciones máximas aditivas en `physio_offers`, conservando los valores límite aceptados actualmente.
+- `test_physio_api.py` verifica los valores límite y excedidos por API, servicio y ORM; `APPLIED_CHECKS` y `ROUTE_BOUNDS` fijan esquema y contrato.
+- Antes de desplegar en una base con datos, revisar que ningún paquete exceda 52 sesiones o 366 días. Quedan cinco familias de cotas numéricas pendientes.
+
 ## 2026-11-02 · Rutinas: acotar series y descanso también en la base
 
 - `MAX_ROUTINE_ITEM_SETS = 50` y `MAX_ROUTINE_ITEM_REST_SECONDS = 1800` se comparten entre modelo, petición y servicio.

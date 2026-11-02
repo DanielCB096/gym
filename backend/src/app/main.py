@@ -165,7 +165,11 @@ from app.modules.physio import (
     update_physio_therapist_profile,
     void_physio_pack,
 )
-from app.modules.physio.models import MAX_DURATION_MINUTES
+from app.modules.physio.models import (
+    MAX_DURATION_MINUTES,
+    MAX_SESSIONS,
+    MAX_VALIDITY_DAYS,
+)
 from app.modules.physio.reports import (
     PhysioReport,
     physio_report,
@@ -1801,16 +1805,16 @@ class PhysioServiceResponse(BaseModel):
 class CreatePhysioOfferRequest(BaseModel):
     service_id: UUID
     name: str = Field(min_length=1, max_length=160)
-    sessions: int = Field(ge=1, le=52)
+    sessions: int = Field(ge=1, le=MAX_SESSIONS)
     price_cents: int = Field(ge=0)
-    validity_days: int = Field(default=31, ge=1, le=366)
+    validity_days: int = Field(default=31, ge=1, le=MAX_VALIDITY_DAYS)
 
 
 class UpdatePhysioOfferRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=160)
-    sessions: int | None = Field(default=None, ge=1, le=52)
+    sessions: int | None = Field(default=None, ge=1, le=MAX_SESSIONS)
     price_cents: int | None = Field(default=None, ge=0)
-    validity_days: int | None = Field(default=None, ge=1, le=366)
+    validity_days: int | None = Field(default=None, ge=1, le=MAX_VALIDITY_DAYS)
     is_active: bool | None = None
 
 

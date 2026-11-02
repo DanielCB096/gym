@@ -233,6 +233,8 @@ Los cinco salen del reporte del consultorio:
 
 **Cota de duración implementada el 2026-11-02.** `MAX_DURATION_MINUTES = 480` se define en `physio/models.py` y se comparte entre los modelos de petición, las guardas de creación y actualización del servicio y el `CHECK` `ck_physio_services_duration_max` de `20261102_0083`. La duración máxima no cambió; ahora también aplica a escrituras que eviten la API. Antes de aplicar la migración en una base con datos, comprobar que no haya servicios con duración mayor a 480.
 
+**Cotas de paquetes implementadas el 2026-11-02.** `MAX_SESSIONS = 52` y `MAX_VALIDITY_DAYS = 366` viven en `physio/models.py` y se comparten entre las peticiones de alta y edición, las guardas del servicio y los `CHECK` `ck_physio_offers_sessions_max` y `ck_physio_offers_validity_max` de `20261102_0085`. Los máximos aceptados no cambiaron; la base también los aplica a escrituras que eviten la API. Antes de aplicar la migración en una base con datos, comprobar que ningún paquete exceda 52 sesiones o 366 días.
+
 Lo que sigue sin cubrirse: la devolución del paquete y la reserva desde la app siguen fuera de alcance; el consultorio no declara capacidad ni horario propio, la concurrencia de la sala se comprueba con `tests/test_physio_rooms_postgres.py` y la del fisioterapeuta con `tests/test_physio_therapist_postgres.py`, el cierre programado depende del cron del host y no avisa si se detiene, y el reporte sigue estimando la ocupación por fisioterapeuta, no por sala.
 
 ### Incrementos previstos

@@ -77,6 +77,14 @@ APPLIED_CHECKS: dict[tuple[str, str], str] = {
         "ck_physio_services_duration_max",
     ): "duration_minutes <= 480",
     (
+        "physio_offers",
+        "ck_physio_offers_sessions_max",
+    ): "sessions <= 52",
+    (
+        "physio_offers",
+        "ck_physio_offers_validity_max",
+    ): "validity_days <= 366",
+    (
         "routine_items",
         "ck_routine_items_sets_max",
     ): "sets <= 50",
@@ -318,6 +326,16 @@ ROUTE_BOUNDS: dict[tuple[str, str], tuple[int, int]] = {
     ("UpdatePhysioServiceRequest", "duration_minutes"): (
         1,
         physio_models.MAX_DURATION_MINUTES,
+    ),
+    ("CreatePhysioOfferRequest", "sessions"): (1, physio_models.MAX_SESSIONS),
+    ("UpdatePhysioOfferRequest", "sessions"): (1, physio_models.MAX_SESSIONS),
+    ("CreatePhysioOfferRequest", "validity_days"): (
+        1,
+        physio_models.MAX_VALIDITY_DAYS,
+    ),
+    ("UpdatePhysioOfferRequest", "validity_days"): (
+        1,
+        physio_models.MAX_VALIDITY_DAYS,
     ),
     ("CreateClassRoomRequest", "capacity"): (1, classes_models.MAX_CLASS_CAPACITY),
     ("CreateClassSessionRequest", "capacity"): (1, classes_models.MAX_CLASS_CAPACITY),

@@ -48,6 +48,8 @@ from app.modules.physio.models import (
     DEFAULT_VALIDITY_DAYS,
     MAX_ADJUSTMENT_REASON_CHARS,
     MAX_DURATION_MINUTES,
+    MAX_SESSIONS,
+    MAX_VALIDITY_DAYS,
     PhysioAppointment,
     PhysioOffer,
     PhysioPack,
@@ -62,8 +64,6 @@ from app.timezone import club_timezone, local_midnight
 
 PHYSIO_SKU = "FISIO"
 
-MAX_SESSIONS = 52
-MAX_VALIDITY_DAYS = 366
 MAX_PRICE_CENTS = 10_000_000
 
 # Sentinel so a partial update can tell "leave unchanged" (absent) apart from

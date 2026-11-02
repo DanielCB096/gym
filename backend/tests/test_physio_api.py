@@ -18,10 +18,18 @@ from sqlmodel import Session, SQLModel
 from app.main import app, get_session
 from app.modules.identity.models import Employee
 from app.modules.memberships.models import Member
-from app.modules.physio.models import MAX_DURATION_MINUTES, PhysioService
+from app.modules.physio.models import (
+    MAX_DURATION_MINUTES,
+    MAX_SESSIONS,
+    MAX_VALIDITY_DAYS,
+    PhysioOffer,
+    PhysioService,
+)
 from app.modules.physio.service import (
     InvalidPhysioData,
+    create_physio_offer,
     create_physio_service,
+    update_physio_offer,
     update_physio_service,
 )
 from app.timezone import club_date
@@ -241,6 +249,165 @@ def test_service_duration_ceiling_matches_api_service_and_database() -> None:
             session.commit()
         session.rollback()
         assert session.exec(select(func.count()).select_from(PhysioService)).one()[0] == 1
+
+
+def test_offer_bounds_match_api_service_and_database() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            service_response = _create_service(client, manager, price_cents=50000)
+            assert service_response.status_code == 201, service_response.text
+            service_id = service_response.json()["id"]
+            list_price = 50000 * MAX_SESSIONS
+
+            offer_response = _create_offer(
+                client,
+                manager,
+                service_id=service_id,
+                name="Paquete máximo",
+                sessions=MAX_SESSIONS,
+                price_cents=list_price,
+                validity_days=MAX_VALIDITY_DAYS,
+            )
+            assert offer_response.status_code == 201, offer_response.text
+            offer_id = offer_response.json()["id"]
+            assert offer_response.json()["sessions"] == MAX_SESSIONS
+            assert offer_response.json()["validity_days"] == MAX_VALIDITY_DAYS
+
+            boundary_update = client.patch(
+                f"/admin/physio/offers/{offer_id}",
+                headers=manager,
+                json={
+                    "sessions": MAX_SESSIONS,
+                    "validity_days": MAX_VALIDITY_DAYS,
+                },
+            )
+            assert boundary_update.status_code == 200, boundary_update.text
+
+            excessive_sessions = _create_offer(
+                client,
+                manager,
+                service_id=service_id,
+                name="Paquete con sesiones de más",
+                sessions=MAX_SESSIONS + 1,
+            )
+            assert excessive_sessions.status_code == 422, excessive_sessions.text
+            excessive_validity = _create_offer(
+                client,
+                manager,
+                service_id=service_id,
+                name="Paquete con vigencia de más",
+                validity_days=MAX_VALIDITY_DAYS + 1,
+            )
+            assert excessive_validity.status_code == 422, excessive_validity.text
+
+            excessive_sessions_update = client.patch(
+                f"/admin/physio/offers/{offer_id}",
+                headers=manager,
+                json={"sessions": MAX_SESSIONS + 1},
+            )
+            assert excessive_sessions_update.status_code == 422, excessive_sessions_update.text
+            excessive_validity_update = client.patch(
+                f"/admin/physio/offers/{offer_id}",
+                headers=manager,
+                json={"validity_days": MAX_VALIDITY_DAYS + 1},
+            )
+            assert excessive_validity_update.status_code == 422, excessive_validity_update.text
+    finally:
+        app.dependency_overrides.clear()
+
+    with Session(engine) as session:
+        service = session.get(PhysioService, UUID(service_id))
+        assert service is not None
+        direct_offer = create_physio_offer(
+            session,
+            service_id=service.id,
+            name="Paquete máximo directo",
+            sessions=MAX_SESSIONS,
+            price_cents=50000 * MAX_SESSIONS,
+            validity_days=MAX_VALIDITY_DAYS,
+        )
+        assert direct_offer.sessions == MAX_SESSIONS
+        assert direct_offer.validity_days == MAX_VALIDITY_DAYS
+
+        with pytest.raises(InvalidPhysioData, match=str(MAX_SESSIONS)):
+            create_physio_offer(
+                session,
+                service_id=service.id,
+                name="Servicio directo fuera de rango",
+                sessions=MAX_SESSIONS + 1,
+                price_cents=50000,
+            )
+        session.rollback()
+
+        with pytest.raises(InvalidPhysioData, match=str(MAX_VALIDITY_DAYS)):
+            create_physio_offer(
+                session,
+                service_id=service.id,
+                name="Vigencia directa fuera de rango",
+                sessions=1,
+                price_cents=50000,
+                validity_days=MAX_VALIDITY_DAYS + 1,
+            )
+        session.rollback()
+
+        offer = session.get(PhysioOffer, UUID(offer_id))
+        assert offer is not None
+        updated_offer = update_physio_offer(
+            session,
+            offer.id,
+            sessions=MAX_SESSIONS,
+            validity_days=MAX_VALIDITY_DAYS,
+        )
+        assert updated_offer.sessions == MAX_SESSIONS
+        assert updated_offer.validity_days == MAX_VALIDITY_DAYS
+
+        with pytest.raises(InvalidPhysioData, match=str(MAX_SESSIONS)):
+            update_physio_offer(session, offer.id, sessions=MAX_SESSIONS + 1)
+        session.rollback()
+
+        with pytest.raises(InvalidPhysioData, match=str(MAX_VALIDITY_DAYS)):
+            update_physio_offer(
+                session, offer.id, validity_days=MAX_VALIDITY_DAYS + 1
+            )
+        session.rollback()
+
+        session.add(
+            PhysioOffer(
+                service_id=service.id,
+                name="ORM con sesiones excesivas",
+                sessions=MAX_SESSIONS + 1,
+                price_cents=50000,
+                list_price_cents=50000 * (MAX_SESSIONS + 1),
+                validity_days=1,
+            )
+        )
+        with pytest.raises(IntegrityError, match="ck_physio_offers_sessions_max"):
+            session.commit()
+        session.rollback()
+
+        session.add(
+            PhysioOffer(
+                service_id=service.id,
+                name="ORM con vigencia excesiva",
+                sessions=1,
+                price_cents=50000,
+                list_price_cents=50000,
+                validity_days=MAX_VALIDITY_DAYS + 1,
+            )
+        )
+        with pytest.raises(IntegrityError, match="ck_physio_offers_validity_max"):
+            session.commit()
+        session.rollback()
+        assert (
+            session.exec(select(func.count()).select_from(PhysioOffer)).one()[0] == 2
+        )
 
 
 def test_catalog_permissions_and_discount_snapshot() -> None:
