@@ -1,10 +1,17 @@
 # Changelog
 
+## Preparación de staging local
+
+- Se prepara un Compose local con PostgreSQL 16, Redis, backend, panel, kiosco, Mailpit y app móvil web opcional; todos los puertos publicados quedan limitados a `127.0.0.1`.
+- Se agregan imágenes reproducibles para el panel y la app, generación local de secretos ignorados por Git y creación interactiva de la cuenta dueña.
+- El script de arranque comprueba Docker Linux y memoria disponible, y espera respuestas HTTP antes de anunciar que el staging está listo. No se ha construido ni levantado el stack.
+- Producción queda por decidir; este staging usa exclusivamente datos sintéticos, Mailpit y proveedores simulados, y no debe exponerse en red.
+
 ## 2026-11-02 · Alcance de la primera entrega
 
 - ADR-086 registra el alcance acordado: renovaciones automáticas pendientes de implementación, kiosco con código numérico, sin terminal física, despliegue a todos los socios tras aceptación y exclusión fiscal.
 - Se fijaron objetivos de recuperación de RPO 15 minutos y RTO 4 horas; falta demostrar que la infraestructura elegida los cumple.
-- Se eligió VPS y se asignaron los roles de negocio, operación técnica y autorización de recuperación al dueño. Faltan proveedor, región/plan, presupuesto y dominio antes de provisionar staging.
+- Se acordó preparar staging en una PC local y decidir la topología de producción después. El dueño asume los roles de negocio, operación técnica y autorización de recuperación.
 
 ## 2026-11-02 · Progreso: acotar medidas corporales en tres capas
 

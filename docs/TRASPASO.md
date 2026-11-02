@@ -9,11 +9,16 @@ Esta nota es el punto de entrada para otra persona o IA. El estado detallado viv
 El alcance de producto quedó acordado: renovaciones automáticas (todavía no
 implementadas), acceso por código numérico en el kiosco, sin terminal ni
 torniquete, sin facturación fiscal, y apertura a todos los socios tras
-aceptación interna en staging. Se eligió VPS; el dueño asume los roles de
-negocio, operación técnica y autorización de recuperaciones. Antes de provisionar
-staging faltan proveedor, región/plan, presupuesto y dominio. Los objetivos de
-recuperación son RPO de 15 minutos y RTO de 4 horas, aún no demostrados. El plan
-y los criterios están en [primera-entrega.md](06-operacion/primera-entrega.md).
+aceptación interna en staging. Se prepara staging en una PC local, limitado a
+`localhost`, con datos sintéticos; la topología de producción sigue pendiente.
+El dueño asume los roles de negocio, operación técnica y autorización de
+recuperaciones. Los objetivos de recuperación son RPO de 15 minutos y RTO de
+4 horas, aún no demostrados. El plan y los criterios están en
+[primera-entrega.md](06-operacion/primera-entrega.md).
+
+La configuración Docker local está preparada, pero todavía no se ha construido
+ni iniciado. El script de arranque verifica el espacio de memoria, configura
+los servicios y espera sus endpoints antes de informar que están listos.
 
 ## Pagos de membresía (ADR-066)
 

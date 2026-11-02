@@ -35,8 +35,14 @@ capacidades ya implementadas.
 - Los objetivos de recuperación son RPO máximo de 15 minutos y RTO máximo de 4
   horas. Son objetivos por demostrar, no una afirmación sobre la infraestructura
   actual.
-- Se eligió VPS. El proveedor, región/plan, presupuesto y dominio quedan por
-  seleccionar antes de provisionar staging.
+- El staging se prepara primero en una computadora local con Windows 11,
+  Docker Desktop Linux y 8 GB de RAM; los servicios quedan publicados solo en
+  `localhost`, con PostgreSQL, datos sintéticos, pagos simulados y correo
+  capturado por Mailpit. El staging puede apagarse cuando no se usa.
+- La topología de producción (local o VPS) queda pendiente de una evaluación
+  posterior. El usuario acepta que el gimnasio cierre cuando la computadora se
+  apague; esto no se interpreta como una decisión de disponibilidad para
+  producción.
 - El dueño asume los roles de aprobación de negocio, operación técnica y
   autorización de recuperaciones.
 
@@ -54,8 +60,12 @@ capacidades ya implementadas.
 - El RPO de 15 minutos requiere una estrategia distinta de un respaldo diario
   aislado, como recuperación a un punto en el tiempo, y una restauración
   verificable.
-- La selección del proveedor, región/plan y dominio bloquea la configuración
-  de staging y la concreción del respaldo.
+- El equipo local tiene 8 GB de RAM y no está dedicado ni encendido 24/7; por
+  eso el staging limita los servicios a localhost y exige memoria libre antes
+  de construirlo. Estos datos no bastan para declarar apta la computadora para
+  producción.
+- La topología, disponibilidad, acceso remoto, respaldo externo y recuperación
+  de producción deben decidirse y probarse antes de aceptar datos reales.
 
 ## Referencias
 

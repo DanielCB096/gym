@@ -1,0 +1,116 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: gym_staging
+      POSTGRES_USER: gym_staging
+      POSTGRES_PASSWORD: ${STAGING_DB_PASSWORD:?Ejecuta demo/prepare-local-staging.ps1 primero}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gym_staging -d gym_staging"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - gym_staging_db:/var/lib/postgresql/data
+    mem_limit: 768m
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 192m
+
+  mailpit:
+    image: axllent/mailpit:v1.27.8
+    ports:
+      - "127.0.0.1:8025:8025"
+    mem_limit: 192m
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      APP_ENV: staging
+      APP_TIMEZONE: America/Mexico_City
+      DATABASE_URL: postgresql+psycopg://gym_staging:${STAGING_DB_PASSWORD}@db:5432/gym_staging
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${STAGING_SECRET_KEY:?Ejecuta demo/prepare-local-staging.ps1 primero}
+      PREVIEW_MODE: "false"
+      PAYMENT_PROVIDER: conekta
+      CONEKTA_MODE: sandbox
+      CONEKTA_SANDBOX_API_KEY: ""
+      PAC_PROVIDER: simulated
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_FROM: staging@centrofit.local
+      SMTP_USE_TLS: "false"
+      SMTP_USE_SSL: "false"
+      CORS_ORIGINS: http://localhost:3001,http://127.0.0.1:3001,http://localhost:8090,http://127.0.0.1:8090,http://localhost:8081,http://127.0.0.1:8081
+      WEB_ORIGIN: http://localhost:3001
+      PROGRESS_PHOTOS_DIR: /app/uploads/progress_photos
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8010:8000"
+    volumes:
+      - gym_staging_uploads:/app/uploads
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 20
+      start_period: 90s
+    mem_limit: 768m
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    environment:
+      GYM_API_URL: http://api:8000
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3001:3000"
+    mem_limit: 1024m
+
+  kiosk:
+    image: nginx:alpine
+    volumes:
+      - ./kiosk:/usr/share/nginx/html:ro
+    ports:
+      - "127.0.0.1:8090:80"
+    mem_limit: 128m
+
+  member-app:
+    profiles:
+      - member-app
+    build:
+      context: .
+      dockerfile: mobile/Dockerfile
+      args:
+        EXPO_PUBLIC_API_URL: http://localhost:8010
+    ports:
+      - "127.0.0.1:8081:80"
+    mem_limit: 256m
+
+volumes:
+  gym_staging_db:
+  gym_staging_uploads:
