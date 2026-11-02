@@ -46,6 +46,7 @@ logs/
 .scratch/
 .tmp/
 .a11y-history/
+pytest-of-*/
 
 # Backups and exports
 backups/
