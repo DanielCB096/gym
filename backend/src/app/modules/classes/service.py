@@ -33,6 +33,8 @@ from app.modules.classes.models import (
     ACCESS_TYPES,
     ACTIVE_RESERVATION_STATUSES,
     DEFAULT_CANCEL_WINDOW_HOURS,
+    MAX_CANCEL_WINDOW_HOURS,
+    MAX_CLASS_CAPACITY,
     RESERVATION_ORIGINS,
     SEATED_RESERVATION_STATUSES,
     SESSION_STATUSES,
@@ -324,6 +326,8 @@ def create_class_room(
         raise InvalidClassData("El nombre del salón es obligatorio")
     if capacity <= 0:
         raise InvalidClassData("La capacidad del salón debe ser mayor que cero")
+    if capacity > MAX_CLASS_CAPACITY:
+        raise InvalidClassData(f"La capacidad del salón no puede superar {MAX_CLASS_CAPACITY}")
     existing = session.exec(select(ClassRoom).where(func.lower(ClassRoom.name) == clean.lower())).first()
     if existing is not None:
         raise DuplicateClassRoom("Ya existe un salón con ese nombre")
@@ -574,12 +578,18 @@ def create_class_session(
     _assert_time_window(starts_at, ends_at)
     if capacity <= 0:
         raise InvalidClassData("La capacidad de la clase debe ser mayor que cero")
+    if capacity > MAX_CLASS_CAPACITY:
+        raise InvalidClassData(f"La capacidad de la clase no puede superar {MAX_CLASS_CAPACITY}")
     if access_type not in ACCESS_TYPES:
         raise InvalidClassData("El tipo de acceso debe ser 'included' o 'premium'")
     if extra_price_cents < 0:
         raise InvalidClassData("El precio extra no puede ser negativo")
     if cancel_window_hours < 0:
         raise InvalidClassData("La ventana de cancelación no puede ser negativa")
+    if cancel_window_hours > MAX_CANCEL_WINDOW_HOURS:
+        raise InvalidClassData(
+            f"La ventana de cancelación no puede superar {MAX_CANCEL_WINDOW_HOURS} horas"
+        )
     if session.get(ClassType, class_type_id) is None:
         raise ClassTypeNotFound("El tipo de clase no existe")
     if room_id is not None and session.get(ClassRoom, room_id) is None:
@@ -652,6 +662,10 @@ def update_class_session(
     if capacity is not None:
         if capacity <= 0:
             raise InvalidClassData("La capacidad de la clase debe ser mayor que cero")
+        if capacity > MAX_CLASS_CAPACITY:
+            raise InvalidClassData(
+                f"La capacidad de la clase no puede superar {MAX_CLASS_CAPACITY}"
+            )
         if capacity < _count_seated(session, session_id):
             raise InvalidClassData("La capacidad no puede ser menor que las reservas confirmadas")
         item.capacity = capacity
@@ -668,6 +682,10 @@ def update_class_session(
     if cancel_window_hours is not None:
         if cancel_window_hours < 0:
             raise InvalidClassData("La ventana de cancelación no puede ser negativa")
+        if cancel_window_hours > MAX_CANCEL_WINDOW_HOURS:
+            raise InvalidClassData(
+                f"La ventana de cancelación no puede superar {MAX_CANCEL_WINDOW_HOURS} horas"
+            )
         item.cancel_window_hours = cancel_window_hours
     if room_id is not UNSET:
         if room_id is not None and session.get(ClassRoom, room_id) is None:

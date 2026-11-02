@@ -88,7 +88,7 @@ TICKET_MANTENIMIENTO ||--o{ HISTORIAL_MANTENIMIENTO : documenta
 - `scheduled_report_configurations` marca si la configuración se guardó desde el panel; mientras no exista, el envío usa `INCOME_REPORT_RECIPIENTS`. `scheduled_report_recipients` conserva las direcciones actuales y los seis interruptores de selección por reporte. `scheduled_report_configuration_events` es una bitácora append-only: registra actor, hora y snapshots con hash de correo y reportes activos, nunca las direcciones en texto claro (ADR-084, migración `20261101_0081`).
 
 ### Operación, personal y mantenimiento
-- `Clase`, `ReservaClase`, `ListaEsperaClase` y `AsistenciaClase` registran agenda, cupo y participación.
+- `Clase`, `ReservaClase`, `ListaEsperaClase` y `AsistenciaClase` registran agenda, cupo y participación. Desde `20261101_0082_class_capacity_bounds.py` (ADR-085) el cupo y la ventana de cancelación tienen también **techo en la base**: `ck_class_rooms_capacity_max` y `ck_class_sessions_capacity_max` (`capacity <= 500`) y `ck_class_sessions_window_max` (`cancel_window_hours <= 168`), aditivas a las restricciones de suelo que ya existían. Los dos números viven una sola vez en `app.modules.classes.models` (`MAX_CLASS_CAPACITY`, `MAX_CANCEL_WINDOW_HOURS`) y de ahí leen la petición, el servicio y el `CHECK`; el valor por defecto de la ventana sale de la misma constante.
 - `Rutina` mantiene su relación con socio y entrenador.
 - `Empleado`, `Usuario`, `Rol`, `Permiso`, `AsistenciaEmpleado`, `Nomina` y entidades relacionadas soportan personal, autorización y nómina.
 - `Equipo`, `TicketMantenimiento` e `HistorialMantenimiento` registran disponibilidad, atención y costos técnicos.

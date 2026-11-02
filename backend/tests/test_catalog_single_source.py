@@ -17,6 +17,13 @@ más o de menos en cada vocabulario siga siendo el documentado, que las etiqueta
 y las ramas que consumen esa lista la cubran exactamente, y que la lista que
 ofrece el panel —el ``Literal`` de la petición, visible en el contrato
 OpenAPI— sea esa misma tupla y no una copia más.
+
+Junto a las listas están las dos cotas numéricas de las clases: la capacidad y
+las horas de ventana de cancelación estaban escritas tres veces como ``le=`` en
+los modelos de petición y ninguna vez en la base, que solo acotaba por debajo.
+Salen ahora del mismo ``MAX_CLASS_CAPACITY`` y ``MAX_CANCEL_WINDOW_HOURS`` del
+modelo, el ``CHECK`` que renderizan es el que aplicó ``20261101_0082`` y el
+contrato OpenAPI es la prueba de que el panel ofrece esa misma cota.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from sqlalchemy import CheckConstraint
 from sqlmodel import SQLModel
 
 from app.main import app
+from app.modules.classes import models as classes_models
 from app.modules.finance import models as finance_models
 from app.modules.finance import service as finance_service
 from app.modules.inventory import models as inventory_models
@@ -45,9 +53,21 @@ from app.modules.reports.service import build_report
 # El SQL exacto que dejaron las migraciones: `20261017_0012` (equipo),
 # `20261019_0017` (ventas y devoluciones, que reemplazaron la versión de
 # `20261017_0008` y `20261018_0015`), `20261015_0001` (intentos de pago),
-# `20261025_0027` (conciliación bancaria) y `20261101_0079`/`20261101_0080`
-# (reportes programados).
+# `20261025_0027` (conciliación bancaria), `20261101_0079`/`20261101_0080`
+# (reportes programados) y `20261101_0082` (topes de clase).
 APPLIED_CHECKS: dict[tuple[str, str], str] = {
+    (
+        "class_rooms",
+        "ck_class_rooms_capacity_max",
+    ): "capacity <= 500",
+    (
+        "class_sessions",
+        "ck_class_sessions_capacity_max",
+    ): "capacity <= 500",
+    (
+        "class_sessions",
+        "ck_class_sessions_window_max",
+    ): "cancel_window_hours <= 168",
     (
         "equipment",
         "ck_equipment_status",
@@ -223,3 +243,42 @@ def test_the_panel_offers_exactly_the_schedulable_reports() -> None:
         "el tope del arreglo se escribió a mano y ya no coincide con la tupla: "
         "el operador no puede marcar todos los reportes a la vez."
     )
+
+
+# Las cotas de clase son el mismo problema con números en lugar de palabras:
+# `le=500` estaba escrito tres veces —sala, sesión nueva y sesión editada—,
+# `le=168` dos, y la base solo acotaba por debajo, así que un llamador que no
+# pasara por la petición no tenía techo. El tope vive ahora en el modelo, el
+# `CHECK` lo renderiza (y `APPLIED_CHECKS` exige su migración) y la petición lo
+# importa; comparar las dos puntas del contrato es lo que prueba que el panel
+# sigue ofreciendo el número del modelo y no una copia.
+ROUTE_BOUNDS: dict[tuple[str, str], tuple[int, int]] = {
+    ("CreateClassRoomRequest", "capacity"): (1, classes_models.MAX_CLASS_CAPACITY),
+    ("CreateClassSessionRequest", "capacity"): (1, classes_models.MAX_CLASS_CAPACITY),
+    ("UpdateClassSessionRequest", "capacity"): (1, classes_models.MAX_CLASS_CAPACITY),
+    ("CreateClassSessionRequest", "cancel_window_hours"): (
+        0,
+        classes_models.MAX_CANCEL_WINDOW_HOURS,
+    ),
+    ("UpdateClassSessionRequest", "cancel_window_hours"): (
+        0,
+        classes_models.MAX_CANCEL_WINDOW_HOURS,
+    ),
+}
+
+
+def _bounds(schema: dict) -> tuple[int | None, int | None]:
+    for candidate in [schema, *schema.get("anyOf", [])]:
+        if "minimum" in candidate or "maximum" in candidate:
+            return candidate.get("minimum"), candidate.get("maximum")
+    raise AssertionError("la propiedad no declara ninguna cota numérica")
+
+
+def test_the_panel_payload_bounds_are_the_model_ceilings() -> None:
+    components = app.openapi()["components"]["schemas"]
+    for (model, prop), expected in ROUTE_BOUNDS.items():
+        offered = _bounds(components[model]["properties"][prop])
+        assert offered == expected, (
+            f"{model}.{prop} declara {offered} y el modelo del dominio acota en {expected}: "
+            "el panel y la base ya no rechazan lo mismo."
+        )

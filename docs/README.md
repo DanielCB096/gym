@@ -143,6 +143,7 @@ Disponibles:
 - [ADR-082-reporte-de-ingresos-programado.md](05-decisiones/ADR-082-reporte-de-ingresos-programado.md)
 - [ADR-083-envio-programado-de-reportes-financieros.md](05-decisiones/ADR-083-envio-programado-de-reportes-financieros.md)
 - [ADR-084-configuracion-de-destinatarios-de-reportes.md](05-decisiones/ADR-084-configuracion-de-destinatarios-de-reportes.md)
+- [ADR-085-cotas-de-clase-en-tres-capas.md](05-decisiones/ADR-085-cotas-de-clase-en-tres-capas.md)
 
 ### 06-operacion
 - despliegue.md

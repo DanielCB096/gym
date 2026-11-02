@@ -42,6 +42,13 @@ SEATED_RESERVATION_STATUSES = ("reserved", "attended")
 
 DEFAULT_CANCEL_WINDOW_HOURS = 4
 
+# These ceilings lived only in the request models, written five times there (three
+# capacities and two windows) and nowhere in the schema, so a seed or a script that
+# skipped the request had no cap. They live here so the CHECK, the service and the
+# ``le=`` read one number.
+MAX_CLASS_CAPACITY = 500
+MAX_CANCEL_WINDOW_HOURS = 24 * 7
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -72,6 +79,9 @@ class ClassRoom(SQLModel, table=True):
     __tablename__ = "class_rooms"
     __table_args__ = (
         CheckConstraint("capacity > 0", name="ck_class_rooms_capacity_positive"),
+        CheckConstraint(
+            f"capacity <= {MAX_CLASS_CAPACITY}", name="ck_class_rooms_capacity_max"
+        ),
         Index("uq_class_rooms_name_lower", text("lower(name)"), unique=True),
     )
 
@@ -95,10 +105,15 @@ class ClassSession(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint("ends_at > starts_at", name="ck_class_sessions_time_order"),
         CheckConstraint("capacity > 0", name="ck_class_sessions_capacity_positive"),
+        CheckConstraint(f"capacity <= {MAX_CLASS_CAPACITY}", name="ck_class_sessions_capacity_max"),
         CheckConstraint("status IN ('scheduled', 'cancelled')", name="ck_class_sessions_status"),
         CheckConstraint("access_type IN ('included', 'premium')", name="ck_class_sessions_access_type"),
         CheckConstraint("extra_price_cents >= 0", name="ck_class_sessions_price_nonnegative"),
         CheckConstraint("cancel_window_hours >= 0", name="ck_class_sessions_window_nonnegative"),
+        CheckConstraint(
+            f"cancel_window_hours <= {MAX_CANCEL_WINDOW_HOURS}",
+            name="ck_class_sessions_window_max",
+        ),
         Index("ix_class_sessions_start", "starts_at"),
         Index("ix_class_sessions_status_start", "status", "starts_at"),
         Index("ix_class_sessions_room_start", "room_id", "starts_at"),
@@ -139,7 +154,11 @@ class ClassSession(SQLModel, table=True):
     )
     cancel_window_hours: int = Field(
         default=DEFAULT_CANCEL_WINDOW_HOURS,
-        sa_column=Column(Integer, nullable=False, server_default=text("4")),
+        sa_column=Column(
+            Integer,
+            nullable=False,
+            server_default=text(str(DEFAULT_CANCEL_WINDOW_HOURS)),
+        ),
     )
     notes: str | None = Field(default=None, sa_column=Column(Text))
     cancelled_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))

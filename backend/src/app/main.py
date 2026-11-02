@@ -103,6 +103,11 @@ from app.modules.classes import (
     reserve_seat,
     update_class_session,
 )
+from app.modules.classes.models import (
+    DEFAULT_CANCEL_WINDOW_HOURS,
+    MAX_CANCEL_WINDOW_HOURS,
+    MAX_CLASS_CAPACITY,
+)
 from app.modules.physio import (
     UNSET as PHYSIO_UNSET,
     DuplicatePhysioCode,
@@ -1632,7 +1637,7 @@ class ClassRoomResponse(BaseModel):
 
 class CreateClassRoomRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    capacity: int = Field(ge=1, le=500)
+    capacity: int = Field(ge=1, le=MAX_CLASS_CAPACITY)
 
 
 class InstructorResponse(BaseModel):
@@ -1690,13 +1695,15 @@ class CreateClassSessionRequest(BaseModel):
     class_type_id: UUID
     starts_at: datetime
     ends_at: datetime
-    capacity: int = Field(ge=1, le=500)
+    capacity: int = Field(ge=1, le=MAX_CLASS_CAPACITY)
     room_id: UUID | None = None
     instructor_id: UUID | None = None
     access_type: Literal["included", "premium"] = "included"
     extra_price_cents: int = Field(default=0, ge=0)
     waitlist_enabled: bool = True
-    cancel_window_hours: int = Field(default=4, ge=0, le=168)
+    cancel_window_hours: int = Field(
+        default=DEFAULT_CANCEL_WINDOW_HOURS, ge=0, le=MAX_CANCEL_WINDOW_HOURS
+    )
     notes: str | None = Field(default=None, max_length=500)
 
 
@@ -1704,13 +1711,15 @@ class UpdateClassSessionRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=160)
     starts_at: datetime | None = None
     ends_at: datetime | None = None
-    capacity: int | None = Field(default=None, ge=1, le=500)
+    capacity: int | None = Field(default=None, ge=1, le=MAX_CLASS_CAPACITY)
     room_id: UUID | None = None
     instructor_id: UUID | None = None
     access_type: Literal["included", "premium"] | None = None
     extra_price_cents: int | None = Field(default=None, ge=0)
     waitlist_enabled: bool | None = None
-    cancel_window_hours: int | None = Field(default=None, ge=0, le=168)
+    cancel_window_hours: int | None = Field(
+        default=None, ge=0, le=MAX_CANCEL_WINDOW_HOURS
+    )
     notes: str | None = Field(default=None, max_length=500)
 
 
