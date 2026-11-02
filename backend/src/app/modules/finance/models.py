@@ -34,9 +34,17 @@ from sqlalchemy import (
 )
 from sqlmodel import Field, SQLModel
 
+from app.constraints import sql_in_list
+
 BANK_ACCOUNT_STATUSES = ("active", "inactive")
 
 BANK_MOVEMENT_STATUSES = ("pending", "reconciled", "difference", "reviewing")
+
+# `reconciled` is written by the match itself. From the tray the operator can
+# only put a line back to pending, record a difference, or flag it for review.
+FLAGGABLE_BANK_MOVEMENT_STATUSES = tuple(
+    status for status in BANK_MOVEMENT_STATUSES if status != "reconciled"
+)
 
 # Internal rows that can satisfy a bank line. Cash never appears in the bank,
 # so only the electronic tenders (card, transfer, SPEI) are candidates.
@@ -66,7 +74,8 @@ class BankAccount(SQLModel, table=True):
     __tablename__ = "bank_accounts"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('active', 'inactive')", name="ck_bank_accounts_status"
+            f"status IN {sql_in_list(BANK_ACCOUNT_STATUSES)}",
+            name="ck_bank_accounts_status",
         ),
         Index("uq_bank_accounts_name_lower", text("lower(name)"), unique=True),
     )
@@ -118,7 +127,7 @@ class BankMovement(SQLModel, table=True):
     __tablename__ = "bank_movements"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'reconciled', 'difference', 'reviewing')",
+            f"status IN {sql_in_list(BANK_MOVEMENT_STATUSES)}",
             name="ck_bank_movements_status",
         ),
         CheckConstraint("amount_cents <> 0", name="ck_bank_movements_amount_nonzero"),
@@ -224,7 +233,7 @@ class BankMovementEvent(SQLModel, table=True):
     __tablename__ = "bank_movement_events"
     __table_args__ = (
         CheckConstraint(
-            "event_type IN ('imported', 'matched', 'unmatched', 'flagged', 'reopened')",
+            f"event_type IN {sql_in_list(BANK_MOVEMENT_EVENT_TYPES)}",
             name="ck_bank_movement_events_type",
         ),
         Index("ix_bank_movement_events_movement_time", "movement_id", "occurred_at"),
@@ -259,6 +268,7 @@ __all__ = [
     "BANK_MOVEMENT_EVENT_TYPES",
     "BANK_MOVEMENT_SOURCES",
     "BANK_MOVEMENT_STATUSES",
+    "FLAGGABLE_BANK_MOVEMENT_STATUSES",
     "BankAccount",
     "BankMovement",
     "BankMovementEvent",

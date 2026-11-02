@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-01 · Conciliación: los estados bancarios, una sola tupla
+
+- El vocabulario de la conciliación estaba escrito en cinco sitios a la vez: las tres tuplas de `finance/models.py`, sus tres `CHECK` copiados a mano en el mismo archivo, la guarda de `flag_bank_movement` con su terna escrita aparte, y el `Literal` del panel. Ahora los `CHECK` de `bank_accounts.status`, `bank_movements.status` y `bank_movement_events.event_type` se renderizan con `sql_in_list` desde la tupla del modelo, igual que los cinco catálogos del corte anterior.
+- `FLAGGABLE_BANK_MOVEMENT_STATUSES` sale de una comprensión sobre `BANK_MOVEMENT_STATUSES` y documenta por qué: `reconciled` lo escribe el propio emparejamiento, así que desde la bandeja el operador puede devolver la línea a `pending`, anotarle una diferencia o marcarla para revisión, pero no declararla conciliada. El servicio valida contra esa tupla derivada.
+- `tests/test_catalog_single_source.py` pasa de 8 a **12 pruebas**: fija el SQL de los tres `CHECK` **byte a byte** contra el texto que dejó la migración `20261025_0027`, exige que la lista del servicio sea la misma tupla del modelo, que las claves de `STATUS_LABELS` cubran exactamente los cuatro estados del movimiento, y que los enum de `BankMovementFlagRequest.status` y `BankMovementMatchRequest.source` del contrato OpenAPI sean esa misma lista —sin tocar `main.py`—.
+- Sin cambios hacia afuera: firmas, rutas y payloads del panel quedan iguales. Cambiar una tupla cambia el `CHECK` y exige su migración; la custodia lo recuerda fallando.
+- Validación: suite backend **669 pruebas: 661 aprobadas y 8 omitidas**, sin `TEST_POSTGRES_URL`. Ocho mutaciones producen ocho fallos y el control sin mutaciones pasó; los archivos mutados volvieron a su contenido byte a byte.
+
 ## 2026-11-01 · Conciliación: las fronteras de nota, recorridas
 
 - `match_bank_movement`, `unmatch_bank_movement` y `flag_bank_movement` (`backend/src/app/modules/finance/service.py`) medían tres veces el mismo límite de 300 caracteres y exigían el motivo donde hace falta; ninguna prueba los recorría. El panel corta antes con su `max_length`, pero el servicio mide **después de recortar** —tres espacios pasan el `min_length` del panel y solo los detiene el servicio— y es la única guarda que ve un llamador que no sea el panel.

@@ -1,19 +1,20 @@
 """Custodia de los catálogos que comparten modelo, servicio y base de datos.
 
-Tres vocabularios estaban escritos a la vez en dos o tres sitios: las formas de
-pago del mostrador, los métodos con que se recibe un pago de cuenta y los
-estados del equipo. Cada copia es un modo de que la validación del servicio y el
-``CHECK`` de la base discrepen —el servicio acepta un valor que el esquema
-rechaza, o al revés— sin que ninguna prueba lo note hasta que alguien lo usa.
+Cada vocabulario que estaba escrito a la vez en dos o tres sitios —las formas de
+pago del mostrador, los métodos con que se recibe un pago de cuenta, los estados
+del equipo, los estados de una línea de estado de cuenta y los tipos de su
+bitácora— es un modo de que la validación del servicio y el ``CHECK`` de la base
+discrepen —el servicio acepta un valor que el esquema rechaza, o al revés— sin
+que ninguna prueba lo note hasta que alguien lo usa.
 
 Hoy el ``CHECK`` se renderiza desde la misma tupla que valida el servicio
 (``app.constraints.sql_in_list``), así que la lista vive una sola vez. Esta
 custodia fija tres cosas: que el SQL que produce el modelo siga siendo
 **byte a byte** el que ya está aplicado en la base —cambiar una tupla cambia el
 ``CHECK`` y exige una migración, no puede hacerse de pasada—, que el valor de
-más en cada vocabulario siga siendo el documentado, y que la lista que ofrece el
-panel —el ``Literal`` de la petición, visible en el contrato OpenAPI— sea esa
-misma tupla y no una cuarta copia.
+más o de menos en cada vocabulario siga siendo el documentado, y que la lista
+que ofrece el panel —el ``Literal`` de la petición, visible en el contrato
+OpenAPI— sea esa misma tupla y no una cuarta copia.
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ from sqlalchemy import CheckConstraint
 from sqlmodel import SQLModel
 
 from app.main import app
+from app.modules.finance import models as finance_models
+from app.modules.finance import service as finance_service
 from app.modules.inventory import models as inventory_models
 from app.modules.inventory import service as inventory_service
 from app.modules.maintenance import models as maintenance_models
@@ -32,7 +35,8 @@ from app.modules.memberships import service as membership_service
 
 # El SQL exacto que dejaron las migraciones: `20261017_0012` (equipo),
 # `20261019_0017` (ventas y devoluciones, que reemplazaron la versión de
-# `20261017_0008` y `20261018_0015`) y `20261015_0001` (intentos de pago).
+# `20261017_0008` y `20261018_0015`), `20261015_0001` (intentos de pago) y
+# `20261025_0027` (conciliación bancaria).
 APPLIED_CHECKS: dict[tuple[str, str], str] = {
     (
         "equipment",
@@ -54,6 +58,18 @@ APPLIED_CHECKS: dict[tuple[str, str], str] = {
         "payment_attempts",
         "ck_payment_attempts_method",
     ): "method IN ('card', 'spei', 'cash', 'transfer')",
+    (
+        "bank_accounts",
+        "ck_bank_accounts_status",
+    ): "status IN ('active', 'inactive')",
+    (
+        "bank_movements",
+        "ck_bank_movements_status",
+    ): "status IN ('pending', 'reconciled', 'difference', 'reviewing')",
+    (
+        "bank_movement_events",
+        "ck_bank_movement_events_type",
+    ): "event_type IN ('imported', 'matched', 'unmatched', 'flagged', 'reopened')",
 }
 
 
@@ -85,6 +101,15 @@ def test_the_service_uses_the_models_tuple_not_a_copy() -> None:
         membership_service.MANUAL_MEMBERSHIP_PAYMENT_METHODS
         == tuple(method for method in membership_models.PAYMENT_ATTEMPT_METHODS if method != "spei")
     )
+    assert (
+        finance_service.FLAGGABLE_BANK_MOVEMENT_STATUSES
+        is finance_models.FLAGGABLE_BANK_MOVEMENT_STATUSES
+    )
+
+
+def test_the_bank_labels_cover_exactly_the_movement_statuses() -> None:
+    """La bandeja traduce cada estado con `STATUS_LABELS`; una clave de más o de menos se ve aquí."""
+    assert tuple(finance_service.STATUS_LABELS) == finance_models.BANK_MOVEMENT_STATUSES
 
 
 def test_each_vocabulary_gains_only_the_documented_value() -> None:
@@ -99,6 +124,11 @@ def test_each_vocabulary_gains_only_the_documented_value() -> None:
         - set(membership_service.MANUAL_MEMBERSHIP_PAYMENT_METHODS)
         == {"spei"}
     )
+    assert (
+        set(finance_models.BANK_MOVEMENT_STATUSES)
+        - set(finance_models.FLAGGABLE_BANK_MOVEMENT_STATUSES)
+        == {"reconciled"}
+    )
 
 
 # La última copia del vocabulario vive en `main.py`, en los `Literal` de los
@@ -111,6 +141,8 @@ ROUTE_ENUMS: dict[tuple[str, str], set[str]] = {
     ("CreateSaleRequest", "payment_method"): set(inventory_models.SALE_PAYMENT_METHODS),
     ("CreateSaleReturnRequest", "refund_method"): set(inventory_models.SALE_PAYMENT_METHODS),
     ("CreateMemberAccountPaymentRequest", "method"): set(inventory_models.PAYMENT_METHODS),
+    ("BankMovementFlagRequest", "status"): set(finance_models.FLAGGABLE_BANK_MOVEMENT_STATUSES),
+    ("BankMovementMatchRequest", "source"): set(finance_models.BANK_MOVEMENT_SOURCES),
 }
 
 

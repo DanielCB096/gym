@@ -32,6 +32,7 @@ from app.modules.billing.models import Invoice, InvoicePayment
 from app.modules.finance.models import (
     BANK_MOVEMENT_SOURCES,
     BANK_MOVEMENT_STATUSES,
+    FLAGGABLE_BANK_MOVEMENT_STATUSES,
     BankAccount,
     BankMovement,
     BankMovementEvent,
@@ -1213,7 +1214,7 @@ def flag_bank_movement(
     note: str | None = None,
     actor_id: UUID | None = None,
 ) -> dict[str, object]:
-    if status not in ("pending", "difference", "reviewing"):
+    if status not in FLAGGABLE_BANK_MOVEMENT_STATUSES:
         raise InvalidMatch("El estado solicitado no es válido.")
     movement = session.exec(
         select(BankMovement).where(BankMovement.id == movement_id).with_for_update()
