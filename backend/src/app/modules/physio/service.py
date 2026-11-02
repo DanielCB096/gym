@@ -47,6 +47,7 @@ from app.modules.physio.models import (
     ATTENDANCE_GRACE_HOURS,
     DEFAULT_VALIDITY_DAYS,
     MAX_ADJUSTMENT_REASON_CHARS,
+    MAX_DURATION_MINUTES,
     PhysioAppointment,
     PhysioOffer,
     PhysioPack,
@@ -61,7 +62,6 @@ from app.timezone import club_timezone, local_midnight
 
 PHYSIO_SKU = "FISIO"
 
-MAX_DURATION_MINUTES = 480
 MAX_SESSIONS = 52
 MAX_VALIDITY_DAYS = 366
 MAX_PRICE_CENTS = 10_000_000

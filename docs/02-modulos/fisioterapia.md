@@ -231,6 +231,8 @@ Los cinco salen del reporte del consultorio:
 
 **Cierre programado implementado el 2026-10-31 (ADR-073).** `backend/close_physio_day.py` llama al mismo `close_physio_day` del botón «Cerrar día» desde el cron: cierra por defecto el día anterior en la zona del club, acepta `--date AAAA-MM-DD` para ponerse al día y no mueve dinero ni saldo. `ops_cron.py` lo programa como quinta entrada a las `00:30` (`--physio-close-at`) con la bitácora `physio-close.log`. Solo pasa a `no_show` lo que sigue `scheduled` y ya terminó; la corrección a `attended` sigue disponible dentro de la ventana de 24 horas. Sin migración ni cambio de contrato.
 
+**Cota de duración implementada el 2026-11-02.** `MAX_DURATION_MINUTES = 480` se define en `physio/models.py` y se comparte entre los modelos de petición, las guardas de creación y actualización del servicio y el `CHECK` `ck_physio_services_duration_max` de `20261102_0083`. La duración máxima no cambió; ahora también aplica a escrituras que eviten la API. Antes de aplicar la migración en una base con datos, comprobar que no haya servicios con duración mayor a 480.
+
 Lo que sigue sin cubrirse: la devolución del paquete y la reserva desde la app siguen fuera de alcance; el consultorio no declara capacidad ni horario propio, la concurrencia de la sala se comprueba con `tests/test_physio_rooms_postgres.py` y la del fisioterapeuta con `tests/test_physio_therapist_postgres.py`, el cierre programado depende del cron del host y no avisa si se detiene, y el reporte sigue estimando la ocupación por fisioterapeuta, no por sala.
 
 ### Incrementos previstos

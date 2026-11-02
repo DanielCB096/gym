@@ -369,7 +369,9 @@ export function NotificationsScreen({
 
       {notice ? (
         <View style={styles.noticeBanner}>
-          <Text style={styles.noticeText}>{notice}</Text>
+          <Text accessibilityLiveRegion="polite" style={styles.noticeText}>
+            {notice}
+          </Text>
         </View>
       ) : null}
 

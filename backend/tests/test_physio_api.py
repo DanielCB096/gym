@@ -7,14 +7,23 @@ appointment stay in sync the way reception uses them.
 """
 
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel
 
 from app.main import app, get_session
 from app.modules.identity.models import Employee
 from app.modules.memberships.models import Member
+from app.modules.physio.models import MAX_DURATION_MINUTES, PhysioService
+from app.modules.physio.service import (
+    InvalidPhysioData,
+    create_physio_service,
+    update_physio_service,
+)
 from app.timezone import club_date
 from test_classes_api import (
     _add_member,
@@ -163,6 +172,75 @@ def _catalog(client: TestClient, headers: dict[str, str]):
     offer = _create_offer(client, headers, service_id=service.json()["id"])
     assert offer.status_code == 201, offer.text
     return service.json(), offer.json()
+
+
+def test_service_duration_ceiling_matches_api_service_and_database() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            service = _create_service(
+                client, manager, duration_minutes=MAX_DURATION_MINUTES
+            )
+            assert service.status_code == 201, service.text
+            service_id = service.json()["id"]
+
+            rejected = _create_service(
+                client,
+                manager,
+                code="EXCESO",
+                duration_minutes=MAX_DURATION_MINUTES + 1,
+            )
+            assert rejected.status_code == 422, rejected.text
+
+            rejected_update = client.patch(
+                f"/admin/physio/services/{service_id}",
+                headers=manager,
+                json={"duration_minutes": MAX_DURATION_MINUTES + 1},
+            )
+            assert rejected_update.status_code == 422, rejected_update.text
+            listed = client.get("/admin/physio/services", headers=manager)
+            assert listed.status_code == 200, listed.text
+            assert listed.json()[0]["duration_minutes"] == MAX_DURATION_MINUTES
+    finally:
+        app.dependency_overrides.clear()
+
+    with Session(engine) as session:
+        with pytest.raises(InvalidPhysioData, match=str(MAX_DURATION_MINUTES)):
+            create_physio_service(
+                session,
+                code="DIRECT",
+                name="Duración excesiva",
+                duration_minutes=MAX_DURATION_MINUTES + 1,
+                price_cents=50000,
+            )
+        session.rollback()
+
+        with pytest.raises(InvalidPhysioData, match=str(MAX_DURATION_MINUTES)):
+            update_physio_service(
+                session,
+                UUID(service_id),
+                duration_minutes=MAX_DURATION_MINUTES + 1,
+            )
+        session.rollback()
+
+        session.add(
+            PhysioService(
+                code="ORM",
+                name="Duración excesiva",
+                duration_minutes=MAX_DURATION_MINUTES + 1,
+                price_cents=50000,
+            )
+        )
+        with pytest.raises(IntegrityError, match="ck_physio_services_duration_max"):
+            session.commit()
+        session.rollback()
+        assert session.exec(select(func.count()).select_from(PhysioService)).one()[0] == 1
 
 
 def test_catalog_permissions_and_discount_snapshot() -> None:

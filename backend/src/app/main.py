@@ -165,6 +165,7 @@ from app.modules.physio import (
     update_physio_therapist_profile,
     void_physio_pack,
 )
+from app.modules.physio.models import MAX_DURATION_MINUTES
 from app.modules.physio.reports import (
     PhysioReport,
     physio_report,
@@ -1767,7 +1768,7 @@ class CreatePhysioServiceRequest(BaseModel):
     code: str = Field(min_length=1, max_length=40)
     name: str = Field(min_length=1, max_length=160)
     description: str | None = Field(default=None, max_length=400)
-    duration_minutes: int = Field(ge=1, le=480)
+    duration_minutes: int = Field(ge=1, le=MAX_DURATION_MINUTES)
     price_cents: int = Field(ge=0)
     is_active: bool = True
 
@@ -1776,7 +1777,7 @@ class UpdatePhysioServiceRequest(BaseModel):
     code: str | None = Field(default=None, min_length=1, max_length=40)
     name: str | None = Field(default=None, min_length=1, max_length=160)
     description: str | None = Field(default=None, max_length=400)
-    duration_minutes: int | None = Field(default=None, ge=1, le=480)
+    duration_minutes: int | None = Field(default=None, ge=1, le=MAX_DURATION_MINUTES)
     price_cents: int | None = Field(default=None, ge=0)
     is_active: bool | None = None
 

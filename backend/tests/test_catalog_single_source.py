@@ -35,6 +35,7 @@ import pytest
 from sqlalchemy import CheckConstraint
 from sqlmodel import SQLModel
 
+from app.constraints import sql_in_list
 from app.main import app
 from app.modules.classes import models as classes_models
 from app.modules.finance import models as finance_models
@@ -45,6 +46,7 @@ from app.modules.maintenance import models as maintenance_models
 from app.modules.maintenance import service as maintenance_service
 from app.modules.memberships import models as membership_models
 from app.modules.memberships import service as membership_service
+from app.modules.physio import models as physio_models
 from app.modules.reports import models as reports_models
 from app.modules.reports import scheduled as scheduled_reports
 from app.modules.reports.scheduled_configuration import _REPORT_FIELDS
@@ -54,7 +56,8 @@ from app.modules.reports.service import build_report
 # `20261019_0017` (ventas y devoluciones, que reemplazaron la versión de
 # `20261017_0008` y `20261018_0015`), `20261015_0001` (intentos de pago),
 # `20261025_0027` (conciliación bancaria), `20261101_0079`/`20261101_0080`
-# (reportes programados) y `20261101_0082` (topes de clase).
+# (reportes programados), `20261101_0082` (topes de clase) y `20261102_0083`
+# (duración máxima de fisioterapia).
 APPLIED_CHECKS: dict[tuple[str, str], str] = {
     (
         "class_rooms",
@@ -68,6 +71,26 @@ APPLIED_CHECKS: dict[tuple[str, str], str] = {
         "class_sessions",
         "ck_class_sessions_window_max",
     ): "cancel_window_hours <= 168",
+    (
+        "physio_services",
+        "ck_physio_services_duration_max",
+    ): "duration_minutes <= 480",
+    (
+        "class_sessions",
+        "ck_class_sessions_status",
+    ): "status IN ('scheduled', 'cancelled')",
+    (
+        "class_sessions",
+        "ck_class_sessions_access_type",
+    ): "access_type IN ('included', 'premium')",
+    (
+        "class_reservations",
+        "ck_class_reservations_status",
+    ): "status IN ('waitlist', 'reserved', 'attended', 'no_show', 'cancelled')",
+    (
+        "class_reservations",
+        "ck_class_reservations_origin",
+    ): "origin IN ('app', 'reception', 'web')",
     (
         "equipment",
         "ck_equipment_status",
@@ -128,6 +151,27 @@ def test_derived_check_still_matches_the_applied_sql(table: str, name: str) -> N
         "tupla del modelo, así que esto significa que la lista cambió: hace falta una "
         "migración para la base existente, y actualizar aquí el SQL aplicado."
     )
+
+
+def test_class_status_checks_are_derived_from_their_model_catalogs() -> None:
+    class_checks = (
+        ("class_sessions", "ck_class_sessions_status", "status", classes_models.SESSION_STATUSES),
+        ("class_sessions", "ck_class_sessions_access_type", "access_type", classes_models.ACCESS_TYPES),
+        (
+            "class_reservations",
+            "ck_class_reservations_status",
+            "status",
+            classes_models.RESERVATION_STATUSES,
+        ),
+        (
+            "class_reservations",
+            "ck_class_reservations_origin",
+            "origin",
+            classes_models.RESERVATION_ORIGINS,
+        ),
+    )
+    for table, name, column, values in class_checks:
+        assert _check_sql(table, name) == f"{column} IN {sql_in_list(values)}"
 
 
 def test_the_service_uses_the_models_tuple_not_a_copy() -> None:
@@ -253,6 +297,14 @@ def test_the_panel_offers_exactly_the_schedulable_reports() -> None:
 # importa; comparar las dos puntas del contrato es lo que prueba que el panel
 # sigue ofreciendo el número del modelo y no una copia.
 ROUTE_BOUNDS: dict[tuple[str, str], tuple[int, int]] = {
+    ("CreatePhysioServiceRequest", "duration_minutes"): (
+        1,
+        physio_models.MAX_DURATION_MINUTES,
+    ),
+    ("UpdatePhysioServiceRequest", "duration_minutes"): (
+        1,
+        physio_models.MAX_DURATION_MINUTES,
+    ),
     ("CreateClassRoomRequest", "capacity"): (1, classes_models.MAX_CLASS_CAPACITY),
     ("CreateClassSessionRequest", "capacity"): (1, classes_models.MAX_CLASS_CAPACITY),
     ("UpdateClassSessionRequest", "capacity"): (1, classes_models.MAX_CLASS_CAPACITY),

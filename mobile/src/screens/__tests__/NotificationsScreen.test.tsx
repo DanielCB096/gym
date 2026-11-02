@@ -108,6 +108,46 @@ describe("NotificationsScreen preference failures", () => {
     expect(error.props.accessibilityLiveRegion).toBe("polite");
     expect(updateMemberNotificationPreferences).toHaveBeenCalledTimes(1);
   });
+
+  it("announces a successful email preference change politely", async () => {
+    jest.mocked(updateMemberNotificationPreferences).mockResolvedValue({
+      ...notificationPreferences,
+      items: [
+        {
+          ...notificationPreferences.items[0],
+          email_enabled: true,
+        },
+      ],
+    });
+
+    render(
+      <NotificationsScreen
+        token="test-token"
+        onBack={jest.fn()}
+        onSessionExpired={jest.fn()}
+        onUnreadChange={jest.fn()}
+        onOpenDestination={jest.fn()}
+      />,
+    );
+
+    const preferenceName = "Avisos de Membresía por correo";
+    const emailSwitch = await screen.findByRole("switch", {
+      name: preferenceName,
+      checked: false,
+    });
+
+    fireEvent(emailSwitch, "valueChange", true);
+
+    const confirmation = await screen.findByText(
+      "Membresía: recibirás los avisos nuevos por correo.",
+    );
+    expect(confirmation.props.accessibilityLiveRegion).toBe("polite");
+    expect(
+      screen.getByRole("switch", { name: preferenceName, checked: true }).props
+        .value,
+    ).toBe(true);
+    expect(updateMemberNotificationPreferences).toHaveBeenCalledTimes(1);
+  });
 });
 
 async function waitForPreferenceValue(name: string, value: boolean) {

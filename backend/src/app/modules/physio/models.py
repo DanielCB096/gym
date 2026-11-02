@@ -34,6 +34,7 @@ PACK_ADJUSTMENT_KINDS = ("extension", "void")
 
 DEFAULT_VALIDITY_DAYS = 31
 MAX_ADJUSTMENT_REASON_CHARS = 300
+MAX_DURATION_MINUTES = 480
 
 # How long after an appointment ends the staff can still mark (or fix) its
 # attendance. Outside the window the mark is final.
@@ -50,6 +51,10 @@ class PhysioService(SQLModel, table=True):
     __tablename__ = "physio_services"
     __table_args__ = (
         CheckConstraint("duration_minutes > 0", name="ck_physio_services_duration_positive"),
+        CheckConstraint(
+            f"duration_minutes <= {MAX_DURATION_MINUTES}",
+            name="ck_physio_services_duration_max",
+        ),
         CheckConstraint("price_cents >= 0", name="ck_physio_services_price_nonnegative"),
         Index("uq_physio_services_code_lower", text("lower(code)"), unique=True),
     )

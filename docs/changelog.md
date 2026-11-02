@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-11-02 · Fisioterapia: acotar duración del servicio en las tres capas
+
+- `MAX_DURATION_MINUTES = 480` vive ahora en el modelo y lo comparten la petición y las guardas del servicio.
+- La migración `20261102_0083` agrega `ck_physio_services_duration_max`; `APPLIED_CHECKS` y `ROUTE_BOUNDS` fijan el SQL aplicado y las cotas del contrato.
+- Una prueba recorre el valor límite y el exceso por API, servicio y esquema. PostgreSQL 16 desechable aplicó toda la cadena, revirtió y reaplicó `20261102_0083`, y `alembic check` terminó limpio.
+- La base de validación estaba vacía: antes de desplegar, verificar que no existan servicios con duración mayor a 480. Quedan siete familias de cotas numéricas pendientes.
+
+## 2026-11-02 · Clases: derivar CHECK de estado y origen del catálogo
+
+- Los cuatro `CHECK` de `class_sessions` y `class_reservations` ahora generan sus listas desde `SESSION_STATUSES`, `ACCESS_TYPES`, `RESERVATION_STATUSES` y `RESERVATION_ORIGINS` mediante `sql_in_list`, en vez de repetirlas como literales.
+- `APPLIED_CHECKS` fija el SQL exacto de las cuatro restricciones contra el que ya aplicaron las migraciones, y una prueba confirma que los modelos lo derivan de sus tuplas. No se requiere migración ni cambia el esquema.
+
+## 2026-11-02 · Avisos del socio: validación SMTP de ADR-081
+
+- Con PostgreSQL 16 desechable y Mailpit se verificó el flujo de consentimiento: sin opt-in el aviso no crea entrega; al activar `classes`, se registra el consentimiento y se entrega un aviso sintético.
+- Gmail aceptó un único aviso sintético de Clases al destinatario configurado y el usuario confirmó su llegada a la bandeja. El envío se limitó a una pasada, sin reintentos.
+- Las 33 pruebas focalizadas de correo, preferencias, recuperación y bandeja pasaron. Se eliminaron la base, el socio sintético y todos los recursos Docker temporales.
+- La revisión de accesibilidad encontró que la confirmación de guardar una preferencia no se anunciaba: ahora usa una región viva `polite`, con prueba de la confirmación y del estado actualizado del interruptor. La prueba de pantalla y el typecheck móvil pasan; la comprobación en dispositivo no se ejecutó y su cierre por decisión del usuario queda registrado a continuación.
+- No se validaron todas las categorías, staging ni producción.
+
+## 2026-11-02 · Accesibilidad móvil: cierre por decisión del usuario
+
+- Por decisión expresa del usuario, la comprobación en dispositivo con VoiceOver/TalkBack se considera concluida para este alcance y deja de ser un pendiente.
+- La comprobación no se ejecutó en un dispositivo real; las pruebas automatizadas y el typecheck sí pasaron. Esta anotación registra el cierre de alcance, no evidencia de una prueba manual.
+
 ## 2026-11-02 · Reportes programados: validación local de migraciones, cron y SMTP
 
 - Las migraciones `20261101_0079` a `20261101_0082` se aplicaron en PostgreSQL 16 desechable, se revirtió y reaplicó la última y `alembic check` terminó sin divergencias.

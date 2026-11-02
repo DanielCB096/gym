@@ -30,6 +30,8 @@ from sqlalchemy import (
 )
 from sqlmodel import Field, SQLModel
 
+from app.constraints import sql_in_list
+
 SESSION_STATUSES = ("scheduled", "cancelled")
 RESERVATION_STATUSES = ("waitlist", "reserved", "attended", "no_show", "cancelled")
 ACCESS_TYPES = ("included", "premium")
@@ -106,8 +108,14 @@ class ClassSession(SQLModel, table=True):
         CheckConstraint("ends_at > starts_at", name="ck_class_sessions_time_order"),
         CheckConstraint("capacity > 0", name="ck_class_sessions_capacity_positive"),
         CheckConstraint(f"capacity <= {MAX_CLASS_CAPACITY}", name="ck_class_sessions_capacity_max"),
-        CheckConstraint("status IN ('scheduled', 'cancelled')", name="ck_class_sessions_status"),
-        CheckConstraint("access_type IN ('included', 'premium')", name="ck_class_sessions_access_type"),
+        CheckConstraint(
+            f"status IN {sql_in_list(SESSION_STATUSES)}",
+            name="ck_class_sessions_status",
+        ),
+        CheckConstraint(
+            f"access_type IN {sql_in_list(ACCESS_TYPES)}",
+            name="ck_class_sessions_access_type",
+        ),
         CheckConstraint("extra_price_cents >= 0", name="ck_class_sessions_price_nonnegative"),
         CheckConstraint("cancel_window_hours >= 0", name="ck_class_sessions_window_nonnegative"),
         CheckConstraint(
@@ -191,10 +199,13 @@ class ClassReservation(SQLModel, table=True):
     __tablename__ = "class_reservations"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('waitlist', 'reserved', 'attended', 'no_show', 'cancelled')",
+            f"status IN {sql_in_list(RESERVATION_STATUSES)}",
             name="ck_class_reservations_status",
         ),
-        CheckConstraint("origin IN ('app', 'reception', 'web')", name="ck_class_reservations_origin"),
+        CheckConstraint(
+            f"origin IN {sql_in_list(RESERVATION_ORIGINS)}",
+            name="ck_class_reservations_origin",
+        ),
         CheckConstraint(
             "waitlist_position IS NULL OR waitlist_position > 0",
             name="ck_class_reservations_position_positive",
