@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-01 · Conciliación: las fronteras de nota, recorridas
+
+- `match_bank_movement`, `unmatch_bank_movement` y `flag_bank_movement` (`backend/src/app/modules/finance/service.py`) medían tres veces el mismo límite de 300 caracteres y exigían el motivo donde hace falta; ninguna prueba los recorría. El panel corta antes con su `max_length`, pero el servicio mide **después de recortar** —tres espacios pasan el `min_length` del panel y solo los detiene el servicio— y es la única guarda que ve un llamador que no sea el panel.
+- `test_reconciliation_api.py` estrena dos pruebas de servicio: la frontera por los dos lados (301 rechazado en las tres operaciones, 300 aceptado y guardado entero, motivo en blanco y nota de dos caracteres rechazados, `pending` sin exigir nota, y el movimiento intacto tras cada rechazo) y la lectura del `maxLength` del contrato OpenAPI comparado con la longitud de `bank_movements.note`.
+- La nota larga se rechaza también cuando el importe cuadra exacto y no hacía falta nota: esa es la prueba que impide que la medida se cuele dentro de la rama de la diferencia.
+- Sin cambios de producción ni de contrato: `main.py`, las rutas y los payloads del panel quedan iguales.
+- Validación: suite backend **648 pruebas: 640 aprobadas y 8 omitidas**, sin `TEST_POSTGRES_URL`. Siete mutaciones producen siete fallos y el control sin mutaciones pasó; los dos archivos mutados volvieron a su contenido byte a byte.
+
 ## 2026-11-01 · Catálogos: una sola lista por vocabulario
 
 - `backend/src/app/constraints.py` (nuevo) renderiza la lista de un `CHECK` desde la tupla del modelo (`sql_in_list`). Los cinco `CHECK` de pagos del mostrador, ventas y devoluciones, pagos de cuenta, intentos de pago y estados del equipo se generan ahora desde esa tupla, así que la validación del servicio y el esquema no pueden ya escribir vocabularios distintos.

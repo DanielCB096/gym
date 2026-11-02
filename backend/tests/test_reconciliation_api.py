@@ -1,14 +1,24 @@
 from datetime import date, datetime, time, timedelta, timezone
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.main import app, get_session
 from app.timezone import club_timezone
 from app.modules.billing.models import Invoice, InvoicePayment
+from app.modules.finance.models import BankMovement
+from app.modules.finance.service import (
+    InvalidMatch,
+    create_bank_account,
+    flag_bank_movement,
+    import_bank_movements,
+    match_bank_movement,
+    unmatch_bank_movement,
+)
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.inventory.models import (
     MemberAccountPayment,
@@ -949,3 +959,152 @@ def test_difference_note_flagging_and_manual_search() -> None:
     finally:
         app.dependency_overrides.clear()
         engine.dispose()
+
+
+def test_the_note_frontiers_are_the_services_own() -> None:
+    """The 300-character limits belong to the service, not only to the payload.
+
+    Three layers repeat the same number for these notes — the panel's
+    ``max_length``, the column and the check written here — but the operator only
+    ever meets the payload, and the payload puts no minimum on the match or flag
+    note. A blank reason and an over-long one are therefore decided by the
+    service, which is also the only guard a caller that is not the panel gets.
+    The accepted length is the boundary itself, so the guard is checked on both
+    sides of 300 and nothing is written when it refuses.
+    """
+
+    engine, ids = _prepare()
+    try:
+        with Session(engine) as session:
+            account = create_bank_account(
+                session, name="BBVA Notas", bank_name="BBVA", account_last4="4821"
+            )
+            import_bank_movements(
+                session,
+                UUID(str(account["id"])),
+                [
+                    {
+                        "occurred_on": date(2026, 10, 24),
+                        "amount_cents": 50500,
+                        "reference": "SPEI ANA LOPEZ",
+                    },
+                    {
+                        "occurred_on": date(2026, 10, 24),
+                        "amount_cents": 11600,
+                        "reference": "DEP PROTEINA",
+                    },
+                ],
+            )
+            rows = session.exec(select(BankMovement).order_by(BankMovement.amount_cents.desc())).all()
+            movement, sale_movement = rows[0], rows[1]
+            assert movement.status == "pending"
+
+            with pytest.raises(InvalidMatch, match="no puede superar 300"):
+                match_bank_movement(
+                    session,
+                    movement.id,
+                    source="membership_payment",
+                    source_id=ids["payment_id"],
+                    note="a" * 301,
+                )
+            assert movement.matched_id is None
+            assert movement.note is None
+
+            matched = match_bank_movement(
+                session,
+                movement.id,
+                source="membership_payment",
+                source_id=ids["payment_id"],
+                note="b" * 300,
+            )
+            assert matched["status"] == "difference"
+            assert matched["difference_cents"] == 500
+            assert len(matched["note"]) == 300
+
+            # Tres espacios pasan el `min_length` del panel y el servicio mide
+            # después de recortar: la ventana la cierra el servicio.
+            with pytest.raises(InvalidMatch, match="Escribe el motivo"):
+                unmatch_bank_movement(session, movement.id, reason="   ")
+            with pytest.raises(InvalidMatch, match="no puede superar 300"):
+                unmatch_bank_movement(session, movement.id, reason="c" * 301)
+            assert movement.matched_id is not None
+            assert movement.status == "difference"
+
+            freed = unmatch_bank_movement(session, movement.id, reason="d" * 300)
+            assert freed["status"] == "pending"
+            assert freed["matched_id"] is None
+            assert freed["note"] is None
+
+            with pytest.raises(InvalidMatch, match="Escribe una nota"):
+                flag_bank_movement(session, movement.id, status="reviewing", note="  x ")
+            with pytest.raises(InvalidMatch, match="no puede superar 300"):
+                flag_bank_movement(session, movement.id, status="difference", note="f" * 301)
+            assert movement.status == "pending"
+            assert movement.note is None
+
+            marked = flag_bank_movement(session, movement.id, status="difference", note="g" * 300)
+            assert marked["status"] == "difference"
+            assert len(marked["note"]) == 300
+
+            # `pending` es el único estado que no exige nota: volver a pendiente
+            # puede ser un simple desmarque.
+            back = flag_bank_movement(session, movement.id, status="pending")
+            assert back["status"] == "pending"
+            assert back["note"] is None
+
+            # La medida no depende de la diferencia: una nota de 301 se rechaza
+            # también cuando el importe cuadra exacto y no hacía falta ninguna.
+            with pytest.raises(InvalidMatch, match="no puede superar 300"):
+                match_bank_movement(
+                    session,
+                    sale_movement.id,
+                    source="sale",
+                    source_id=ids["sale_id"],
+                    note="h" * 301,
+                )
+            assert sale_movement.matched_id is None
+
+            exact = match_bank_movement(
+                session, sale_movement.id, source="sale", source_id=ids["sale_id"]
+            )
+            assert exact["status"] == "reconciled"
+            assert exact["difference_cents"] is None
+            assert exact["note"] is None
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()
+
+
+def _max_length(schema: dict) -> int | None:
+    if "maxLength" in schema:
+        return int(schema["maxLength"])
+    for branch in schema.get("anyOf", []):
+        if "maxLength" in branch:
+            return int(branch["maxLength"])
+    return None
+
+
+def test_the_note_limit_is_the_same_number_in_the_payload_and_the_column() -> None:
+    """The panel's field and the column cannot drift from the service's 300.
+
+    The service refuses what does not fit in `bank_movements.note`, so the two
+    have to agree. The payload limit is read from the OpenAPI contract instead of
+    from `main.py`, which keeps this a check about the agreement rather than a
+    fourth copy of the number.
+    """
+
+    schemas = app.openapi()["components"]["schemas"]
+    column_length = SQLModel.metadata.tables["bank_movements"].c.note.type.length
+    assert column_length == 300
+
+    for model, prop in (
+        ("BankMovementMatchRequest", "note"),
+        ("BankMovementFlagRequest", "note"),
+        ("BankMovementUnmatchRequest", "reason"),
+    ):
+        limit = _max_length(schemas[model]["properties"][prop])
+        assert limit == column_length, (
+            f"{model}.{prop} limita el panel a {limit} caracteres y la columna "
+            f"guarda {column_length}: el servicio rechaza lo que no cabe, así que "
+            "las tres capas tienen que decir el mismo número."
+        )
