@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-01 · Reportes programados: la bitácora, en UTC con zona
+
+- Se corrige el detalle que quedó «anotado, no corregido» en el corte anterior. En SQLite una columna `DateTime(timezone=True)` recarga sin `tzinfo`, el backend la mandaba como `2026-11-02T01:19:38.501698` y el navegador del operador la leía en su propio calendario: el historial de destinatarios mostraba 1:19 a.m. cuando en la Ciudad de México eran 7:19 p.m. Era la **única** superficie de auditoría sin normalizar —la de ajustes de personal sí la hace su servicio (`staffing/service.py`, `_normalize_datetimes`), por eso su `main.py:5753` reenvía un valor que ya trae zona.
+- El helper se pone en común donde ya vivía la lógica del calendario del club: `utc_from_storage` en `backend/src/app/timezone.py`, que `to_club_timezone` pasa a usar en lugar de repetir el chequeo. En el servicio de configuración, `get_scheduled_report_configuration` normaliza el `updated_at` del singleton y `list_scheduled_report_configuration_events` el `changed_at` de cada evento. Como `save_scheduled_report_configuration` termina devolviendo `get_scheduled_report_configuration`, el `PUT` queda cubierto por el mismo camino.
+- Hacia afuera solo cambia el texto de la marca de tiempo, que pasa de `…T01:19:38.501698` a `…T01:19:38.501698+00:00`: ni esquema, ni rutas, ni contrato OpenAPI. `changed_at` queda anotado en la deuda técnica: hay más de veinte copias privadas de `_as_utc` que pueden migrar al helper, cada una con su prueba.
+- Prueba: `test_scheduled_report_settings_use_permission_allowlist_and_audit` (`backend/tests/test_reports_api.py`) exige ahora que el `updated_at` del guardado y el `changed_at` del evento lleven desplazamiento cero. Al quitar la normalización la prueba falla con la cadena naive exacta (`2026-11-02T01:34:42.967864`), que es el bug; al reponerla, vuelve a pasar.
+- No se volvió a recorrer la pantalla: lo que se corrigió es el payload, y un `new Date("…+00:00")` se pinta en la zona del navegador por construcción. El recorrido del corte anterior sigue siendo la referencia del comportamiento de la tarjeta.
+- Validación: suite backend **675 pruebas: 667 aprobadas y 8 omitidas**, sin `TEST_POSTGRES_URL`; el conteo no se mueve porque la guarda nueva son aserciones dentro de una prueba que ya existía. Sin cambios en PostgreSQL, donde la columna siempre llegó con zona.
+
 ## 2026-11-01 · Reportes programados: la tarjeta, recorrida en vista previa
 
 - Se cierra el pendiente que quedó anotado en el corte anterior. `gym_preview.db` no tenía las tablas `scheduled_report_*`: el arranque en `PREVIEW_MODE` las creó con el `create_all` del esquema (`src/app/main.py`, el bloque de la vista previa) sin necesidad de correr Alembic en SQLite, así que la función de ADR-082 a ADR-084 ya se vio en pantalla. **En PostgreSQL las tres migraciones siguen sin aplicar.**

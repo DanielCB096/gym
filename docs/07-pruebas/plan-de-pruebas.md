@@ -38,6 +38,7 @@ Probar que cada regla crítica del negocio funcione sin errores, especialmente a
 - acceso a la configuración e historial solo con `finance.manage`, sin heredar el permiso de lectura `finance.read`;
 - valores iniciales desde `INCOME_REPORT_RECIPIENTS`, seis reportes habilitados, guardado persistente, lista vacía sin fallback y bitácora con actor sin exponer direcciones de destinatarios;
 - rechazo de direcciones duplicadas y dominios fuera de `INCOME_REPORT_ALLOWED_DOMAINS`;
+- `updated_at` de la configuración y `changed_at` de la bitácora con desplazamiento UTC, aunque SQLite recargue esas columnas sin `tzinfo`: sin la normalización del servicio el panel pinta la hora en el calendario del navegador y el historial aparece adelantado seis horas;
 - selección distinta por destinatario, envíos solo para combinaciones elegidas e idempotencia por periodo y destinatario, sin conexiones SMTP reales.
 
 ## Prueba móvil de error al guardar preferencias de avisos

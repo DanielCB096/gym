@@ -1,4 +1,4 @@
-"""Club-local time helpers.
+"""Club-local time helpers, and the UTC reading of stored timestamps.
 
 Every timestamp is stored in UTC, but the club reads and writes in its own
 calendar: ``APP_TIMEZONE`` (``America/Mexico_City`` by default). This is the
@@ -54,15 +54,23 @@ def local_midnight(day: date, tz: ZoneInfo) -> datetime:
     return datetime.combine(day, time.min, tzinfo=tz).astimezone(timezone.utc)
 
 
-def to_club_timezone(moment: datetime, *, timezone_name: str | None = None) -> datetime:
-    """Move an instant to the club's timezone, treating a naive value as UTC.
+def utc_from_storage(value: datetime) -> datetime:
+    """Return ``value`` as an aware UTC datetime, treating a naive value as UTC.
 
-    Naive values happen when SQLite reloads a row and drops ``tzinfo``.
+    Naive values happen when SQLite reloads a row and drops ``tzinfo``; an API
+    that forwards them as-is is read by the browser as local time, so a change
+    written at 19:19 in the club looks like it happened at dawn the next day.
     """
 
-    if moment.tzinfo is None or moment.utcoffset() is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    return moment.astimezone(club_timezone(timezone_name))
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def to_club_timezone(moment: datetime, *, timezone_name: str | None = None) -> datetime:
+    """Move an instant to the club's timezone, treating a naive value as UTC."""
+
+    return utc_from_storage(moment).astimezone(club_timezone(timezone_name))
 
 
 def club_date(moment: datetime, *, timezone_name: str | None = None) -> date:

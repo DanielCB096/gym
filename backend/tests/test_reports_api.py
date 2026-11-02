@@ -515,6 +515,11 @@ def test_scheduled_report_settings_use_permission_allowlist_and_audit(
             assert event["report_counts"]["revenue"] == 1
             assert "ops@gym.example" not in history.text
 
+            # SQLite reloads a DateTime(timezone=True) column without tzinfo, and a
+            # naive timestamp is what the panel reads in the browser's own calendar.
+            for moment in (saved.json()["updated_at"], event["changed_at"]):
+                assert datetime.fromisoformat(moment).utcoffset() == timedelta(0)
+
             duplicate = client.put(
                 "/admin/reports/email-settings",
                 headers=accountant,

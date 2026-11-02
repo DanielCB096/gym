@@ -25,6 +25,7 @@ from app.modules.reports.scheduled import (
     configured_allowed_domains,
     configured_recipients,
 )
+from app.timezone import utc_from_storage
 
 # One boolean column per report name, so a seventh report is a new column plus
 # the tuple entry — never a fourth copy of the list.
@@ -136,7 +137,7 @@ def get_scheduled_report_configuration(
         source="panel",
         allowed_domains=allowed_domains,
         recipients=recipients,
-        updated_at=configuration.updated_at,
+        updated_at=utc_from_storage(configuration.updated_at),
     )
 
 
@@ -308,7 +309,7 @@ def list_scheduled_report_configuration_events(
         )
         result.append(
             ScheduledReportConfigurationAudit(
-                changed_at=event.changed_at,
+                changed_at=utc_from_storage(event.changed_at),
                 actor_email=actor.email if actor else None,
                 previous_recipient_count=len(previous),
                 recipient_count=len(current),
