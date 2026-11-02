@@ -17,6 +17,13 @@
 - Sin cambios hacia afuera: firmas, rutas y payloads del panel quedan iguales; cambiar una tupla sigue exigiendo su migración, y la custodia lo recuerda con el mensaje.
 - Validación: suite backend **646 pruebas: 638 aprobadas y 8 omitidas**, sin `TEST_POSTGRES_URL`. Seis mutaciones producen siete detecciones y cada archivo mutado volvió a su contenido byte a byte.
 
+## 2026-11-01 · Reportes: accesibilidad de destinatarios programados
+
+- La eliminación de un destinatario conserva el foco en el botón contiguo; al quitar el último, el foco vuelve al campo de correo. El campo ahora marca visiblemente que es obligatorio y mantiene vinculados sus mensajes de ayuda y error.
+- Las regiones de estado y error permanecen en el DOM durante carga, guardado y actualización del historial; los fallos de red indican cómo volver a intentarlo.
+- Se mejoró el contraste del encabezado, contador y borde del campo. Contraste medido: texto **5.51:1** y borde de control **4.32:1** sobre blanco.
+- Validación: typecheck y build del panel correctos; pruebas focalizadas de reportes **23 aprobadas**; `git diff --check` limpio.
+
 ## 2026-11-01 · Jornada: la anulación acepta su instante
 
 - `void_attendance_mark` y `decide_attendance_request` (`backend/src/app/modules/staffing/service.py`) reciben `now=`; la aprobación sella la anulación que aplica con su propio instante, así que la decisión y el cambio que aprueba ya no se separan por dos lecturas del reloj.
@@ -24,6 +31,23 @@
 - La custodia de higiene de fechas (`backend/tests/test_date_hygiene_guard.py`) pasa de tres mezclas permitidas a una y ahora también reconoce alias de una constante congelada (`VOIDED_AT = START + timedelta(days=30)`), el ciego que le quedaba sobre las constantes de módulo.
 - `backend/src/app/main.py` no cambia: las rutas siguen llamando sin `now` y obtienen el reloj de la sala.
 - Validación: suite backend **637 pruebas: 629 aprobadas y 8 omitidas**, sin funciones de prueba nuevas; cuatro mutaciones del servicio producen cuatro fallos y la regla transitiva se verificó con un archivo sintético fuera de `tests/`. Cada archivo mutado se restauró byte a byte.
+
+## 2026-11-01 · Reportes: programar los seis CSV financieros
+
+- Se amplió el envío de ADR-082 a los seis CSV existentes: resumen, ingresos, socios, operación, mantenimiento e inventario. Cada tipo conserva las cadencias diarias, semanales y mensuales; todos usan la misma audiencia interna y allowlist.
+- Se añadió `scheduled_report_deliveries.report_name` y la migración `20261101_0080`; las filas antiguas se clasifican como `revenue` y mantienen su clave idempotente para evitar duplicar ingresos ya registrados.
+- La vista previa adapta de forma idempotente las bases SQLite existentes; el modo simulado sigue sin contactar SMTP.
+- Documentación actualizada: ADR-083, despliegue, módulo, modelo de datos, pruebas, roadmap y deuda técnica.
+- Validación: suite backend **642 aprobadas y 8 omitidas**; pruebas focalizadas de reportes, vista previa y cron: **65 aprobadas**. `--preview` simuló doce entregas sin SMTP real; la cadena Alembic genera SQL PostgreSQL hasta `20261101_0080`. `git diff --check` limpio. No se pudo aplicar la migración en PostgreSQL local porque Docker no está disponible.
+
+## 2026-11-01 · Reportes: programar el CSV de ingresos
+
+- Se añadió el envío del reporte de ingresos por correo interno en tres cadencias: día anterior, semana anterior (lunes) y mes anterior (primer día). Los periodos usan el calendario del club; no incluyen el día en curso.
+- `INCOME_REPORT_RECIPIENTS` requiere direcciones explícitas y `INCOME_REPORT_ALLOWED_DOMAINS` restringe cada dirección a dominios internos permitidos. El CSV solo se adjunta a esos destinatarios; no se consulta correo de socios ni de cuentas de usuario.
+- `scheduled_report_deliveries` conserva el hash del destinatario y la clave idempotente, sin guardar dirección o contenido. Un envío completado no se repite; los fallos se reintentan hasta cinco veces y un reclamo `sending` vencido se recupera. SMTP es at-least-once si el proceso cae tras la aceptación y antes de registrar éxito.
+- `ops_cron.py` agrega una pasada diaria configurable con `--income-reports-at`; `send_scheduled_income_reports.py --dry-run` no abre la base, `--preview` fuerza correo simulado y `--today` permite recuperar una fecha del club.
+- Documentación actualizada: ADR-082, módulo de facturación y reportes, modelo de datos, operación, pruebas, roadmap y deuda técnica.
+- Validación: suite backend **641 aprobadas y 8 omitidas**; las pruebas focalizadas de reportes y cron aprobaron **53 casos**; `--dry-run` confirmó periodos diario y semanal; la cadena Alembic generó SQL PostgreSQL completo hasta `20261101_0079`; `git diff --check` limpio. No se pudo aplicar la migración a una instancia PostgreSQL local porque el daemon de Docker no está disponible.
 
 ## 2026-11-01 · Socios: la ventana «por vencer» acepta su instante
 

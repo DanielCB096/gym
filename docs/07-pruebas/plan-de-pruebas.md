@@ -31,6 +31,15 @@ Probar que cada regla crítica del negocio funcione sin errores, especialmente a
 - permisos y bitácora
 - corte de caja y inventario
 
+## Cobertura de configuración de reportes programados
+
+`backend/tests/test_reports_api.py` y `backend/tests/test_scheduled_income_reports.py` verifican:
+
+- acceso a la configuración e historial solo con `finance.manage`, sin heredar el permiso de lectura `finance.read`;
+- valores iniciales desde `INCOME_REPORT_RECIPIENTS`, seis reportes habilitados, guardado persistente, lista vacía sin fallback y bitácora con actor sin exponer direcciones de destinatarios;
+- rechazo de direcciones duplicadas y dominios fuera de `INCOME_REPORT_ALLOWED_DOMAINS`;
+- selección distinta por destinatario, envíos solo para combinaciones elegidas e idempotencia por periodo y destinatario, sin conexiones SMTP reales.
+
 ## Prueba móvil de error al guardar preferencias de avisos
 
 `mobile/src/screens/__tests__/NotificationsScreen.test.tsx` simula un fallo de red al activar el correo de Membresía y verifica que:
@@ -840,15 +849,17 @@ Las pruebas dirigidas de preferencias, entrega, migración, retención, cron, vi
 - `test_ops_cron.py`: diez trabajos en orden, drenado del correo de socios cada 15 minutos, validación de intervalo, instalación idempotente y requisito del script.
 - `test_preview_patch.py` y `test_deferred_notices_scheduler.py`: columna default-off en una base SQLite existente y recuperación de avisos diferidos.
 
-## Cobertura del cron de operación (ADR-063)
+## Cobertura del cron de operación (ADR-063, ADR-082)
 
 `backend/tests/test_ops_cron.py` cubre 41 casos sobre el módulo cargado desde el archivo, sin escribir un crontab real:
 
-- **Bloque generado**: las diez tareas en orden, con sus horas (00:30, 03:15, 03:45, 04:15 y 04:45), el `*/30` de los acuses, el `*/15` del push web y correo del personal y del correo de socios, el `0 * * * *` de los avisos diferidos, `--limit 200` y una bitácora por script; las marcas `BEGIN`/`END` en los extremos y el comentario que resume la programación.
+- **Bloque generado**: las once tareas en orden, con sus horas (00:30, 03:15, 03:45, 04:15, 04:45 y 06:00), el `*/30` de los acuses, el `*/15` del push web y correo del personal y del correo de socios, el `0 * * * *` de los avisos diferidos, `--limit 200` y una bitácora por script; las marcas `BEGIN`/`END` en los extremos y el comentario que resume la programación.
 - **Cita y validación**: una URL con caracteres especiales y una carpeta con espacios se escriben entre comillas; una URL vacía, con salto de línea, una hora mal escrita en `--daily-at` o en `--physio-close-at`, un `--receipts-every`, `--staff-push-every`, `--staff-email-every`, `--member-email-every` o `--notices-every` fuera de rango y un `--limit` fuera de 1–1000 se rechazan; el cambio de hora cruza la medianoche y `--physio-close-at` acepta otra hora.
 - **Programación de acuses, push/correo del personal, correo de socios y avisos diferidos**: `*/N` de 5 a 59, `0 * * * *` para 60 y rechazo fuera de ese rango en las cinco opciones de intervalo.
 - **Idempotencia**: reemplazar el mismo bloque deja el texto igual; las líneas ajenas se conservan; un bloque sin cierre descarta el resto en vez de duplicar trabajos; `remove_block` lo retira y un crontab vacío queda vacío.
-- **CLI**: `--print` (y su valor por defecto) imprime sin invocar `crontab`; `--install` conserva las líneas ajenas, crea la carpeta de bitácoras y escribe el bloque; faltar uno de los diez scripts —incluidos `flush_staff_push.py`, `flush_staff_email.py`, `flush_member_email.py`, `close_physio_day.py`, `purge_push_data.py`, `purge_inbox_data.py` y `emit_deferred_notices.py`— sale con código 2 sin escribir; `--uninstall` retira el bloque; sin `DATABASE_URL` sale con código 2; un crontab ilegible y la ausencia del comando `crontab` se informan con un mensaje y código distinto de cero.
+- **CLI**: `--print` (y su valor por defecto) imprime sin invocar `crontab`; `--install` conserva las líneas ajenas, crea la carpeta de bitácoras y escribe el bloque; faltar uno de los once scripts —incluidos `flush_staff_push.py`, `flush_staff_email.py`, `flush_member_email.py`, `close_physio_day.py`, `purge_push_data.py`, `purge_inbox_data.py`, `emit_deferred_notices.py` y `send_scheduled_income_reports.py`— sale con código 2 sin escribir; `--uninstall` retira el bloque; sin `DATABASE_URL` sale con código 2; un crontab ilegible y la ausencia del comando `crontab` se informan con un mensaje y código distinto de cero.
+
+`backend/tests/test_scheduled_income_reports.py` cubre los seis CSV y sus nombres, los periodos cerrados diario/semanal/mensual, la allowlist y destinatarios inválidos, la idempotencia independiente por reporte, los reintentos, el límite de intentos y la recuperación de entregas `sending` vencidas. `test_preview_patch.py` verifica que una base de vista previa existente clasifique las filas previas como `revenue`. Las pruebas sustituyen el transporte SMTP y no envían correo real.
 
 `backend/tests/test_member_push_receipts.py` suma un caso: `preview=True` explícito difiere la pasada aunque `PREVIEW_MODE` esté apagado, que es lo que usa `sync_push_receipts.py --preview`. En Windows, la instalación real se comprobó manualmente: devuelve «No se encontró el comando crontab; instala cron o usa --print…» con código 1, y `--print` genera el bloque esperado. La instalación en un servidor Linux con cron queda por verificar en el despliegue.
 
