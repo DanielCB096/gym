@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-03 · Validación del entorno de llaves Conekta
+
+- Se eliminó la suposición de que las llaves de prueba deben empezar por `key_test_`; el backend verifica `livemode=false` con `GET /api_keys` antes de crear clientes, métodos de pago u órdenes.
+- La llave pública del tokenizador debe copiarse del panel con Modo Pruebas activo, pues no se valida contra la API privada.
+- Se corrigió la altura del iframe del tokenizador para hacer visibles los campos seguros de captura.
+
 ## 2026-11-03 · Preparación de E2E recurrente en sandbox
 
 - El Compose aislado pasa al backend la llave pública Conekta sandbox, la clave AES-256 y la URL local del tokenizador; el webhook continúa usando el PEM montado como secreto local.

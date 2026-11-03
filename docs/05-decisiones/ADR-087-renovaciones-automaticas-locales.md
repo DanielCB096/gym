@@ -72,8 +72,9 @@ y mantener el acceso separado del resultado de un checkout o una redirección.
   Conekta; la API exige autorización vigente y vencimiento, cifra el `customer_id`
   y `payment_source_id` con AES-256-GCM, crea el cobro normal de renovación y
   espera el webhook firmado para activar la membresía. No hay cargo de
-  verificación ni datos PAN/CVV en el backend. Las llaves `key_test_` y el modo
-  sandbox son obligatorios.
+  verificación ni datos PAN/CVV en el backend. Las llaves deben obtenerse con
+  Modo Pruebas activo; antes de crear recursos se valida que la API key responda
+  con `livemode=false`. Producción continúa bloqueada.
 - `run_membership_renewals.py` procesa vencimientos, ciclos posteriores,
   reintentos 1/3/5 y conciliación; `ops_cron.py` lo instala cada 15 minutos por
   defecto. La migración `20261103_0088` agrega `last_reconciled_at` para acotar

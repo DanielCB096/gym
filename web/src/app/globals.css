@@ -20,6 +20,11 @@
 
 * { box-sizing: border-box; }
 
+#conektaIframeContainer iframe.zoid-visible {
+  height: 520px !important;
+  min-height: 520px;
+}
+
 html, body { min-height: 100%; }
 
 body {

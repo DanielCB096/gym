@@ -231,7 +231,9 @@ del servidor; después de confirmar el importe normal del plan, se cifra la
 referencia del cliente/método y se solicita el primer cargo. La nueva membresía
 queda `pending_payment` hasta el webhook firmado. El panel administrativo ya no
 puede otorgar consentimiento en nombre del socio. La integración exige llaves
-`key_test_`. El script `backend/run_membership_renewals.py` procesa vencimientos,
+llaves obtenidas con el modo de pruebas de Conekta; el backend verifica que la
+llave privada responda `livemode=false` antes de crear recursos y no infiere el
+entorno por el prefijo. El script `backend/run_membership_renewals.py` procesa vencimientos,
 reintentos en días 1/3/5 y conciliación; `backend/ops_cron.py` lo programa cada
 15 minutos por defecto. El ciclo recurrente aún no se ha validado E2E con la
 cuenta sandbox del responsable; producción permanece deshabilitada.

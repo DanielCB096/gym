@@ -46,9 +46,9 @@ class ConektaPaymentMethodSettings:
             )
         api_key = (os.getenv("CONEKTA_SANDBOX_API_KEY") or "").strip()
         public_key = (os.getenv("CONEKTA_SANDBOX_PUBLIC_KEY") or "").strip()
-        if not api_key.startswith("key_test_") or not public_key.startswith("key_test_"):
+        if not api_key.startswith("key_") or not public_key.startswith("key_"):
             raise ConektaPaymentMethodConfigurationError(
-                "Configura únicamente llaves key_test_ de Conekta; las llaves productivas están deshabilitadas."
+                "Configura las llaves API privada y pública obtenidas en el modo de pruebas de Conekta."
             )
         try:
             timeout_seconds = float(os.getenv("CONEKTA_TIMEOUT_SECONDS", "15"))
@@ -83,6 +83,32 @@ class ConektaPaymentMethods:
     ) -> None:
         self._settings = settings
         self._transport = transport
+        self._sandbox_api_key_verified = False
+
+    def validate_sandbox_api_key(self) -> None:
+        if self._sandbox_api_key_verified:
+            return
+        try:
+            result = self._request("GET", "/api_keys")
+        except ConektaPaymentMethodUnavailable as error:
+            raise ConektaPaymentMethodConfigurationError(
+                "No se pudo verificar el modo de la llave API de Conekta."
+            ) from error
+        api_keys = result.get("data")
+        if (
+            result.get("object") != "list"
+            or not isinstance(api_keys, list)
+            or not api_keys
+            or any(
+                not isinstance(api_key, dict)
+                or api_key.get("livemode") is not False
+                for api_key in api_keys
+            )
+        ):
+            raise ConektaPaymentMethodConfigurationError(
+                "Conekta no confirmó que la llave API pertenezca al modo de pruebas; no se crearán recursos."
+            )
+        self._sandbox_api_key_verified = True
 
     def save_card(
         self,
@@ -93,6 +119,7 @@ class ConektaPaymentMethods:
         card_token: str,
         idempotency_key: str,
     ) -> ConektaSavedCard:
+        self.validate_sandbox_api_key()
         customer: dict[str, str] = {"name": member_name}
         if member_email:
             customer["email"] = member_email
@@ -141,6 +168,7 @@ class ConektaPaymentMethods:
         membership_id: str,
         payment_attempt_id: str,
     ) -> ConektaRenewalOrder:
+        self.validate_sandbox_api_key()
         result = self._post(
             "/orders",
             {
@@ -188,6 +216,7 @@ class ConektaPaymentMethods:
         amount_cents: int,
         currency: str,
     ) -> ChargeOutcome:
+        self.validate_sandbox_api_key()
         if not _valid_provider_id(provider_order_id, "ord"):
             raise ConektaPaymentMethodUnavailable(
                 "La referencia de orden de Conekta no es válida."

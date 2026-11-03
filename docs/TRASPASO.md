@@ -34,7 +34,9 @@ cifradas las referencias del cliente/método y solicita el importe normal de
 renovación, sin cargo de verificación. La nueva membresía queda en
 `pending_payment` hasta recibir el webhook firmado.
 
-La integración permanece limitada a llaves `key_test_` y sandbox. El cron
+La integración permanece limitada a llaves obtenidas con Modo Pruebas y al
+sandbox; no se infiere el entorno por el prefijo y el backend verifica
+`livemode=false` antes de crear recursos. El cron
 `run_membership_renewals.py` procesa vencimientos, ciclos posteriores,
 reintentos 1/3/5 y conciliación de órdenes inciertas; se instala cada 15 minutos
 por defecto. Falta probar el ciclo recurrente E2E con la cuenta sandbox del

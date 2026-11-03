@@ -23,6 +23,14 @@ def test_sandbox_card_and_renewal_order_use_idempotent_provider_calls() -> None:
 
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.url.path == "/api_keys":
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [{"active": True, "livemode": False, "role": "private"}],
+                },
+            )
         if request.url.path == "/customers":
             return httpx.Response(200, json={"id": "cus_test_1", "livemode": False})
         if request.url.path == "/customers/cus_test_1/payment_sources":
@@ -71,31 +79,71 @@ def test_sandbox_card_and_renewal_order_use_idempotent_provider_calls() -> None:
     assert saved.payment_source_id == "src_test_1"
     assert order.provider_order_id == "ord_test_1"
     assert [request.url.path for request in requests] == [
+        "/api_keys",
         "/customers",
         "/customers/cus_test_1/payment_sources",
         "/orders",
     ]
-    assert requests[0].headers["Idempotency-Key"] == "setup-flow-id:customer"
-    assert requests[1].headers["Idempotency-Key"] == "setup-flow-id:source"
-    assert requests[2].headers["Idempotency-Key"] == "attempt-id"
-    assert requests[1].headers["Authorization"].startswith("Basic ")
-    assert "tok_sandbox_1" in requests[1].content.decode("utf-8")
-    order_payload = json.loads(requests[2].content)
+    assert requests[1].headers["Idempotency-Key"] == "setup-flow-id:customer"
+    assert requests[2].headers["Idempotency-Key"] == "setup-flow-id:source"
+    assert requests[3].headers["Idempotency-Key"] == "attempt-id"
+    assert requests[2].headers["Authorization"].startswith("Basic ")
+    assert "tok_sandbox_1" in requests[2].content.decode("utf-8")
+    order_payload = json.loads(requests[3].content)
     assert order_payload["line_items"][0]["unit_price"] == 50000
     assert order_payload["charges"][0]["payment_method"]["payment_source_id"] == "src_test_1"
     assert order_payload["metadata"]["payment_attempt_id"] == "attempt-id"
 
 
-def test_sandbox_settings_reject_live_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sandbox_settings_accepts_real_conekta_key_prefixes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("CONEKTA_MODE", "sandbox")
-    monkeypatch.setenv("CONEKTA_SANDBOX_API_KEY", "key_live_private")
-    monkeypatch.setenv("CONEKTA_SANDBOX_PUBLIC_KEY", "key_test_public")
-    with pytest.raises(ConektaPaymentMethodConfigurationError, match="key_test_"):
-        ConektaPaymentMethodSettings.from_env()
+    monkeypatch.setenv("CONEKTA_SANDBOX_API_KEY", "key_rm_private")
+    monkeypatch.setenv("CONEKTA_SANDBOX_PUBLIC_KEY", "key_eY_public")
+    settings = ConektaPaymentMethodSettings.from_env()
+    assert settings.api_key == "key_rm_private"
+    assert settings.public_key == "key_eY_public"
+
+
+def test_live_api_key_is_rejected_before_creating_a_customer() -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [{"active": True, "livemode": True, "role": "private"}],
+            },
+        )
+
+    methods = ConektaPaymentMethods(
+        ConektaPaymentMethodSettings("key_live_private", "key_test_public"),
+        transport=httpx.MockTransport(handle),
+    )
+    with pytest.raises(ConektaPaymentMethodConfigurationError, match="modo de pruebas"):
+        methods.save_card(
+            member_name="Ana Demo",
+            member_email=None,
+            member_phone=None,
+            card_token="tok_sandbox_1",
+            idempotency_key="setup-flow-id",
+        )
+    assert [request.url.path for request in requests] == ["/api_keys"]
 
 
 def test_payment_method_gateway_rejects_live_provider_response() -> None:
-    def handle(_: httpx.Request) -> httpx.Response:
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api_keys":
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [{"active": True, "livemode": False, "role": "private"}],
+                },
+            )
         return httpx.Response(
             200,
             json={"id": "cus_live_1", "livemode": True},
@@ -168,6 +216,14 @@ def test_recurring_gateway_reconciles_the_original_idempotent_order(
 
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.url.path == "/api_keys":
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [{"active": True, "livemode": False, "role": "private"}],
+                },
+            )
         if request.method == "POST":
             return httpx.Response(
                 200,
@@ -209,13 +265,22 @@ def test_recurring_gateway_reconciles_the_original_idempotent_order(
     assert created.status == ChargeStatus.PROCESSING
     assert reconciled.status == ChargeStatus.SUCCEEDED
     assert reconciled.provider_reference == "ch_sandbox_renewal_1"
-    assert [request.method for request in requests] == ["POST", "GET"]
-    assert requests[0].headers["Idempotency-Key"] == str(attempt.id)
-    assert requests[1].url.path == "/orders/ord_sandbox_renewal_1"
+    assert [request.method for request in requests] == ["GET", "POST", "GET"]
+    assert requests[0].url.path == "/api_keys"
+    assert requests[1].headers["Idempotency-Key"] == str(attempt.id)
+    assert requests[2].url.path == "/orders/ord_sandbox_renewal_1"
 
 
 def test_reconciliation_waits_if_order_has_a_pending_charge_after_a_decline() -> None:
-    def handle(_: httpx.Request) -> httpx.Response:
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api_keys":
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [{"active": True, "livemode": False, "role": "private"}],
+                },
+            )
         return httpx.Response(
             200,
             json={
@@ -249,7 +314,15 @@ def test_reconciliation_waits_if_order_has_a_pending_charge_after_a_decline() ->
 
 
 def test_reconciliation_rejects_a_paid_order_with_a_different_amount() -> None:
-    def handle(_: httpx.Request) -> httpx.Response:
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api_keys":
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [{"active": True, "livemode": False, "role": "private"}],
+                },
+            )
         return httpx.Response(
             200,
             json={
