@@ -22,11 +22,14 @@ Una sola persona puede asumir más de un rol si el club es pequeño, pero las re
 
 1. Aplicar los objetivos aprobados para la primera entrega: RPO máximo de 15 minutos y RTO máximo de 4 horas (ADR-086). Confirmar con negocio si cambian antes de contratar o configurar infraestructura.
 2. Elegir un método de respaldo compatible con la infraestructura de PostgreSQL y documentar su responsable, frecuencia, retención, cifrado y ubicación.
-3. Incluir la base de datos y los archivos críticos que no se puedan reconstruir desde ella. En particular, confirmar si `PROGRESS_PHOTOS_DIR` contiene fotos de socios y proteger esa carpeta junto con su metadato en base de datos.
-4. Guardar copias cifradas fuera del servidor principal, con acceso limitado a personal autorizado y protección frente a borrado o modificación no autorizados.
-5. Mantener secretos y credenciales bajo un mecanismo seguro de gestión de secretos. No incluirlos en el repositorio, tickets, logs ni copias de acceso general.
-6. Documentar la última ejecución, su resultado, tamaño, ubicación, periodo cubierto y la alerta responsable ante una falla.
-7. Probar periódicamente que las copias se pueden leer y restaurar en un entorno aislado.
+3. Para ensayar staging en Windows, ejecutar `powershell -ExecutionPolicy Bypass -File demo\verify-local-recovery.ps1`. El script crea un respaldo de PostgreSQL y fotos, lo verifica y lo restaura en contenedores temporales. Solo usa `pg_dump` de la base sintética y archivos sintéticos.
+4. Para guardar una copia sin restaurarla, ejecutar `powershell -ExecutionPolicy Bypass -File demo\backup-local-staging.ps1`.
+5. Para restaurar una copia aislada, ejecutar `powershell -ExecutionPolicy Bypass -File demo\restore-local-staging.ps1 -BackupDir "C:\ruta\al\respaldo"`.
+6. Incluir la base de datos y los archivos críticos que no se puedan reconstruir desde ella. En particular, confirmar si `PROGRESS_PHOTOS_DIR` contiene fotos de socios y proteger esa carpeta junto con su metadato en base de datos.
+7. Guardar copias cifradas fuera del servidor principal, con acceso limitado a personal autorizado y protección frente a borrado o modificación no autorizados.
+8. Mantener secretos y credenciales bajo un mecanismo seguro de gestión de secretos. No incluirlos en el repositorio, tickets, logs ni copias de acceso general.
+9. Documentar la última ejecución, su resultado, tamaño, ubicación, periodo cubierto y la alerta responsable ante una falla.
+10. Probar periódicamente que las copias se puedan leer y restaurar en un entorno aislado.
 
 Redis y las cachés deben tratarse según su función: si son reconstruibles desde datos persistentes, no sustituyen el respaldo de PostgreSQL ni de archivos. La estrategia concreta debe validarse con la infraestructura desplegada.
 
@@ -82,6 +85,8 @@ Registrar:
 
 - El proyecto documenta tareas cron para purgas operativas y consulta de acuses, pero estas no hacen respaldo.
 - El documento operativo [respaldos-y-recuperacion.md](../06-operacion/respaldos-y-recuperacion.md) recomienda copias periódicas y pruebas de restauración, pero la herramienta y configuración final dependen de la infraestructura.
-- No se asume que haya respaldos automáticos, retención probada, recuperación a un punto en el tiempo ni restauraciones verificadas hasta que el operador lo confirme en el entorno real.
-- Para la primera entrega se acordaron RPO máximo de 15 minutos y RTO máximo de 4 horas; aún no se ha elegido infraestructura ni demostrado que esos objetivos se cumplan.
-- Deben definirse frecuencia, retención, cifrado, ubicación externa y pruebas de restauración antes de producción. Un respaldo diario por sí solo no cumple el RPO aprobado.
+- `demo/backup-local-staging.ps1` crea copias consistentes de PostgreSQL y del volumen de fotos, valida SHA-256 y aplica una retención configurable. Es exclusivo de staging con datos sintéticos.
+- `demo/restore-local-staging.ps1` valida el manifiesto y restaura en contenedores aislados por defecto; `-Apply` sustituye la base y fotos sintéticas actuales de staging.
+- `demo/verify-local-recovery.ps1` realiza el respaldo, restaura en aislamiento y mide el tiempo RTO. No demuestra cumplimiento productivo.
+- Estos scripts no implementan cifrado externo, replicación continua ni recuperación a un punto en el tiempo, por lo que no cumplen por sí solos el RPO de 15 minutos.
+- Antes de producción deben definirse infraestructura, cifrado, ubicación externa, retención, PITR o equivalente, permisos, alertas y ensayos periódicos.

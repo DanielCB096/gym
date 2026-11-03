@@ -136,8 +136,10 @@ solo describe el staging local, no la disponibilidad de producción.
   explícito, cancelación clara y manejo de cobros fallidos. La integración
   existente de Conekta solo cubre un pago inicial en sandbox.
 - Implementar MFA administrativo y cerrar la revisión de seguridad y privacidad.
-- Configurar respaldos y demostrar recuperación dentro de los objetivos
-  aprobados, incluyendo fotos de progreso si se conservan en archivos aparte.
+- Configurar respaldos productivos y demostrar recuperación dentro de los
+  objetivos aprobados, incluyendo fotos de progreso si se conservan en
+  archivos aparte. El ensayo local de staging y sus scripts ya están disponibles,
+  pero no sustituyen cifrado, PITR, ubicación externa ni restauración real.
 - Validar en staging las migraciones, tareas programadas, correo, cobros y
   operación diaria del alcance no fiscal.
 - Confirmar condiciones comerciales de proveedores y autorización de salida.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-03 · Herramientas de respaldo y recuperación local
+
+- Se agregaron scripts de PowerShell para respaldar PostgreSQL y fotos de progreso del staging, validar SHA-256, aplicar retención y restaurar en un entorno Docker aislado.
+- `verify-local-recovery.ps1` encadena respaldo y restauración aislada y mide el tiempo de recuperación contra el objetivo RTO.
+- La restauración aplicada al staging exige `-Apply` y reemplaza explícitamente la base sintética y las fotos actuales; cifrado externo, PITR, ubicación externa y recuperación productiva siguen pendientes.
+
 ## 2026-11-03 · Validación del entorno de llaves Conekta
 
 - Se eliminó la suposición de que las llaves de prueba deben empezar por `key_test_`; el backend verifica `livemode=false` con `GET /api_keys` antes de crear clientes, métodos de pago u órdenes.
