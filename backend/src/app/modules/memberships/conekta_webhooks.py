@@ -132,13 +132,14 @@ def parse_conekta_webhook(payload: bytes) -> ConektaWebhookEvent:
                 provider_reference=charge_id,
                 occurred_at=_event_time(event.get("created_at")),
             )
-    elif event_type == "order.paid":
+    elif event_type in {"order.paid", "order.declined"}:
         if provider_object.get("object") != "order":
-            raise ConektaWebhookPayloadError("El evento order.paid contiene un objeto inesperado.")
+            raise ConektaWebhookPayloadError("El evento de orden contiene un objeto inesperado.")
         provider_order_id = provider_object.get("id")
         amount = provider_object.get("amount")
         currency = provider_object.get("currency")
-        payment_status = provider_object.get("payment_status", provider_object.get("status"))
+        order_status = provider_object.get("status")
+        payment_status = provider_object.get("payment_status") or order_status
         charges = provider_object.get("charges")
         charge_data = charges.get("data") if isinstance(charges, dict) else None
         charges_in_order = []
@@ -148,6 +149,11 @@ def parse_conekta_webhook(payload: bytes) -> ConektaWebhookEvent:
             charge.get("id")
             for charge in charges_in_order
             if charge.get("status") == "paid" and _bounded_string(charge.get("id"), 160)
+        ]
+        declined_charge_ids = [
+            charge.get("id")
+            for charge in charges_in_order
+            if charge.get("status") == "declined" and _bounded_string(charge.get("id"), 160)
         ]
         charge_ids = [
             charge.get("id")
@@ -161,19 +167,37 @@ def parse_conekta_webhook(payload: bytes) -> ConektaWebhookEvent:
             or not _valid_currency(currency)
         ):
             raise ConektaWebhookPayloadError("La orden no contiene referencia, importe o moneda válidos.")
-        if payment_status != "paid":
-            raise ConektaWebhookPayloadError("El evento order.paid no tiene estado paid.")
-        charge_ids = paid_charge_ids or charge_ids
+        if event_type == "order.paid":
+            if payment_status != "paid":
+                raise ConektaWebhookPayloadError("El evento order.paid no tiene estado paid.")
+            charge_ids = paid_charge_ids or charge_ids
+        else:
+            if payment_status == "paid" or not (
+                order_status == "declined"
+                or payment_status == "declined"
+                or (payment_status == "unpaid" and declined_charge_ids)
+            ):
+                raise ConektaWebhookPayloadError("El evento order.declined no tiene estado declined.")
+            charge_ids = declined_charge_ids or charge_ids
         if len(charge_ids) != 1:
+            description = "pagada" if event_type == "order.paid" else "rechazada"
             raise ConektaWebhookPayloadError(
-                "La orden pagada debe contener exactamente un cargo identificable."
+                f"La orden {description} debe contener exactamente un cargo identificable."
             )
         charge_id = charge_ids[0]
-        outcome = ChargeOutcome(
-            status=ChargeStatus.SUCCEEDED,
-            provider_reference=charge_id,
-            occurred_at=_event_time(event.get("created_at")),
-        )
+        if event_type == "order.paid":
+            outcome = ChargeOutcome(
+                status=ChargeStatus.SUCCEEDED,
+                provider_reference=charge_id,
+                occurred_at=_event_time(event.get("created_at")),
+            )
+        else:
+            outcome = ChargeOutcome(
+                status=ChargeStatus.FAILED,
+                provider_reference=charge_id,
+                failure_code="conekta_declined",
+                occurred_at=_event_time(event.get("created_at")),
+            )
 
     return ConektaWebhookEvent(
         provider_event_id=event_id,

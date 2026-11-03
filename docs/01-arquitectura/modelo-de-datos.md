@@ -71,6 +71,7 @@ TICKET_MANTENIMIENTO ||--o{ HISTORIAL_MANTENIMIENTO : documenta
 - `member_consents` conserva cada autorización de renovación con tipo, versión del texto, hash de evidencia, fecha de aceptación y revocación; `membership_events` registra quién activó o revocó la renovación y la versión aceptada (ADR-087).
 - `member_payment_method_setups` conserva el hash del código temporal, su vencimiento y estado, más las referencias internas al método/intent creado. El código original solo viaja en el fragmento URL y nunca se persiste.
 - `payment_methods.encrypted_provider_token` cifra con AES-256-GCM la referencia reutilizable de Conekta (`customer_id` y `payment_source_id`); `provider_method_id` guarda solo su SHA-256. No se guardan PAN, CVV ni el token de un solo uso.
+- `payment_attempts.last_reconciled_at` limita las consultas a órdenes pendientes/desconocidas, evita que intentos antiguos monopolicen cada pasada y se agrega en `20261103_0088_payment_attempt_reconciliation.py`.
 - `CredencialAcceso`, `LectorAcceso` y `AccesoRegistro` soportan credenciales, lecturas autorizadas/denegadas y sincronización offline.
 - La plantilla biométrica cifrada se mantiene separada del registro de acceso; no se almacena imagen biométrica.
 
@@ -132,7 +133,7 @@ La migración inicial materializa únicamente el flujo prioritario de socios, pl
 | `memberships` | vigencia y estado del plan asignado | FKs restrictivas a socio/plan, periodo válido, estado controlado y máximo de una membresía no terminal por socio |
 | `member_consents` | aceptación y revocación de documentos | historial con versión y fecha; no almacena datos médicos |
 | `payment_methods` | referencia tokenizada del proveedor | token del proveedor cifrado, nunca PAN/CVV; un solo método predeterminado activo por socio |
-| `payment_attempts` | cada intento de cobro e idempotencia | clave idempotente y huella de solicitud, número de intento positivo, estados controlados; `provider_order_id` y `checkout_url` guardan la orden alojada de sandbox sin mezclarla con la referencia del cargo; el cobro manual con tarjeta declarada no tiene `payment_method_id` ni proveedor |
+| `payment_attempts` | cada intento de cobro e idempotencia | clave idempotente y huella de solicitud, número de intento positivo, estados controlados y `last_reconciled_at` para espaciar consultas; `provider_order_id` y `checkout_url` guardan la orden alojada de sandbox sin mezclarla con la referencia del cargo; el cobro manual con tarjeta declarada no tiene `payment_method_id` ni proveedor |
 | `payments` | cobros confirmados | un pago por intento exitoso, monto y moneda como snapshot; desde el cobro manual guarda periodo, turno de caja, cobrador y nota (los campos de periodo/turno son nulos en cobros de pasarela antiguos) |
 | `payment_attempt_events` | historial de transiciones | eventos históricos vinculados al intento |
 | `provider_webhook_events` | deduplicación y seguimiento de webhooks | evento único por proveedor, SHA-256 del payload y estado de procesamiento; un evento firmado con discrepancia queda `failed` con código `rejected_*` y vínculo al intento para revisión |

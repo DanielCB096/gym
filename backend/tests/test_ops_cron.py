@@ -34,7 +34,7 @@ def _block(**overrides: object) -> str:
     return ops_cron.build_block(replace(BASE, **overrides))
 
 
-def test_block_schedules_the_eleven_jobs_in_order() -> None:
+def test_block_schedules_the_twelve_jobs_in_order() -> None:
     lines = _block().splitlines()
     assert lines[0] == ops_cron.BEGIN_MARKER
     assert lines[-1] == ops_cron.END_MARKER
@@ -52,6 +52,9 @@ def test_block_schedules_the_eleven_jobs_in_order() -> None:
     reports = next(
         line for line in lines if "send_scheduled_income_reports.py" in line
     )
+    renewals = next(
+        line for line in lines if "run_membership_renewals.py" in line
+    )
 
     assert physio.startswith("30 0 * * * ")
     assert access.startswith("15 3 * * * ")
@@ -64,6 +67,7 @@ def test_block_schedules_the_eleven_jobs_in_order() -> None:
     assert member_email.startswith("*/15 * * * * ")
     assert notices.startswith("0 * * * * ")
     assert reports.startswith("0 6 * * * ")
+    assert renewals.startswith("*/15 * * * * ")
     assert lines.index(physio) < lines.index(access)
     assert lines.index(access) < lines.index(email)
     assert lines.index(email) < lines.index(push_purge)
@@ -75,7 +79,9 @@ def test_block_schedules_the_eleven_jobs_in_order() -> None:
     assert lines.index(staff_email) < lines.index(member_email)
     assert lines.index(member_email) < lines.index(notices)
     assert lines.index(notices) < lines.index(reports)
+    assert lines.index(reports) < lines.index(renewals)
     assert "--limit 200" in receipts
+    assert "--limit 100" in renewals
     assert "--limit" not in staff_push
     assert "--limit" not in staff_email
     assert "--limit" not in member_email
@@ -94,6 +100,7 @@ def test_block_schedules_the_eleven_jobs_in_order() -> None:
         member_email,
         notices,
         reports,
+        renewals,
     ):
         assert "cd " in line
         assert "DATABASE_URL=" in line
@@ -121,6 +128,7 @@ def test_logs_are_named_per_job() -> None:
     assert "member-email.log" in block
     assert "deferred-notices.log" in block
     assert "income-reports.log" in block
+    assert "membership-renewals.log" in block
 
 
 def test_daily_schedule_wraps_midnight() -> None:
@@ -179,6 +187,11 @@ def test_notices_schedule_accepts_steps_and_hourly() -> None:
     assert ops_cron.notices_schedule(60) == "0 * * * *"
 
 
+def test_renewals_schedule_accepts_steps_and_hourly() -> None:
+    assert ops_cron.renewals_schedule(15) == "*/15 * * * *"
+    assert ops_cron.renewals_schedule(60) == "0 * * * *"
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -192,6 +205,8 @@ def test_notices_schedule_accepts_steps_and_hourly() -> None:
         {"member_email_every": 61},
         {"notices_every": 4},
         {"notices_every": 61},
+        {"renewals_every": 4},
+        {"renewals_every": 61},
         {"daily_at": "24:00"},
         {"daily_at": "3:5"},
         {"daily_at": "noche"},
@@ -201,6 +216,8 @@ def test_notices_schedule_accepts_steps_and_hourly() -> None:
         {"income_reports_at": "0:75"},
         {"push_limit": 0},
         {"push_limit": 1001},
+        {"renewals_limit": 0},
+        {"renewals_limit": 1001},
         {"database_url": "   "},
         {"database_url": "postgresql://gym\nrm -rf /"},
     ],

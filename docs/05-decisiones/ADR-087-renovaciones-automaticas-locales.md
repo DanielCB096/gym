@@ -32,8 +32,10 @@ y mantener el acceso separado del resultado de un checkout o una redirección.
   fecha efectiva del pago y dura los días definidos por el plan. El socio no
   pierde días pagados mientras el acceso está suspendido.
 - Un resultado de cobro desconocido no se reintenta como un cargo nuevo sin
-  conciliación. La llave idempotente del intento permite consultar/repetir la
-  misma operación sin crear otra orden.
+  conciliación. La llave idempotente del intento permite consultar la misma
+  orden; no se crea otro intento hasta conocer el resultado. Los estados
+  terminales (`succeeded`, `failed`, `cancelled`) no se reabren por respuestas
+  tardías.
 - La automatización solo opera en sandbox hasta completar revisión profesional,
   pruebas de proveedor, conciliación y aprobación explícita para producción.
 
@@ -51,6 +53,9 @@ y mantener el acceso separado del resultado de un checkout o una redirección.
   cobra un importe de verificación ni una mensualidad anticipada al aceptar.
 - La baja de la renovación detiene ciclos futuros; no cancela ni acorta el
   periodo ya pagado.
+- Si el plan deja de estar activo o cobrable antes de crear el siguiente ciclo,
+  no se cobra; se desactiva la renovación de esa membresía y se registra el
+  motivo para revisión.
 - Los cargos productivos permanecen deshabilitados; esta ADR no sustituye la
   aprobación de Conekta, seguridad, negocio ni asesoría profesional.
 
@@ -69,9 +74,18 @@ y mantener el acceso separado del resultado de un checkout o una redirección.
   espera el webhook firmado para activar la membresía. No hay cargo de
   verificación ni datos PAN/CVV en el backend. Las llaves `key_test_` y el modo
   sandbox son obligatorios.
-- Pendientes: prueba E2E de este flujo con la cuenta sandbox del responsable,
-  motor local de renovaciones futuras, reintentos, suspensión automática y
-  conciliación. Producción no está habilitada.
+- `run_membership_renewals.py` procesa vencimientos, ciclos posteriores,
+  reintentos 1/3/5 y conciliación; `ops_cron.py` lo instala cada 15 minutos por
+  defecto. La migración `20261103_0088` agrega `last_reconciled_at` para acotar
+  consultas repetidas. El acceso se bloquea desde el vencimiento aunque el cron
+  aún no haya actualizado el estado.
+- Un plan desactivado o sin precio cobrable detiene la renovación automática
+  antes de crear otro ciclo; las órdenes existentes aún se concilian aunque el
+  método guardado se haya desactivado.
+- El adaptador consulta órdenes Conekta en sandbox y el webhook admite
+  `order.paid`, `order.declined` y los eventos de cargo relevantes. Las pruebas
+  actuales usan respuestas simuladas; sigue pendiente una prueba E2E del ciclo
+  recurrente con la cuenta sandbox del responsable. Producción no está habilitada.
 
 ## Referencias
 

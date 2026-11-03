@@ -20,6 +20,7 @@ class ChargeOutcome:
     provider_reference: str | None = None
     failure_code: str | None = None
     occurred_at: datetime | None = None
+    provider_order_id: str | None = None
 
 
 @dataclass(frozen=True)

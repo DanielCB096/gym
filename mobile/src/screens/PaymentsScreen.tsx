@@ -420,7 +420,7 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
                   ? `Tu periodo terminó. Para completar la renovación, captura tu tarjeta y paga el importe normal del plan${autoRenewal.period_ends_at ? ` (venció el ${formatDay(autoRenewal.period_ends_at)})` : ""}.`
                   : autoRenewal.payment_method_ready
                     ? autoRenewal.first_renewal_charge_status === "failed"
-                      ? "Conekta rechazó el cobro. Tu acceso permanece suspendido; comunícate con recepción para resolverlo."
+                      ? "Conekta rechazó el cobro y tu acceso permanece suspendido. No inicies otro pago; consulta con recepción si necesitas ayuda."
                       : autoRenewal.first_renewal_charge_status === "unknown"
                         ? "El resultado del cobro no se pudo confirmar. No inicies otro pago; el gimnasio debe conciliarlo antes."
                         : "La captura se completó y el cobro está pendiente de confirmación segura de Conekta. El acceso se habilitará cuando se confirme el pago."

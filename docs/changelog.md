@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-03 · Motor local de renovaciones automáticas
+
+- `run_membership_renewals.py` procesa vencimientos, cobros de ciclos posteriores, reintentos 1/3/5 y conciliación de órdenes inciertas; `ops_cron.py` instala la pasada cada 15 minutos por defecto.
+- La migración `20261103_0088` registra cuándo se concilió cada intento. Se reutiliza la misma orden ante resultados desconocidos y los estados terminales no se reabren por respuestas tardías.
+- El webhook procesa `order.declined` además de los eventos de pago ya admitidos. Un plan desactivado no origina un nuevo cargo; una orden existente se puede conciliar aunque se haya inactivado su método de pago. Las pruebas siguen siendo simuladas; falta la E2E recurrente con la cuenta sandbox responsable y producción continúa deshabilitada.
+
 ## 2026-11-02 · Captura y primer cobro de renovación automática
 
 - ADR-087 fija el calendario local, el consentimiento explícito, los reintentos en días 1/3/5, la suspensión al vencimiento sin gracia y el inicio del nuevo periodo al confirmarse el pago.

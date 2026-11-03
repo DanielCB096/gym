@@ -2,7 +2,7 @@
 
 The application has no scheduler: the maintenance scripts run from the host's
 cron (ADR-058, ADR-062, ADR-071, ADR-073, ADR-074, ADR-075, ADR-076, ADR-079, ADR-081).
-This script renders the eleven entries as one block delimited by markers, so
+This script renders the twelve entries as one block delimited by markers, so
 reinstalling after moving the app,
 changing the database password or adjusting the schedule replaces the old block
 instead of duplicating lines, and unrelated crontab entries are left untouched.
@@ -37,13 +37,17 @@ DEFAULT_STAFF_PUSH_EVERY = 15
 DEFAULT_STAFF_EMAIL_EVERY = 15
 DEFAULT_MEMBER_EMAIL_EVERY = 15
 DEFAULT_NOTICES_EVERY = 60
+DEFAULT_RENEWALS_EVERY = 15
 DEFAULT_PUSH_LIMIT = 200
+DEFAULT_RENEWALS_LIMIT = 100
 MAX_PUSH_LIMIT = 1000
+MAX_RENEWALS_LIMIT = 1000
 MIN_RECEIPTS_EVERY = 5
 MIN_STAFF_PUSH_EVERY = 5
 MIN_STAFF_EMAIL_EVERY = 5
 MIN_MEMBER_EMAIL_EVERY = 5
 MIN_NOTICES_EVERY = 5
+MIN_RENEWALS_EVERY = 5
 MAX_SCHEDULE_EVERY = 60
 # The daily purges run one after the other, spaced by this many minutes.
 PURGE_STAGGER_MINUTES = 30
@@ -61,6 +65,7 @@ _SCRIPTS = (
     "emit_deferred_notices.py",
     "send_scheduled_income_reports.py",
     "close_physio_day.py",
+    "run_membership_renewals.py",
 )
 
 
@@ -82,7 +87,9 @@ class OpsCronConfig:
     staff_email_every: int = DEFAULT_STAFF_EMAIL_EVERY
     member_email_every: int = DEFAULT_MEMBER_EMAIL_EVERY
     notices_every: int = DEFAULT_NOTICES_EVERY
+    renewals_every: int = DEFAULT_RENEWALS_EVERY
     push_limit: int = DEFAULT_PUSH_LIMIT
+    renewals_limit: int = DEFAULT_RENEWALS_LIMIT
 
 
 def parse_daily_at(value: str) -> tuple[int, int]:
@@ -130,13 +137,19 @@ def notices_schedule(minutes: int) -> str:
     return _every_schedule(minutes, "--notices-every", MIN_NOTICES_EVERY)
 
 
+def renewals_schedule(minutes: int) -> str:
+    """Cron minute field for the membership renewals pass."""
+
+    return _every_schedule(minutes, "--renewals-every", MIN_RENEWALS_EVERY)
+
+
 def add_minutes(hour: int, minute: int, offset: int) -> tuple[int, int]:
     total = (hour * 60 + minute + offset) % (24 * 60)
     return total // 60, total % 60
 
 
 def build_block(config: OpsCronConfig) -> str:
-    """Render the marked crontab block for the eleven maintenance jobs."""
+    """Render the marked crontab block for the twelve maintenance jobs."""
 
     database_url = config.database_url.strip()
     if not database_url:
@@ -145,6 +158,10 @@ def build_block(config: OpsCronConfig) -> str:
         raise ValueError("DATABASE_URL no puede contener saltos de línea.")
     if config.push_limit < 1 or config.push_limit > MAX_PUSH_LIMIT:
         raise ValueError(f"--limit debe estar entre 1 y {MAX_PUSH_LIMIT}.")
+    if config.renewals_limit < 1 or config.renewals_limit > MAX_RENEWALS_LIMIT:
+        raise ValueError(
+            f"--renewals-limit debe estar entre 1 y {MAX_RENEWALS_LIMIT}."
+        )
 
     hour, minute = parse_daily_at(config.daily_at)
     second_hour, second_minute = add_minutes(hour, minute, PURGE_STAGGER_MINUTES)
@@ -161,6 +178,7 @@ def build_block(config: OpsCronConfig) -> str:
     staff_email = staff_email_schedule(config.staff_email_every)
     member_email = member_email_schedule(config.member_email_every)
     notices = notices_schedule(config.notices_every)
+    renewals = renewals_schedule(config.renewals_every)
 
     def command(script: str, extra: str, log_name: str) -> str:
         return (
@@ -180,7 +198,8 @@ def build_block(config: OpsCronConfig) -> str:
             f"{config.member_email_every} min, avisos diferidos con su push cada "
             f"{config.notices_every} min, cierre de fisioterapia a las "
             f"{close_hour:02d}:{close_minute:02d}, reportes de ingresos a las "
-            f"{reports_hour:02d}:{reports_minute:02d} y purgas diarias a las "
+            f"{reports_hour:02d}:{reports_minute:02d}, renovaciones cada "
+            f"{config.renewals_every} min y purgas diarias a las "
             f"{hour:02d}:{minute:02d}, {second_hour:02d}:{second_minute:02d}, "
             f"{third_hour:02d}:{third_minute:02d} y "
             f"{fourth_hour:02d}:{fourth_minute:02d}."
@@ -216,6 +235,10 @@ def build_block(config: OpsCronConfig) -> str:
         (
             f"{reports_minute} {reports_hour} * * * "
             f"{command('send_scheduled_income_reports.py', '', 'income-reports.log')}"
+        ),
+        (
+            f"{renewals} "
+            f"{command('run_membership_renewals.py', f' --limit {config.renewals_limit}', 'membership-renewals.log')}"
         ),
         END_MARKER,
     ]
@@ -321,7 +344,9 @@ def _config_from_args(args: argparse.Namespace) -> OpsCronConfig:
         staff_email_every=args.staff_email_every,
         member_email_every=args.member_email_every,
         notices_every=args.notices_every,
+        renewals_every=args.renewals_every,
         push_limit=args.limit,
+        renewals_limit=args.renewals_limit,
     )
 
 
@@ -334,7 +359,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "bandeja y de las entregas del personal, consulta de acuses del "
             "push, envío de la cola del push web del personal, envío de la cola "
             "de correo del personal, envío de la cola de correo de socios y "
-            "emisión de los avisos diferidos."
+            "emisión de los avisos diferidos y procesamiento de renovaciones "
+            "de membresía."
         )
     )
     action = parser.add_mutually_exclusive_group()
@@ -447,6 +473,25 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--renewals-every",
+        type=int,
+        default=DEFAULT_RENEWALS_EVERY,
+        help=(
+            "minutos entre vencimientos, cobros y conciliaciones de renovación "
+            f"({MIN_RENEWALS_EVERY} a 59, o 60; por defecto "
+            f"{DEFAULT_RENEWALS_EVERY})"
+        ),
+    )
+    parser.add_argument(
+        "--renewals-limit",
+        type=int,
+        default=DEFAULT_RENEWALS_LIMIT,
+        help=(
+            "filas por etapa de renovaciones "
+            f"(1 a {MAX_RENEWALS_LIMIT}; por defecto {DEFAULT_RENEWALS_LIMIT})"
+        ),
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=DEFAULT_PUSH_LIMIT,
@@ -493,7 +538,8 @@ def main(argv: list[str] | None = None) -> int:
         f"{config.member_email_every} min, avisos diferidos "
         f"cada {config.notices_every} min, cierre de fisioterapia a las "
         f"{config.physio_close_at}, reportes de ingresos a las "
-        f"{config.income_reports_at} y cuatro purgas diarias desde las "
+        f"{config.income_reports_at}, renovaciones cada "
+        f"{config.renewals_every} min y cuatro purgas diarias desde las "
         f"{config.daily_at}. Revisa con: crontab -l"
     )
     return 0

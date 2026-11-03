@@ -64,17 +64,21 @@ def _declined_webhook_payload() -> bytes:
         {
             "id": "evt_declined_1",
             "object": "event",
-            "type": "charge.created",
+            "type": "order.declined",
             "livemode": False,
+            "created_at": 1793479500,
             "data": {
                 "object": {
-                    "id": "ch_declined_1",
-                    "object": "charge",
+                    "id": "ord_sandbox_1",
+                    "object": "order",
                     "livemode": False,
-                    "order_id": "ord_sandbox_1",
                     "amount": 50000,
                     "currency": "MXN",
+                    "payment_status": "unpaid",
                     "status": "declined",
+                    "charges": {
+                        "data": [{"id": "ch_declined_1", "status": "declined"}]
+                    },
                 }
             },
         },

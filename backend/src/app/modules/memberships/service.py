@@ -40,6 +40,7 @@ from app.modules.memberships.payment_method_security import (
     encrypt_payment_reference,
     validate_payment_method_encryption_configuration,
 )
+from app.timezone import validate_club_timezone
 
 
 class BillingError(Exception):
@@ -145,6 +146,9 @@ NON_TERMINAL_MEMBERSHIP_STATUSES = ("pending_payment", "active", "frozen", "susp
 MANUAL_MEMBERSHIP_PAYMENT_METHODS = tuple(
     method for method in PAYMENT_ATTEMPT_METHODS if method != "spei"
 )
+AUTO_RENEWAL_RETRY_DAYS = (1, 3, 5)
+AUTO_RENEWAL_MAX_ATTEMPTS = len(AUTO_RENEWAL_RETRY_DAYS) + 1
+AUTO_RENEWAL_RECONCILE_INTERVAL = timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -222,6 +226,14 @@ class MemberAutoRenewalState:
     first_renewal_due: bool
     first_renewal_charge_status: str | None
     consented_at: datetime | None
+
+
+@dataclass(frozen=True)
+class AutoRenewalBatchResult:
+    expired_memberships: int = 0
+    charges_started: int = 0
+    retries_started: int = 0
+    attempts_reconciled: int = 0
 
 
 @dataclass(frozen=True)
@@ -758,7 +770,7 @@ def get_member_auto_renewal(
             first_renewal_requires_member_action=enabled and not payment_method_ready,
             first_renewal_due=(
                 enabled
-                and membership.status == "active"
+                and membership.status in {"active", "expired"}
                 and _as_utc(membership.ends_at) <= moment
             ),
             first_renewal_charge_status=_latest_payment_attempt_status(
@@ -784,7 +796,7 @@ def get_member_auto_renewal(
         first_renewal_requires_member_action=enabled and not payment_method_ready,
         first_renewal_due=(
             enabled
-            and membership.status == "active"
+            and membership.status in {"active", "expired"}
             and _as_utc(membership.ends_at) <= moment
         ),
         first_renewal_charge_status=_latest_payment_attempt_status(
@@ -1012,21 +1024,23 @@ def complete_member_payment_method_setup(
     )
 
     old_ends_at = _as_utc(old_membership.ends_at)
+    previous_membership_status = old_membership.status
     old_membership.status = "expired"
     old_membership.auto_renew = False
     old_membership.updated_at = moment
     session.add(old_membership)
-    session.add(
-        MembershipEvent(
-            membership_id=old_membership.id,
-            event_type="expired",
-            from_status="active",
-            to_status="expired",
-            actor_type="system",
-            event_metadata={"reason": "renewal_due"},
-            occurred_at=moment,
+    if previous_membership_status != "expired":
+        session.add(
+            MembershipEvent(
+                membership_id=old_membership.id,
+                event_type="expired",
+                from_status=previous_membership_status,
+                to_status="expired",
+                actor_type="system",
+                event_metadata={"reason": "renewal_due"},
+                occurred_at=moment,
+            )
         )
-    )
 
     membership_id = uuid5(setup.id, "renewal-membership")
     membership = Membership(
@@ -1061,6 +1075,8 @@ def complete_member_payment_method_setup(
         currency=plan.currency,
         status="pending",
         due_at=old_ends_at,
+        requested_at=moment,
+        last_reconciled_at=moment,
     )
     session.add(payment_method)
     session.flush()
@@ -1119,10 +1135,21 @@ def _due_auto_renewal_membership(
         )
         .with_for_update()
     ).first()
+    if membership is None:
+        membership = session.exec(
+            select(Membership)
+            .where(
+                Membership.member_id == member_id,
+                Membership.status == "expired",
+                Membership.auto_renew.is_(True),
+            )
+            .order_by(Membership.ends_at.desc(), Membership.id.desc())
+            .with_for_update()
+        ).first()
     consent = _active_auto_renewal_consent(session, member_id)
     if (
         membership is None
-        or membership.status != "active"
+        or membership.status not in {"active", "expired"}
         or not membership.auto_renew
         or consent is None
         or _as_utc(membership.ends_at) > moment
@@ -1981,12 +2008,318 @@ def _hosted_checkout_result(
     )
 
 
+def run_auto_renewal_batch(
+    session: Session,
+    gateway: PaymentGateway,
+    *,
+    now: datetime | None = None,
+    limit: int = 100,
+) -> AutoRenewalBatchResult:
+    if limit < 1 or limit > 1000:
+        raise ValueError("limit must be between 1 and 1000")
+    moment = _as_utc(now or utc_now())
+    expired_count = 0
+    charge_count = 0
+    retry_count = 0
+    reconciled_count = 0
+
+    due_membership_ids = session.exec(
+        select(Membership.id)
+        .where(
+            Membership.status == "active",
+            Membership.ends_at <= moment,
+        )
+        .order_by(Membership.ends_at, Membership.id)
+        .limit(limit)
+    ).all()
+    for membership_id in due_membership_ids:
+        expired, attempt_id = _expire_due_membership(
+            session,
+            membership_id,
+            moment,
+        )
+        if not expired:
+            continue
+        expired_count += 1
+        if attempt_id is not None:
+            _execute_attempt(session, gateway, attempt_id, now=moment)
+            charge_count += 1
+
+    retry_membership_ids = session.exec(
+        select(Membership.id)
+        .where(
+            Membership.status == "pending_payment",
+            Membership.auto_renew.is_(True),
+        )
+        .order_by(Membership.created_at, Membership.id)
+        .limit(limit)
+    ).all()
+    for membership_id in retry_membership_ids:
+        retried = _retry_due_auto_renewal(
+            session,
+            gateway,
+            membership_id,
+            moment,
+        )
+        if retried:
+            retry_count += 1
+
+    reconciliation_cutoff = moment - AUTO_RENEWAL_RECONCILE_INTERVAL
+    reconciliation_ids = session.exec(
+        select(PaymentAttempt.id)
+        .where(
+            PaymentAttempt.provider == "conekta",
+            PaymentAttempt.checkout_url.is_(None),
+            PaymentAttempt.status.in_(("pending", "processing", "unknown")),
+            PaymentAttempt.requested_at <= reconciliation_cutoff,
+            or_(
+                PaymentAttempt.last_reconciled_at.is_(None),
+                PaymentAttempt.last_reconciled_at <= reconciliation_cutoff,
+            ),
+        )
+        .order_by(
+            func.coalesce(
+                PaymentAttempt.last_reconciled_at,
+                PaymentAttempt.requested_at,
+            ),
+            PaymentAttempt.requested_at,
+            PaymentAttempt.id,
+        )
+        .limit(limit)
+    ).all()
+    for attempt_id in reconciliation_ids:
+        attempt = session.exec(
+            select(PaymentAttempt)
+            .where(PaymentAttempt.id == attempt_id)
+            .with_for_update()
+        ).first()
+        if (
+            attempt is None
+            or attempt.status not in {"pending", "processing", "unknown"}
+            or _as_utc(attempt.requested_at) > reconciliation_cutoff
+            or (
+                attempt.last_reconciled_at is not None
+                and _as_utc(attempt.last_reconciled_at) > reconciliation_cutoff
+            )
+        ):
+            continue
+        attempt.last_reconciled_at = moment
+        session.add(attempt)
+        session.commit()
+        _execute_attempt(session, gateway, attempt.id, now=moment)
+        reconciled_count += 1
+
+    return AutoRenewalBatchResult(
+        expired_memberships=expired_count,
+        charges_started=charge_count,
+        retries_started=retry_count,
+        attempts_reconciled=reconciled_count,
+    )
+
+
+def _expire_due_membership(
+    session: Session,
+    membership_id: UUID,
+    moment: datetime,
+) -> tuple[bool, UUID | None]:
+    membership = session.exec(
+        select(Membership)
+        .where(Membership.id == membership_id)
+        .with_for_update()
+    ).first()
+    if (
+        membership is None
+        or membership.status != "active"
+        or _as_utc(membership.ends_at) > moment
+    ):
+        return False, None
+
+    was_auto_renew = membership.auto_renew
+    consent = _active_auto_renewal_consent(session, membership.member_id)
+    payment_method = session.exec(
+        select(PaymentMethod)
+        .where(
+            PaymentMethod.member_id == membership.member_id,
+            PaymentMethod.provider == "conekta",
+            PaymentMethod.status == "active",
+            PaymentMethod.is_default.is_(True),
+        )
+        .with_for_update()
+    ).first()
+    old_ends_at = _as_utc(membership.ends_at)
+    membership.status = "expired"
+    membership.updated_at = moment
+    if consent is None:
+        membership.auto_renew = False
+    plan = session.get(Plan, membership.plan_id)
+    plan_available = plan is not None and plan.is_active and plan.price_cents > 0
+    if was_auto_renew and consent is not None and not plan_available:
+        membership.auto_renew = False
+        session.add(
+            MembershipEvent(
+                membership_id=membership.id,
+                event_type="auto_renewal_blocked",
+                from_status="enabled",
+                to_status="disabled",
+                actor_type="system",
+                event_metadata={"reason": "plan_unavailable"},
+                occurred_at=moment,
+            )
+        )
+    session.add(membership)
+    session.add(
+        MembershipEvent(
+            membership_id=membership.id,
+            event_type="expired",
+            from_status="active",
+            to_status="expired",
+            actor_type="system",
+            event_metadata={"reason": "period_ended"},
+            occurred_at=moment,
+        )
+    )
+
+    attempt_id: UUID | None = None
+    can_charge = (
+        was_auto_renew
+        and consent is not None
+        and payment_method is not None
+        and plan_available
+    )
+    if can_charge and plan is not None:
+        membership.auto_renew = False
+        next_membership_id = uuid5(membership.id, "auto-renewal-membership")
+        next_membership = Membership(
+            id=next_membership_id,
+            member_id=membership.member_id,
+            plan_id=membership.plan_id,
+            status="pending_payment",
+            starts_at=moment,
+            ends_at=moment + timedelta(days=plan.duration_days),
+            auto_renew=True,
+        )
+        attempt_id = uuid5(next_membership_id, "renewal-payment-attempt:1")
+        attempt = PaymentAttempt(
+            id=attempt_id,
+            membership_id=next_membership.id,
+            payment_method_id=payment_method.id,
+            method="card",
+            provider="conekta",
+            idempotency_key=(
+                f"auto-renewal:{membership.id}:{int(old_ends_at.timestamp())}:attempt:1"
+            ),
+            request_fingerprint=_fingerprint(
+                {
+                    "operation": "auto_renewal",
+                    "member_id": str(membership.member_id),
+                    "previous_membership_id": str(membership.id),
+                    "next_membership_id": str(next_membership.id),
+                    "payment_method_id": str(payment_method.id),
+                }
+            ),
+            attempt_number=1,
+            amount_cents=plan.price_cents,
+            currency=plan.currency,
+            status="pending",
+            due_at=old_ends_at,
+            requested_at=moment,
+        )
+        session.add(membership)
+        session.flush()
+        session.add(next_membership)
+        session.flush()
+        session.add(attempt)
+        session.add(
+            MembershipEvent(
+                membership_id=next_membership.id,
+                event_type="renewal_payment_pending",
+                to_status="pending_payment",
+                actor_type="system",
+                event_metadata={"previous_membership_id": str(membership.id)},
+                occurred_at=moment,
+            )
+        )
+        session.add(_attempt_event(attempt, None, "pending", "created", "worker"))
+    session.commit()
+    return True, attempt_id
+
+
+def _retry_due_auto_renewal(
+    session: Session,
+    gateway: PaymentGateway,
+    membership_id: UUID,
+    moment: datetime,
+) -> bool:
+    membership = session.exec(
+        select(Membership)
+        .where(Membership.id == membership_id)
+        .with_for_update()
+    ).first()
+    if (
+        membership is None
+        or membership.status != "pending_payment"
+        or not membership.auto_renew
+        or _active_auto_renewal_consent(session, membership.member_id) is None
+    ):
+        return False
+    previous = session.exec(
+        select(PaymentAttempt)
+        .where(PaymentAttempt.membership_id == membership.id)
+        .order_by(PaymentAttempt.attempt_number.desc())
+        .limit(1)
+    ).first()
+    if (
+        previous is None
+        or previous.provider != "conekta"
+        or previous.status != "failed"
+        or previous.attempt_number >= AUTO_RENEWAL_MAX_ATTEMPTS
+    ):
+        return False
+    payment_method = session.get(PaymentMethod, previous.payment_method_id)
+    if (
+        payment_method is None
+        or payment_method.status != "active"
+        or not payment_method.is_default
+        or payment_method.provider != "conekta"
+    ):
+        return False
+
+    retry_index = previous.attempt_number - 1
+    retry_days = AUTO_RENEWAL_RETRY_DAYS[retry_index]
+    club_tz = validate_club_timezone()
+    scheduled_at = (
+        _as_utc(previous.due_at).astimezone(club_tz) + timedelta(days=retry_days)
+    ).astimezone(timezone.utc)
+    minimum_wait_days = 1 if previous.attempt_number == 1 else 2
+    next_allowed_at = max(
+        scheduled_at,
+        _as_utc(previous.requested_at) + timedelta(days=minimum_wait_days),
+    )
+    if moment < next_allowed_at:
+        return False
+
+    next_attempt_number = previous.attempt_number + 1
+    idempotency_key = (
+        f"auto-renewal:{membership.id}:{int(_as_utc(previous.due_at).timestamp())}:"
+        f"attempt:{next_attempt_number}"
+    )
+    retry_failed_charge(
+        session,
+        gateway,
+        failed_attempt_id=previous.id,
+        idempotency_key=idempotency_key,
+        now=moment,
+    )
+    return True
+
+
 def retry_failed_charge(
     session: Session,
     gateway: PaymentGateway,
     *,
     failed_attempt_id: UUID,
     idempotency_key: str,
+    now: datetime | None = None,
 ) -> MembershipChargeResult:
     if not idempotency_key.strip():
         raise ValueError("idempotency_key must not be empty")
@@ -2032,6 +2365,7 @@ def retry_failed_charge(
         currency=previous.currency,
         status="pending",
         due_at=previous.due_at,
+        requested_at=_as_utc(now or utc_now()),
     )
     session.add(attempt)
     session.add(_attempt_event(attempt, None, "pending", "retry_created", "worker"))
@@ -2048,7 +2382,7 @@ def retry_failed_charge(
             raise IdempotencyConflict("Idempotency key was already used for a different charge")
         return _result(session, existing, idempotent_replay=True)
 
-    return _execute_attempt(session, gateway, attempt.id)
+    return _execute_attempt(session, gateway, attempt.id, now=now)
 
 
 def process_verified_webhook(
@@ -2179,6 +2513,8 @@ def _execute_attempt(
     session: Session,
     gateway: PaymentGateway,
     payment_attempt_id: UUID,
+    *,
+    now: datetime | None = None,
 ) -> MembershipChargeResult:
     attempt = session.get(PaymentAttempt, payment_attempt_id)
     if attempt is None:
@@ -2187,22 +2523,40 @@ def _execute_attempt(
         return _result(session, attempt, idempotent_replay=True)
 
     payment_method = session.get(PaymentMethod, attempt.payment_method_id)
-    if payment_method is None or payment_method.status != "active":
+    if payment_method is None or (
+        attempt.provider_order_id is None and payment_method.status != "active"
+    ):
         raise PaymentMethodUnavailable("Saved payment method is missing or inactive")
 
     previous_status = attempt.status
     if attempt.status != "processing":
         attempt.status = "processing"
-        session.add(_attempt_event(attempt, previous_status, "processing", "charge_submitted", "api"))
-        session.commit()
-        session.refresh(attempt)
+        session.add(
+            _attempt_event(
+                attempt,
+                previous_status,
+                "processing",
+                "charge_submitted",
+                "worker" if now is not None else "api",
+            )
+        )
+    attempt.last_reconciled_at = _as_utc(now or utc_now())
+    session.add(attempt)
+    session.commit()
+    session.refresh(attempt)
 
     try:
         outcome = gateway.charge(attempt, payment_method)
     except GatewayOutcomeUnknown as error:
         outcome = ChargeOutcome(status=ChargeStatus.UNKNOWN, failure_code=error.failure_code)
 
-    return _apply_outcome(session, attempt, outcome, source="api", commit=True)
+    return _apply_outcome(
+        session,
+        attempt,
+        outcome,
+        source="worker" if now is not None else "api",
+        commit=True,
+    )
 
 
 def _apply_outcome(
@@ -2217,7 +2571,9 @@ def _apply_outcome(
     attempt = session.exec(
         select(PaymentAttempt).where(PaymentAttempt.id == attempt.id).with_for_update()
     ).one()
-    if attempt.status == "succeeded":
+    if attempt.status in {"succeeded", "cancelled"} or (
+        attempt.status == "failed" and outcome.status != ChargeStatus.SUCCEEDED
+    ):
         if commit:
             session.rollback()
         return _result(session, attempt, idempotent_replay=True)
@@ -2225,6 +2581,13 @@ def _apply_outcome(
     previous_status = attempt.status
     next_status = outcome.status.value
     attempt.status = next_status
+    if outcome.provider_order_id is not None:
+        if (
+            attempt.provider_order_id is not None
+            and attempt.provider_order_id != outcome.provider_order_id
+        ):
+            raise BillingError("Payment attempt was associated with another provider order")
+        attempt.provider_order_id = outcome.provider_order_id
     attempt.provider_reference = outcome.provider_reference or attempt.provider_reference
     attempt.failure_code = outcome.failure_code
     attempt.resolved_at = (

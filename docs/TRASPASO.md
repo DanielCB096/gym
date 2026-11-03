@@ -1,13 +1,13 @@
 # Traspaso para retomar el trabajo
 
-Actualizado: 2026-11-02 · Rama: `main` · ADR-082 a ADR-084 en `756c5ff` (backend y cron) y `4bd37a3` (panel), custodia de catálogos en `8101b1b`, fronteras de nota de la conciliación en `e267763`, estados bancarios en una sola tupla en `214108a`, nombre y frecuencia del reporte en una sola tupla en `c3066ab`, bitácora de reportes en UTC en `efe6147`, custodia del seed RBAC en `ca136bd`, cotas de clase en tres capas en `83d80c1`, ADR-077 en `62680be`, ADR-080 en `dab7a5e`, ADR-079 en `4ee66d5`, ADR-078 en `162abf2`, ADR-076 en `84dae39`, ADR-075 en `38d19bf`, ADR-074 en `eaf09b2`, ADR-073 en `097176a`, ADR-072 en `cf1930f`, ADR-071 en `cb87609`, ADR-070 en `316ede7`, ADR-069 en `b6ea88f`, ADR-068 en `036f553`, ADR-067 en `b2b454a`, ADR-065 en `6cb1632`, ADR-064 en `7ee0bdd`, ADR-063 en `96e967f`, ADR-062 en `d9594e4`, ADR-061 en `dd482d7`, ADR-059 en `984c901`, ADR-058 en `f4280ae`, ADR-057 en `39391dc`, ADR-056 en `e4c4399`, ADR-055 en `d7c21ac`, ADR-054 en `94c3a6a` y ADR-050 a ADR-053 en `8a0daa8`.
+Actualizado: 2026-11-03 · Rama: `main` · motor local de renovaciones automáticas en esta iteración (commit pendiente), ADR-082 a ADR-084 en `756c5ff` (backend y cron) y `4bd37a3` (panel), custodia de catálogos en `8101b1b`, fronteras de nota de la conciliación en `e267763`, estados bancarios en una sola tupla en `214108a`, nombre y frecuencia del reporte en una sola tupla en `c3066ab`, bitácora de reportes en UTC en `efe6147`, custodia del seed RBAC en `ca136bd`, cotas de clase en tres capas en `83d80c1`, ADR-077 en `62680be`, ADR-080 en `dab7a5e`, ADR-079 en `4ee66d5`, ADR-078 en `162abf2`, ADR-076 en `84dae39`, ADR-075 en `38d19bf`, ADR-074 en `eaf09b2`, ADR-073 en `097176a`, ADR-072 en `cf1930f`, ADR-071 en `cb87609`, ADR-070 en `316ede7`, ADR-069 en `b6ea88f`, ADR-068 en `036f553`, ADR-067 en `b2b454a`, ADR-065 en `6cb1632`, ADR-064 en `7ee0bdd`, ADR-063 en `96e967f`, ADR-062 en `d9594e4`, ADR-061 en `dd482d7`, ADR-059 en `984c901`, ADR-058 en `f4280ae`, ADR-057 en `39391dc`, ADR-056 en `e4c4399`, ADR-055 en `d7c21ac`, ADR-054 en `94c3a6a` y ADR-050 a ADR-053 en `8a0daa8`.
 
 Esta nota es el punto de entrada para otra persona o IA. El estado detallado vive en [README.md](README.md#estado-del-proyecto) y el histórico en [changelog.md](changelog.md); aquí solo se resume qué está hecho, qué sigue y qué no debe tocarse sin pedirlo.
 
 ## Preparación de la primera entrega (ADR-086)
 
 El alcance de producto quedó acordado: renovaciones automáticas (consentimiento
-desde la app implementado; cargos recurrentes aún pendientes), acceso por
+desde la app y motor local implementados; E2E recurrente aún pendiente), acceso por
 código numérico en el kiosco, sin terminal ni
 torniquete, sin facturación fiscal, y apertura a todos los socios tras
 aceptación interna en staging. Se prepara staging en una PC local, limitado a
@@ -34,10 +34,12 @@ cifradas las referencias del cliente/método y solicita el importe normal de
 renovación, sin cargo de verificación. La nueva membresía queda en
 `pending_payment` hasta recibir el webhook firmado.
 
-La integración permanece limitada a llaves `key_test_` y sandbox. Falta la
-prueba E2E de captura y pago con la cuenta del responsable, el scheduler
-idempotente de ciclos futuros, los reintentos 1/3/5 y la conciliación de estados
-fallidos/desconocidos. No habilitar producción.
+La integración permanece limitada a llaves `key_test_` y sandbox. El cron
+`run_membership_renewals.py` procesa vencimientos, ciclos posteriores,
+reintentos 1/3/5 y conciliación de órdenes inciertas; se instala cada 15 minutos
+por defecto. Falta probar el ciclo recurrente E2E con la cuenta sandbox del
+responsable. La captura inicial también requiere esa validación. No habilitar
+producción.
 
 ## Pagos de membresía (ADR-066)
 

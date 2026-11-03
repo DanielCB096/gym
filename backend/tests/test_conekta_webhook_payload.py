@@ -50,6 +50,33 @@ def test_parses_paid_order_using_its_successful_charge() -> None:
     assert event.outcome.occurred_at is not None
 
 
+def test_parses_declined_order_using_its_declined_charge() -> None:
+    payload = json.loads(_order_paid_payload())
+    payload.update(id="evt_sandbox_declined", type="order.declined")
+    order = payload["data"]["object"]
+    order["payment_status"] = "unpaid"
+    order["status"] = "declined"
+    order["charges"]["data"] = [{"id": "ch_declined", "status": "declined"}]
+
+    event = parse_conekta_webhook(json.dumps(payload).encode())
+
+    assert event.event_type == "order.declined"
+    assert event.provider_order_id == "ord_sandbox_1"
+    assert event.outcome is not None
+    assert event.outcome.status.value == "failed"
+    assert event.outcome.provider_reference == "ch_declined"
+    assert event.outcome.failure_code == "conekta_declined"
+
+
+def test_rejects_declined_order_without_declined_status() -> None:
+    payload = json.loads(_order_paid_payload())
+    payload.update(id="evt_sandbox_declined", type="order.declined")
+    payload["data"]["object"]["payment_status"] = "pending_payment"
+
+    with pytest.raises(ConektaWebhookPayloadError, match="estado declined"):
+        parse_conekta_webhook(json.dumps(payload).encode())
+
+
 def test_rejects_live_order_even_if_other_fields_match() -> None:
     payload = json.loads(_order_paid_payload())
     payload["livemode"] = True

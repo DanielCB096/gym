@@ -303,6 +303,7 @@ class PaymentAttempt(SQLModel, table=True):
         UniqueConstraint("provider", "provider_reference", name="uq_payment_attempts_provider_reference"),
         UniqueConstraint("provider", "provider_order_id", name="uq_payment_attempts_provider_order"),
         Index("ix_payment_attempts_status_due", "status", "due_at"),
+        Index("ix_payment_attempts_status_reconciled", "status", "last_reconciled_at"),
         Index("ix_payment_attempts_membership_due", "membership_id", "due_at"),
     )
 
@@ -333,6 +334,7 @@ class PaymentAttempt(SQLModel, table=True):
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
+    last_reconciled_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     resolved_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     failure_code: str | None = Field(default=None, max_length=80)
 
