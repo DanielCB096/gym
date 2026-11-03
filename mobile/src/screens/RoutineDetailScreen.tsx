@@ -561,11 +561,12 @@ const styles = StyleSheet.create({
   },
   back: {
     alignSelf: "flex-start",
+    paddingVertical: spacing.xs,
   },
   backText: {
-    color: colors.textMuted,
+    color: colors.accent,
     fontSize: 14,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   errorBanner: {
     backgroundColor: "rgba(248, 113, 113, 0.12)",
@@ -593,13 +594,13 @@ const styles = StyleSheet.create({
     lineHeight: 21,
   },
   pill: {
-    backgroundColor: colors.surfaceMuted,
+    backgroundColor: "rgba(163, 230, 53, 0.12)",
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
   pillText: {
-    color: colors.text,
+    color: colors.accent,
     fontSize: 12,
     fontWeight: "700",
   },
@@ -608,8 +609,8 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     color: colors.text,
-    fontSize: 18,
-    fontWeight: "800",
+    fontSize: 20,
+    fontWeight: "900",
   },
   lineCard: {
     gap: spacing.xs,

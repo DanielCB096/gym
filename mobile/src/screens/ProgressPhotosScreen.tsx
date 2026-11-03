@@ -557,9 +557,9 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   backText: {
-    color: colors.info,
+    color: colors.accent,
     fontSize: 15,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   hero: {
     gap: spacing.sm,

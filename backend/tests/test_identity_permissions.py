@@ -21,10 +21,95 @@ from app.modules.identity.service import (
     revoke_role,
     revoke_role_permission,
     revoke_session,
+    InvalidMfaChallenge,
+    verify_mfa_challenge,
 )
+from app.modules.identity import service as identity_service
 
 
 NOW = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
+
+
+def test_mfa_challenge_requires_valid_code_and_consumes_challenge(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MFA_ENCRYPTION_KEY", "test-mfa-encryption-key")
+    ensure_default_access_control(session)
+    user = register_user(
+        session,
+        email="owner-mfa@ritmo.test",
+        password="owner-mfa-correct-horse-battery",
+        role_codes=("owner",),
+        now=NOW,
+    )
+    secret = identity_service._base32_secret()
+    user.mfa_enabled = True
+    user.mfa_secret_encrypted = identity_service._encrypt_mfa_secret(secret, user.id)
+    session.add(user)
+    session.commit()
+    backup_codes = identity_service._generate_backup_codes(session, user_id=user.id, now=NOW)
+
+    login = authenticate_user(
+        session,
+        email=user.email,
+        password="owner-mfa-correct-horse-battery",
+        now=NOW,
+    )
+    assert login.mfa_required is True
+    assert login.mfa_challenge_id is not None
+    assert login.access_token is None
+
+    with pytest.raises(InvalidMfaChallenge, match="Código MFA inválido"):
+        verify_mfa_challenge(
+            session,
+            challenge_id=login.mfa_challenge_id,
+            code="000000",
+            now=NOW,
+        )
+
+    verified = verify_mfa_challenge(
+        session,
+        challenge_id=login.mfa_challenge_id,
+        code=identity_service._totp(secret),
+        now=NOW,
+    )
+    assert verified.access_token is not None
+    assert verified.user is not None
+    assert verified.user.user_id == user.id
+
+    with pytest.raises(InvalidMfaChallenge, match="no es válido"):
+        verify_mfa_challenge(
+            session,
+            challenge_id=login.mfa_challenge_id,
+            code=identity_service._totp(secret),
+            now=NOW,
+        )
+
+    backup_login = authenticate_user(
+        session,
+        email=user.email,
+        password="owner-mfa-correct-horse-battery",
+        now=NOW,
+    )
+    backup_verified = verify_mfa_challenge(
+        session,
+        challenge_id=backup_login.mfa_challenge_id,
+        code=backup_codes[0],
+        now=NOW,
+    )
+    assert backup_verified.access_token is not None
+
+    backup_replay_login = authenticate_user(
+        session,
+        email=user.email,
+        password="owner-mfa-correct-horse-battery",
+        now=NOW,
+    )
+    with pytest.raises(InvalidMfaChallenge, match="Código MFA inválido"):
+        verify_mfa_challenge(
+            session,
+            challenge_id=backup_replay_login.mfa_challenge_id,
+            code=backup_codes[0],
+            now=NOW,
+        )
 
 
 def test_role_permissions_are_checked_server_side(session: Session) -> None:

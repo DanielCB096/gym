@@ -2,6 +2,8 @@ from app.modules.identity.models import (
     AppUser,
     AuthEvent,
     Employee,
+    MfaBackupCode,
+    MfaChallenge,
     Permission,
     Role,
     RolePermission,
@@ -38,6 +40,9 @@ from app.modules.identity.service import (
     revoke_role_permission,
     revoke_session,
     revoke_session_by_id,
+    InvalidMfaChallenge,
+    start_mfa_setup,
+    verify_mfa_challenge,
 )
 
 __all__ = [
@@ -48,8 +53,11 @@ __all__ = [
     "EmailAlreadyRegistered",
     "Employee",
     "ImmutableRole",
+    "InvalidMfaChallenge",
     "InvalidSession",
     "LastOwnerRequired",
+    "MfaChallenge",
+    "MfaBackupCode",
     "Permission",
     "PermissionDenied",
     "PermissionNotFound",
@@ -78,4 +86,6 @@ __all__ = [
     "revoke_role_permission",
     "revoke_session",
     "revoke_session_by_id",
+    "start_mfa_setup",
+    "verify_mfa_challenge",
 ]

@@ -653,11 +653,12 @@ const styles = StyleSheet.create({
   },
   back: {
     alignSelf: "flex-start",
+    paddingVertical: spacing.xs,
   },
   backText: {
-    color: colors.textMuted,
+    color: colors.accent,
     fontSize: 14,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   hero: {
     gap: spacing.xs,
@@ -668,7 +669,9 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   noticeBanner: {
-    backgroundColor: "rgba(34, 197, 94, 0.12)",
+    backgroundColor: "rgba(163, 230, 53, 0.12)",
+    borderColor: "rgba(163, 230, 53, 0.35)",
+    borderWidth: 1,
     borderRadius: radius.md,
     padding: spacing.md,
   },
@@ -713,10 +716,12 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   preferenceGroup: {
-    borderTopColor: colors.border,
-    borderTopWidth: 1,
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: radius.md,
+    borderColor: colors.border,
+    borderWidth: 1,
     marginTop: spacing.md,
-    paddingTop: spacing.md,
+    padding: spacing.md,
   },
   preferenceCopy: {
     flex: 1,

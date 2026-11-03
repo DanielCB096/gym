@@ -10,7 +10,7 @@
 
 - cifrado en tránsito con HTTPS
 - en reposo para datos sensibles y plantillas biométricas
-- autenticación con MFA para administradores
+- autenticación con MFA TOTP para administradores y acceso financiero; el secreto se cifra en reposo y el desafío temporal se consume una sola vez
 - permisos validados en backend
 - secretos solo en variables de entorno
 

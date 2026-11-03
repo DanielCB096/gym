@@ -8,12 +8,17 @@
     "userInterfaceStyle": "dark",
     "ios": {
       "bundleIdentifier": "com.centrofit.socio",
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Permite tomar fotos de progreso para tu historial personal.",
+        "NSPhotoLibraryUsageDescription": "Permite elegir fotos de progreso desde tu biblioteca.",
+        "NSPhotoLibraryAddUsageDescription": "Permite guardar documentos o imágenes relacionadas con tu cuenta."
+      }
     },
     "android": {
       "package": "com.centrofit.socio",
       "adaptiveIcon": {
-        "backgroundColor": "#0B1220",
+        "backgroundColor": "#07110D",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -25,7 +30,14 @@
     },
     "plugins": [
       "expo-secure-store",
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Permite elegir fotos de progreso desde tu biblioteca.",
+          "cameraPermission": "Permite tomar fotos de progreso con la cámara."
+        }
+      ]
     ],
     "extra": {
       "eas": {

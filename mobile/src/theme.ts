@@ -1,15 +1,16 @@
 import { Platform, StyleSheet } from "react-native";
 
 export const colors = {
-  background: "#0B1220",
-  surface: "#151E2E",
-  surfaceMuted: "#1E293B",
-  border: "#263449",
-  text: "#F8FAFC",
-  textMuted: "#94A3B8",
-  accent: "#22C55E",
-  accentDark: "#16A34A",
-  accentText: "#052E16",
+  background: "#07110D",
+  surface: "#102019",
+  surfaceElevated: "#163024",
+  surfaceMuted: "#182A21",
+  border: "#294236",
+  text: "#F7FAF8",
+  textMuted: "#A6B7AD",
+  accent: "#A3E635",
+  accentDark: "#84CC16",
+  accentText: "#173A0A",
   warning: "#F59E0B",
   danger: "#F87171",
   info: "#60A5FA",
@@ -24,8 +25,10 @@ export const spacing = {
 };
 
 export const radius = {
-  md: 14,
-  lg: 22,
+  sm: 10,
+  md: 16,
+  lg: 24,
+  xl: 32,
 };
 
 export const sharedStyles = StyleSheet.create({
@@ -43,8 +46,18 @@ export const sharedStyles = StyleSheet.create({
     borderColor: colors.border,
     borderRadius: radius.lg,
     borderWidth: 1,
+    elevation: 2,
     gap: spacing.sm,
     padding: spacing.lg,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.14,
+    shadowRadius: 10,
+  },
+  statusBanner: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    padding: spacing.md,
   },
   label: {
     color: colors.textMuted,
@@ -59,6 +72,12 @@ export const sharedStyles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: -0.6,
     lineHeight: 36,
+  },
+  sectionHeader: {
+    color: colors.text,
+    fontSize: 20,
+    fontWeight: "900",
+    letterSpacing: -0.3,
   },
   body: {
     color: colors.textMuted,

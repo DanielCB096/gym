@@ -7,13 +7,16 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
     Uuid,
+    Boolean,
     func,
     text,
 )
+from sqlalchemy import LargeBinary
 from sqlmodel import Field, SQLModel
 
 
@@ -85,6 +88,12 @@ class AppUser(SQLModel, table=True):
         sa_column=Column(String(20), nullable=False, server_default=text("'active'")),
     )
     last_login_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    mfa_enabled: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+    mfa_secret_encrypted: bytes | None = Field(default=None, sa_type=LargeBinary)
+    mfa_enabled_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
@@ -204,6 +213,50 @@ class UserSession(SQLModel, table=True):
     expires_at: datetime = Field(sa_type=DateTime(timezone=True))
     revoked_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     last_seen_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+
+class MfaChallenge(SQLModel, table=True):
+    __tablename__ = "mfa_challenges"
+    __table_args__ = (
+        CheckConstraint("expires_at > created_at", name="ck_mfa_challenges_expiry_order"),
+        Index("ix_mfa_challenges_user_expiry", "user_id", "expires_at", "used_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID = Field(
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False)
+    )
+    challenge_sha256: str = Field(max_length=64, unique=True)
+    purpose: str = Field(max_length=16)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+    expires_at: datetime = Field(sa_type=DateTime(timezone=True))
+    used_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    failed_attempts: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default=text("0")),
+    )
+
+
+class MfaBackupCode(SQLModel, table=True):
+    __tablename__ = "mfa_backup_codes"
+    __table_args__ = (
+        Index("ix_mfa_backup_codes_user_used", "user_id", "used_at"),
+        UniqueConstraint("code_sha256", name="uq_mfa_backup_codes_hash"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID = Field(
+        sa_column=Column(Uuid(as_uuid=True), ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False)
+    )
+    code_sha256: str = Field(max_length=64)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+    used_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
 
 
 class AuthEvent(SQLModel, table=True):

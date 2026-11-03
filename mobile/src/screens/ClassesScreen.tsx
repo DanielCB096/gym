@@ -241,7 +241,9 @@ export function ClassesScreen({
       ) : null}
 
       {page && page.items.length === 0 ? (
-        <View style={sharedStyles.card}>
+        <View style={[sharedStyles.card, styles.emptyCard]}>
+          <Text style={styles.emptyMark}>14</Text>
+          <Text style={styles.emptyTitle}>Sin clases programadas</Text>
           <Text style={sharedStyles.body}>
             No hay clases programadas en los próximos días. Vuelve a revisar más
             tarde.
@@ -339,11 +341,12 @@ const styles = StyleSheet.create({
   },
   back: {
     alignSelf: "flex-start",
+    paddingVertical: spacing.xs,
   },
   backText: {
-    color: colors.textMuted,
+    color: colors.accent,
     fontSize: 14,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   hero: {
     gap: spacing.xs,
@@ -383,7 +386,9 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xl,
   },
   classCard: {
+    backgroundColor: colors.surfaceElevated,
     gap: spacing.sm,
+    borderColor: colors.border,
   },
   classHeader: {
     alignItems: "flex-start",
@@ -408,13 +413,13 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   pill: {
-    backgroundColor: colors.surfaceMuted,
+    backgroundColor: "rgba(163, 230, 53, 0.12)",
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
   pillText: {
-    color: colors.text,
+    color: colors.accent,
     fontSize: 12,
     fontWeight: "700",
   },
@@ -450,5 +455,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     textAlign: "center",
+  },
+  emptyCard: {
+    alignItems: "center",
+    minHeight: 180,
+    justifyContent: "center",
+  },
+  emptyMark: {
+    color: colors.accent,
+    fontSize: 34,
+    fontWeight: "900",
+  },
+  emptyTitle: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: "900",
   },
 });

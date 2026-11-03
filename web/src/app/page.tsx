@@ -3202,6 +3202,12 @@ export default function HomePage() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [loginBusy, setLoginBusy] = useState(false);
+  const [mfaChallengeId, setMfaChallengeId] = useState("");
+  const [mfaSetupRequired, setMfaSetupRequired] = useState(false);
+  const [mfaSetupSecret, setMfaSetupSecret] = useState("");
+  const [mfaSetupUri, setMfaSetupUri] = useState("");
+  const [mfaBackupCodes, setMfaBackupCodes] = useState<string[]>([]);
+  const [mfaCode, setMfaCode] = useState("");
   const [backendStaff, setBackendStaff] = useState<BackendEmployee[] | null>(null);
   const [backendRoles, setBackendRoles] = useState<BackendRole[] | null>(null);
   const [permissionCatalog, setPermissionCatalog] = useState<PermissionCatalogEntry[] | null>(null);
@@ -3563,11 +3569,63 @@ export default function HomePage() {
         setLoginError(payload.detail || "No se pudo iniciar sesión.");
         return;
       }
+      if (payload.mfa_required && payload.mfa_challenge_id) {
+        setMfaChallengeId(payload.mfa_challenge_id);
+        setMfaSetupRequired(Boolean(payload.mfa_setup_required));
+        setMfaCode("");
+        if (payload.mfa_setup_required) {
+          const setupResponse = await fetch("/api/auth/mfa/setup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ challenge_id: payload.mfa_challenge_id }),
+          });
+          const setupPayload = await setupResponse.json();
+          if (!setupResponse.ok) {
+            setLoginError(setupPayload.detail || "No se pudo iniciar la configuración MFA.");
+            return;
+          }
+          setMfaSetupSecret(setupPayload.secret || "");
+          setMfaSetupUri(setupPayload.otpauth_uri || "");
+          setMfaBackupCodes(Array.isArray(setupPayload.backup_codes) ? setupPayload.backup_codes : []);
+        }
+        setLoginPassword("");
+        return;
+      }
       setCurrentUser(payload.user as SessionUser);
       setAuthState("signed_in");
       setLoginPassword("");
     } catch {
       setLoginError("No se pudo conectar con el servicio de identidad.");
+    } finally {
+      setLoginBusy(false);
+    }
+  };
+
+  const submitMfa = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setLoginBusy(true);
+    setLoginError("");
+    try {
+      const response = await fetch("/api/auth/mfa/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ challenge_id: mfaChallengeId, code: mfaCode }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setLoginError(payload.detail || "Código MFA inválido.");
+        return;
+      }
+      setCurrentUser(payload.user as SessionUser);
+      setAuthState("signed_in");
+      setMfaChallengeId("");
+      setMfaSetupRequired(false);
+      setMfaSetupSecret("");
+      setMfaSetupUri("");
+      setMfaBackupCodes([]);
+      setMfaCode("");
+    } catch {
+      setLoginError("No se pudo validar el código MFA.");
     } finally {
       setLoginBusy(false);
     }
@@ -3765,6 +3823,14 @@ export default function HomePage() {
         onEmailChange={setLoginEmail}
         onPasswordChange={setLoginPassword}
         onSubmit={submitLogin}
+        mfaChallengeActive={Boolean(mfaChallengeId)}
+        mfaSetupRequired={mfaSetupRequired}
+        mfaSetupSecret={mfaSetupSecret}
+        mfaSetupUri={mfaSetupUri}
+        mfaBackupCodes={mfaBackupCodes}
+        mfaCode={mfaCode}
+        onMfaCodeChange={setMfaCode}
+        onMfaSubmit={submitMfa}
       />
     );
   }
@@ -6056,7 +6122,7 @@ function SessionLoading() {
   return <main className="session-loading"><div className="session-spinner" /><span>Validando sesión segura…</span></main>;
 }
 
-function LoginView({ email, password, error, busy, onEmailChange, onPasswordChange, onSubmit }: { email: string; password: string; error: string; busy: boolean; onEmailChange: (value: string) => void; onPasswordChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
+function LoginView({ email, password, error, busy, onEmailChange, onPasswordChange, onSubmit, mfaChallengeActive, mfaSetupRequired, mfaSetupSecret, mfaSetupUri, mfaBackupCodes, mfaCode, onMfaCodeChange, onMfaSubmit }: { email: string; password: string; error: string; busy: boolean; onEmailChange: (value: string) => void; onPasswordChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; mfaChallengeActive: boolean; mfaSetupRequired: boolean; mfaSetupSecret: string; mfaSetupUri: string; mfaBackupCodes: string[]; mfaCode: string; onMfaCodeChange: (value: string) => void; onMfaSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
   return (
     <main className="login-page">
       <section className="login-visual">
@@ -6069,14 +6135,34 @@ function LoginView({ email, password, error, busy, onEmailChange, onPasswordChan
         <div className="login-form-shell">
           <span className="login-form-mark"><Fingerprint size={19} /></span>
           <p className="section-kicker">IDENTIDAD Y ACCESO</p>
-          <h2>Iniciar sesión</h2>
-          <p className="login-form-subtitle">Usa tu cuenta de colaborador para entrar al panel.</p>
+          <h2>{mfaChallengeActive ? (mfaSetupRequired ? "Configurar MFA" : "Verificación MFA") : "Iniciar sesión"}</h2>
+          <p className="login-form-subtitle">{mfaChallengeActive ? (mfaSetupRequired ? "Escanea el secreto en tu app autenticadora y confirma con el código." : "Ingresa el código de 6 dígitos de tu app autenticadora.") : "Usa tu cuenta de colaborador para entrar al panel."}</p>
+          {mfaChallengeActive ? (
+            <form className="login-form" onSubmit={onMfaSubmit}>
+              {mfaSetupRequired && (
+                <>
+                  <label className="form-field"><span>Secreto MFA</span><input type="text" value={mfaSetupSecret} readOnly autoComplete="off" /></label>
+                  {mfaSetupUri && <label className="form-field"><span>URI de configuración</span><input type="text" value={mfaSetupUri} readOnly autoComplete="off" /></label>}
+                  {mfaBackupCodes.length > 0 && (
+                    <div className="login-error" role="status">
+                      <strong>Guarda estos códigos de respaldo:</strong>
+                      <div>{mfaBackupCodes.join(" · ")}</div>
+                    </div>
+                  )}
+                </>
+              )}
+              <label className="form-field"><span>Código de verificación o respaldo</span><input type="text" name="mfa-code" autoComplete="one-time-code" value={mfaCode} onChange={(event) => onMfaCodeChange(event.target.value.slice(0, 32))} placeholder="123456 o XXXX-XXXX-XX" required /></label>
+              {error && <div className="login-error" role="alert">{error}</div>}
+              <button type="submit" className="button button-primary login-submit" disabled={busy || mfaCode.length < 6}>{busy ? "Validando…" : "Confirmar acceso"}<ArrowRight size={16} /></button>
+            </form>
+          ) : (
           <form className="login-form" onSubmit={onSubmit}>
             <label className="form-field"><span>Correo electrónico</span><input type="email" name="email" autoComplete="username" value={email} onChange={(event) => onEmailChange(event.target.value)} placeholder="nombre@correo.com" required /></label>
             <label className="form-field"><span>Contraseña</span><input type="password" name="password" autoComplete="current-password" value={password} onChange={(event) => onPasswordChange(event.target.value)} placeholder="••••••••••••" required /></label>
             {error && <div className="login-error" role="alert">{error}</div>}
             <button type="submit" className="button button-primary login-submit" disabled={busy}>{busy ? "Validando…" : "Entrar al panel"}<ArrowRight size={16} /></button>
           </form>
+          )}
           <div className="login-security-note"><ShieldCheck size={16} /><span>Sesión cifrada y validada por el servidor. No compartas tu contraseña.</span></div>
           <div className="login-form-footer">¿Necesitas ayuda para entrar? <button type="button">Contacta a tu gerente</button></div>
         </div>

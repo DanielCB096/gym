@@ -10,6 +10,20 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: config.name ?? "Centro Fit Socio",
   slug: config.slug ?? "centro-fit-socio",
+  ios: {
+    ...config.ios,
+    infoPlist: {
+      ...config.ios?.infoPlist,
+      ...(process.env.ALLOW_CLEARTEXT === "true"
+        ? {
+            NSAppTransportSecurity: {
+              NSAllowsLocalNetworking: true,
+              NSAllowsArbitraryLoads: false,
+            },
+          }
+        : {}),
+    },
+  },
   android: {
     ...config.android,
     ...(process.env.GOOGLE_SERVICES_JSON

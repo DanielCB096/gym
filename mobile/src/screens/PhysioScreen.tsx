@@ -143,7 +143,10 @@ export function PhysioScreen({
               next?.id === focusRefId && styles.focusedCard,
             ]}
           >
-            <Text style={sharedStyles.label}>Próxima cita</Text>
+            <View style={styles.nextHeader}>
+              <Text style={styles.nextLabel}>PRÓXIMA CITA</Text>
+              {next ? <View style={styles.pill}><Text style={styles.pillText}>Programada</Text></View> : null}
+            </View>
             {next ? (
               <AppointmentBody appointment={next} />
             ) : (
@@ -273,11 +276,12 @@ const styles = StyleSheet.create({
   },
   back: {
     alignSelf: "flex-start",
+    paddingVertical: spacing.xs,
   },
   backText: {
-    color: colors.textMuted,
+    color: colors.accent,
     fontSize: 14,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   hero: {
     gap: spacing.xs,
@@ -322,7 +326,19 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xl,
   },
   nextCard: {
-    borderColor: "rgba(34, 197, 94, 0.5)",
+    backgroundColor: colors.surfaceElevated,
+    borderColor: "rgba(163, 230, 53, 0.45)",
+  },
+  nextHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  nextLabel: {
+    color: colors.accent,
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1.2,
   },
   nextService: {
     color: colors.text,

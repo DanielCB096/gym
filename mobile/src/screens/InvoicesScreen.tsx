@@ -322,11 +322,12 @@ const styles = StyleSheet.create({
   },
   back: {
     alignSelf: "flex-start",
+    paddingVertical: spacing.xs,
   },
   backText: {
-    color: colors.textMuted,
+    color: colors.accent,
     fontSize: 14,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   hero: {
     gap: spacing.xs,
@@ -381,7 +382,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   pill: {
-    backgroundColor: colors.surfaceMuted,
+    backgroundColor: "rgba(163, 230, 53, 0.12)",
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -405,8 +406,9 @@ const styles = StyleSheet.create({
   },
   total: {
     color: colors.text,
-    fontSize: 28,
-    fontWeight: "800",
+    fontSize: 32,
+    fontWeight: "900",
+    letterSpacing: -0.5,
   },
   notice: {
     color: colors.warning,

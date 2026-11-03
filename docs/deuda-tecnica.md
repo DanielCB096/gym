@@ -2,6 +2,8 @@
 
 ## Estado actual
 
+- **App móvil iOS/Expo (2026-11-03)**: el rediseño secundario y las validaciones locales están completos, pero falta una cuenta Expo/EAS autenticada, configuración HTTPS de la API y una build física probada en iPhone. VoiceOver, distribución interna y Apple Developer siguen pendientes antes de producción.
+- **MFA administrativo (2026-11-03, ADR-089)**: existe el desafío TOTP, cifrado del secreto y códigos de respaldo consumibles, pero faltan alta persistente desde una pantalla de configuración, rotación/deshabilitación y revisión profesional antes de producción.
 - La definición de stack aún está en diseño inicial y requiere validación con el negocio antes de implementación final.
 - Los costos reales de hardware y pasarelas deberán validarse con proveedores locales antes de entorno productivo.
 - La integración con PAC y el control legal de LFPDPPP requiere revisión profesional.

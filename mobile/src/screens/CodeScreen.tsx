@@ -181,7 +181,7 @@ const styles = StyleSheet.create({
     alignSelf: "flex-start",
   },
   backText: {
-    color: colors.textMuted,
+    color: colors.accent,
     fontSize: 14,
     fontWeight: "600",
   },
@@ -193,7 +193,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   codeInput: {
-    backgroundColor: colors.surfaceMuted,
+    backgroundColor: colors.surfaceElevated,
     borderColor: colors.border,
     borderRadius: radius.md,
     borderWidth: 1,

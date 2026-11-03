@@ -1,9 +1,16 @@
+import base64
+import hashlib
+import hmac
+import os
+import struct
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import secrets
 from uuid import UUID
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pwdlib import PasswordHash
 from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
@@ -12,6 +19,8 @@ from app.modules.identity.models import (
     AppUser,
     AuthEvent,
     Employee,
+    MfaChallenge,
+    MfaBackupCode,
     Permission,
     Role,
     RolePermission,
@@ -122,6 +131,10 @@ class AuthenticationFailed(IdentityError):
     pass
 
 
+class InvalidMfaChallenge(IdentityError):
+    pass
+
+
 class InvalidSession(IdentityError):
     pass
 
@@ -178,10 +191,13 @@ class AuthenticatedUser:
 
 @dataclass(frozen=True)
 class LoginResult:
-    access_token: str
-    token_type: str
-    expires_at: datetime
-    user: AuthenticatedUser
+    access_token: str | None = None
+    token_type: str = "Bearer"
+    expires_at: datetime | None = None
+    user: AuthenticatedUser | None = None
+    mfa_required: bool = False
+    mfa_challenge_id: str | None = None
+    mfa_setup_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -568,6 +584,246 @@ def set_user_status(
     return user
 
 
+def _mfa_encryption_key() -> bytes:
+    configured = os.getenv("MFA_ENCRYPTION_KEY", "").strip() or os.getenv("SECRET_KEY", "").strip()
+    if not configured or configured in {"change-me", "replace-me"}:
+        raise InvalidMfaChallenge("MFA_ENCRYPTION_KEY o SECRET_KEY no está configurado.")
+    return hashlib.sha256(configured.encode("utf-8")).digest()
+
+
+def _encrypt_mfa_secret(secret: str, user_id: UUID) -> bytes:
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(_mfa_encryption_key()).encrypt(
+        nonce,
+        secret.encode("ascii"),
+        user_id.bytes,
+    )
+    return b"\x01" + nonce + ciphertext
+
+
+def _decrypt_mfa_secret(encrypted: bytes, user_id: UUID) -> str:
+    if len(encrypted) < 30 or encrypted[0] != 1:
+        raise InvalidMfaChallenge("El secreto MFA almacenado es inválido.")
+    nonce = encrypted[1:13]
+    try:
+        plaintext = AESGCM(_mfa_encryption_key()).decrypt(
+            nonce,
+            encrypted[13:],
+            user_id.bytes,
+        )
+    except Exception as error:
+        raise InvalidMfaChallenge("No se pudo descifrar el secreto MFA.") from error
+    return plaintext.decode("ascii")
+
+
+def _base32_secret(length_bytes: int = 20) -> str:
+    return base64.b32encode(os.urandom(length_bytes)).decode("ascii").rstrip("=")
+
+
+def _totp(secret: str, *, timestamp: int | None = None, period: int = 30, digits: int = 6) -> str:
+    if timestamp is None:
+        timestamp = int(time.time())
+    counter = timestamp // period
+    padded = secret + ("=" * ((8 - len(secret) % 8) % 8))
+    key = base64.b32decode(padded, casefold=True)
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    value = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return f"{value % (10 ** digits):0{digits}d}"
+
+
+def _verify_totp(secret: str, code: str, *, timestamp: int | None = None) -> bool:
+    normalized = "".join(code.split())
+    if len(normalized) != 6 or not normalized.isdigit():
+        return False
+    now = int(time.time()) if timestamp is None else timestamp
+    return any(
+        hmac.compare_digest(normalized, _totp(secret, timestamp=now + window * 30))
+        for window in (-1, 0, 1)
+    )
+
+
+def _backup_code_hash(code: str) -> str:
+    normalized = "".join(code.upper().split("-"))
+    return sha256(normalized.encode("ascii")).hexdigest()
+
+
+def _generate_backup_codes(session: Session, *, user_id: UUID, now: datetime, count: int = 10) -> list[str]:
+    generated: list[str] = []
+    for _ in range(count):
+        raw = secrets.token_hex(5).upper()
+        code = f"{raw[:4]}-{raw[4:8]}-{raw[8:]}"
+        session.add(MfaBackupCode(
+            user_id=user_id,
+            code_sha256=_backup_code_hash(code),
+            created_at=now,
+        ))
+        generated.append(code)
+    session.commit()
+    return generated
+
+
+def _user_has_role(session: Session, user_id: UUID, role_codes: set[str]) -> bool:
+    assignment = session.exec(
+        select(UserRoleAssignment.id)
+        .join(Role, Role.id == UserRoleAssignment.role_id)
+        .where(
+            UserRoleAssignment.user_id == user_id,
+            UserRoleAssignment.revoked_at.is_(None),
+            Role.code.in_(role_codes),
+        )
+    ).first()
+    return assignment is not None
+
+
+def _create_mfa_challenge(
+    session: Session,
+    *,
+    user_id: UUID,
+    purpose: str,
+    now: datetime,
+) -> str:
+    raw_challenge = secrets.token_urlsafe(32)
+    challenge = MfaChallenge(
+        user_id=user_id,
+        challenge_sha256=_token_hash(raw_challenge),
+        purpose=purpose,
+        created_at=now,
+        expires_at=now + timedelta(minutes=10),
+    )
+    session.add(challenge)
+    session.commit()
+    return raw_challenge
+
+
+def start_mfa_setup(
+    session: Session,
+    *,
+    challenge_id: str,
+    account_email: str,
+    now: datetime | None = None,
+) -> tuple[str, str, list[str]]:
+    occurred_at = now or utc_now()
+    challenge = session.exec(
+        select(MfaChallenge).where(MfaChallenge.challenge_sha256 == _token_hash(challenge_id))
+    ).first()
+    if (
+        challenge is None
+        or challenge.purpose != "setup"
+        or challenge.used_at is not None
+        or _as_utc(challenge.expires_at) <= occurred_at
+    ):
+        raise InvalidMfaChallenge("El desafío MFA no es válido o expiró.")
+    user = session.get(AppUser, challenge.user_id)
+    if user is None or user.status != "active":
+        raise InvalidMfaChallenge("La cuenta no está disponible.")
+    secret = _base32_secret()
+    user.mfa_secret_encrypted = _encrypt_mfa_secret(secret, user.id)
+    session.add(user)
+    session.commit()
+    backup_codes = _generate_backup_codes(session, user_id=user.id, now=occurred_at)
+    issuer = "Centro Fit"
+    otp_uri = (
+        "otpauth://totp/"
+        + f"{issuer}:{account_email}"
+        + "?secret=" + secret
+        + "&issuer=" + issuer.replace(" ", "%20")
+        + "&algorithm=SHA1&digits=6&period=30"
+    )
+    return secret, otp_uri, backup_codes
+
+
+def verify_mfa_challenge(
+    session: Session,
+    *,
+    challenge_id: str,
+    code: str,
+    now: datetime | None = None,
+) -> LoginResult:
+    occurred_at = now or utc_now()
+    challenge = session.exec(
+        select(MfaChallenge).where(MfaChallenge.challenge_sha256 == _token_hash(challenge_id))
+    ).first()
+    if (
+        challenge is None
+        or challenge.used_at is not None
+        or _as_utc(challenge.expires_at) <= occurred_at
+    ):
+        raise InvalidMfaChallenge("El desafío MFA no es válido o expiró.")
+    user = session.get(AppUser, challenge.user_id)
+    if user is None or user.status != "active" or user.mfa_secret_encrypted is None:
+        raise InvalidMfaChallenge("La configuración MFA no está disponible.")
+    secret = _decrypt_mfa_secret(user.mfa_secret_encrypted, user.id)
+    totp_valid = _verify_totp(secret, code)
+    backup_code = None
+    if not totp_valid:
+        backup_code = session.exec(
+            select(MfaBackupCode).where(
+                MfaBackupCode.user_id == user.id,
+                MfaBackupCode.code_sha256 == _backup_code_hash(code),
+                MfaBackupCode.used_at.is_(None),
+            )
+        ).first()
+    if not totp_valid and backup_code is None:
+        challenge.failed_attempts += 1
+        session.add(
+            AuthEvent(
+                user_id=user.id,
+                event_type="mfa_login",
+                result="failure",
+                reason_code="invalid_code",
+                occurred_at=occurred_at,
+            )
+        )
+        session.commit()
+        if challenge.failed_attempts >= 5:
+            challenge.used_at = occurred_at
+            session.add(challenge)
+            session.commit()
+            raise InvalidMfaChallenge("El desafío MFA fue bloqueado por intentos excesivos.")
+        raise InvalidMfaChallenge("Código MFA inválido.")
+    if backup_code is not None:
+        backup_code.used_at = occurred_at
+        session.add(backup_code)
+        session.add(
+            AuthEvent(
+                user_id=user.id,
+                event_type="mfa_backup_code",
+                result="success",
+                occurred_at=occurred_at,
+            )
+        )
+    challenge.used_at = occurred_at
+    if challenge.purpose == "setup":
+        user.mfa_enabled = True
+        user.mfa_enabled_at = occurred_at
+        session.add(
+            AuthEvent(
+                user_id=user.id,
+                actor_id=user.id,
+                event_type="mfa_enabled",
+                result="success",
+                occurred_at=occurred_at,
+            )
+        )
+    session.add(challenge)
+    raw_token = secrets.token_urlsafe(32)
+    expires_at = occurred_at + SESSION_LIFETIME
+    user_session = UserSession(
+        user_id=user.id,
+        token_sha256=_token_hash(raw_token),
+        created_at=occurred_at,
+        expires_at=expires_at,
+        last_seen_at=occurred_at,
+    )
+    user.last_login_at = occurred_at
+    session.add(user_session)
+    session.add(AuthEvent(user_id=user.id, event_type="login", result="success", occurred_at=occurred_at))
+    session.commit()
+    principal = _build_principal(session, user, user_session, occurred_at)
+    return LoginResult(raw_token, "Bearer", expires_at, principal)
+
+
 def authenticate_user(
     session: Session,
     *,
@@ -595,6 +851,28 @@ def authenticate_user(
         )
         session.commit()
         raise AuthenticationFailed("Invalid email or password")
+
+    if user.mfa_enabled:
+        challenge_id = _create_mfa_challenge(
+            session,
+            user_id=user.id,
+            purpose="login",
+            now=occurred_at,
+        )
+        session.add(
+            AuthEvent(
+                user_id=user.id,
+                event_type="mfa_challenge",
+                result="success",
+                reason_code="login",
+                occurred_at=occurred_at,
+            )
+        )
+        session.commit()
+        return LoginResult(
+            mfa_required=True,
+            mfa_challenge_id=challenge_id,
+        )
 
     raw_token = secrets.token_urlsafe(32)
     expires_at = occurred_at + SESSION_LIFETIME

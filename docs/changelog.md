@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-11-03 · Preparación de la app móvil para iPhone
+
+- Se configuraron permisos iOS para cámara, biblioteca y escritura de fotos usadas por fotos de progreso.
+- Se agregó compatibilidad del entorno local con tráfico HTTP solo para redes permitidas de preview; las builds productivas deben usar HTTPS.
+- Se alinearon los paquetes móviles con Expo SDK 58 y se validó una exportación web reproducible.
+- La build física de iPhone todavía requiere EAS/Apple y no se ejecutó desde este entorno Windows; la configuración expo y las pruebas locales sí quedaron validadas.
+
+## 2026-11-03 · Rediseño visual de la app móvil
+
+- Se renovó el sistema visual de la app del socio con una paleta verde oscuro, mayor contraste, tarjetas y estados visuales más claros.
+- Se rediseñaron inicio de sesión, confirmación OTP y pantalla principal, con jerarquía de acceso, resumen, acciones rápidas y datos de membresía.
+- Se completó la segunda pasada visual de las pantallas operativas secundarias: Clases, Fisioterapia, Pagos, Facturas, Avisos, Rutinas, Fotos, Solicitud de factura, Código de acceso y detalle de rutina conservan el tema verde compartido.
+- Quedan pendientes la autenticación Expo/EAS, una API pública HTTPS, una build iOS física y una prueba de accesibilidad en VoiceOver.
+- La identidad visual compartida se centralizó en el tema móvil para que el resto de pantallas conserve superficies, tipografía, botones y estados consistentes.
+
+## 2026-11-03 · MFA TOTP administrativo
+
+- Se agregó soporte de MFA TOTP para cuentas del panel, con secreto cifrado en reposo, desafíos temporales de diez minutos y consumo único.
+- La migración `20261103_0089` incorpora estado MFA a `app_users` y la tabla `mfa_challenges`; las cuentas existentes conservan compatibilidad hasta que se configure MFA.
+- El login y el BFF manejan el segundo paso sin crear la sesión antes de validar el código. Quedan pendientes rotación/deshabilitación desde UI y revisión profesional antes de producción.
+- Se completó el soporte de diez códigos de respaldo por usuario: solo se guarda su hash SHA-256, son de un solo uso y el desafío MFA se bloquea después de cinco intentos inválidos.
+
 ## 2026-11-03 · Herramientas de respaldo y recuperación local
 
 - Se agregaron scripts de PowerShell para respaldar PostgreSQL y fotos de progreso del staging, validar SHA-256, aplicar retención y restaurar en un entorno Docker aislado.

@@ -1,5 +1,15 @@
 # App móvil del socio
 
+La app usa un sistema visual oscuro con acentos verdes y componentes consistentes para inicio de sesión, resumen, estados de acceso, acciones y formularios. El tema compartido está en `src/theme.ts`; la pantalla principal presenta accesos rápidos, membresía, saldo y datos de cuenta.
+
+## Preparación iOS
+
+- La app declara el identificador `com.centrofit.socio` y admite iPhone y iPad.
+- Cámara y biblioteca de fotos cuentan con descripciones visibles para permisos en iOS.
+- Las fotos de progreso siguen limitadas a archivos de imagen de hasta 8 MB.
+- En preview local, HTTP solo permite la red local. Una build real debe recibir `EXPO_PUBLIC_API_URL` con HTTPS y no depender de `127.0.0.1`.
+- Las builds físicas requieren Apple Developer, perfiles EAS y compilación en infraestructura compatible con iOS; este entorno Windows valida la configuración, pero no produce ni prueba un IPA en dispositivo.
+
 Aplicación Expo/React Native para el socio del club. En este incremento cubre el **acceso con código de un solo uso (OTP) por correo**, el **código rotativo de entrada al club**, la **consulta del perfil y la membresía**, la **reserva de clases**, la **consulta de rutinas y progreso con registro de entrenamientos (incluido el detalle por serie) y medidas**, la **carga y consulta de fotos de progreso con consentimiento**, los **pagos y el estado de cuenta**, el **primer pago de membresía mediante checkout alojado de Conekta exclusivamente en sandbox**, las **facturas del socio** con descarga de PDF y XML y **solicitud de factura** de sus propias compras y cobros, y la **bandeja de avisos del gimnasio**. No permite renovaciones, guardar tarjetas ni cobros productivos.
 
 ## Alcance implementado

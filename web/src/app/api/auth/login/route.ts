@@ -3,16 +3,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { GYM_API_URL, isSameOriginRequest, SESSION_COOKIE } from "@/lib/backend-proxy";
 
 type BackendLoginResponse = {
-  access_token: string;
+  access_token?: string;
   token_type: string;
-  expires_at: string;
-  user: {
+  expires_at?: string;
+  user?: {
     id: string;
     email: string;
     employee_id: string | null;
     roles: string[];
     permissions: string[];
   };
+  mfa_required?: boolean;
+  mfa_challenge_id?: string;
+  mfa_setup_required?: boolean;
 };
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -43,6 +46,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     const login = payload as BackendLoginResponse;
+    if (login.mfa_required) {
+      return NextResponse.json({
+        mfa_required: true,
+        mfa_challenge_id: login.mfa_challenge_id,
+        mfa_setup_required: login.mfa_setup_required,
+      });
+    }
     if (!login.access_token || !login.expires_at || !login.user) {
       return NextResponse.json({ detail: "Respuesta de sesión inválida" }, { status: 502 });
     }

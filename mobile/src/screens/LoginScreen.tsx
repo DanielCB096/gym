@@ -53,8 +53,11 @@ export function LoginScreen({ initialError, notice, onCodeRequested }: Props) {
         contentContainerStyle={styles.container}
         keyboardShouldPersistTaps="handled"
       >
+        <View style={styles.decorTop} />
         <View style={styles.brandRow}>
-          <View style={styles.brandDot} />
+          <View style={styles.brandMark}>
+            <View style={styles.brandMarkInner} />
+          </View>
           <Text style={styles.brand}>CENTRO FIT</Text>
         </View>
 
@@ -128,16 +131,33 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     paddingVertical: spacing.xl,
   },
+  decorTop: {
+    backgroundColor: colors.accent,
+    borderRadius: 999,
+    height: 4,
+    marginBottom: spacing.sm,
+    opacity: 0.75,
+    width: 72,
+  },
   brandRow: {
     alignItems: "center",
     flexDirection: "row",
     gap: spacing.sm,
   },
-  brandDot: {
+  brandMark: {
     backgroundColor: colors.accent,
-    borderRadius: 6,
-    height: 12,
-    width: 12,
+    borderRadius: 8,
+    height: 22,
+    width: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brandMarkInner: {
+    borderColor: colors.accentText,
+    borderRadius: 4,
+    borderWidth: 2,
+    height: 9,
+    width: 9,
   },
   brand: {
     color: colors.text,

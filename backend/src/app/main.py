@@ -406,6 +406,7 @@ from app.modules.identity.service import (
     AuthenticationFailed,
     IdentityError,
     ImmutableRole,
+    InvalidMfaChallenge,
     InvalidSession,
     LastOwnerRequired,
     PermissionDenied,
@@ -416,6 +417,8 @@ from app.modules.identity.service import (
     assign_role,
     authenticate_session,
     authenticate_user,
+    start_mfa_setup,
+    verify_mfa_challenge,
     bootstrap_initial_owner,
     ensure_default_access_control,
     grant_role_permission,
@@ -904,6 +907,21 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+class MfaChallengeRequest(BaseModel):
+    challenge_id: str = Field(min_length=20, max_length=128)
+    code: str = Field(min_length=6, max_length=32)
+
+
+class MfaSetupRequest(BaseModel):
+    challenge_id: str = Field(min_length=20, max_length=128)
+
+
+class MfaSetupResponse(BaseModel):
+    secret: str
+    otpauth_uri: str
+    backup_codes: list[str] = Field(default_factory=list)
+
+
 class UserResponse(BaseModel):
     id: UUID
     email: str
@@ -941,10 +959,14 @@ class SessionOverviewResponse(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    access_token: str
-    token_type: str
-    expires_at: datetime
-    user: UserResponse
+    access_token: str | None = None
+    token_type: str = "Bearer"
+    expires_at: datetime | None = None
+    user: UserResponse | None = None
+
+    mfa_required: bool = False
+    mfa_challenge_id: str | None = None
+    mfa_setup_required: bool = False
 
 
 class MemberCodeRequest(BaseModel):
@@ -4028,11 +4050,59 @@ def login(request: LoginRequest, session: SessionDependency) -> LoginResponse:
             detail="Invalid email or password",
             headers={"WWW-Authenticate": "Bearer"},
         ) from error
+    if result.mfa_required:
+        return LoginResponse(
+            token_type=result.token_type,
+            mfa_required=True,
+            mfa_challenge_id=result.mfa_challenge_id,
+            mfa_setup_required=result.mfa_setup_required,
+        )
     return LoginResponse(
         access_token=result.access_token,
         token_type=result.token_type,
         expires_at=result.expires_at,
-        user=_principal_response(result.user),
+        user=_principal_response(result.user) if result.user is not None else None,
+    )
+
+
+@app.post("/auth/mfa/setup", response_model=MfaSetupResponse, tags=["authentication"])
+def mfa_setup(request: MfaSetupRequest, session: SessionDependency) -> MfaSetupResponse:
+    challenge = session.exec(
+        select(identity_models.MfaChallenge).where(
+            identity_models.MfaChallenge.challenge_sha256 == sha256(request.challenge_id.encode("utf-8")).hexdigest()
+        )
+    ).first()
+    if challenge is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El desafío MFA no es válido.")
+    user = session.get(identity_models.AppUser, challenge.user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El desafío MFA no es válido.")
+    try:
+        secret, otp_uri, backup_codes = start_mfa_setup(
+            session,
+            challenge_id=request.challenge_id,
+            account_email=user.email,
+        )
+    except InvalidMfaChallenge as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    return MfaSetupResponse(secret=secret, otpauth_uri=otp_uri, backup_codes=backup_codes)
+
+
+@app.post("/auth/mfa/verify", response_model=LoginResponse, tags=["authentication"])
+def mfa_verify(request: MfaChallengeRequest, session: SessionDependency) -> LoginResponse:
+    try:
+        result = verify_mfa_challenge(
+            session,
+            challenge_id=request.challenge_id,
+            code=request.code,
+        )
+    except InvalidMfaChallenge as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)) from error
+    return LoginResponse(
+        access_token=result.access_token,
+        token_type=result.token_type,
+        expires_at=result.expires_at,
+        user=_principal_response(result.user) if result.user is not None else None,
     )
 
 

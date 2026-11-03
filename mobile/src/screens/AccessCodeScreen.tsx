@@ -246,11 +246,12 @@ const styles = StyleSheet.create({
   },
   back: {
     alignSelf: "flex-start",
+    paddingVertical: spacing.xs,
   },
   backText: {
-    color: colors.textMuted,
+    color: colors.accent,
     fontSize: 14,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   hero: {
     gap: spacing.xs,
@@ -273,6 +274,8 @@ const styles = StyleSheet.create({
   },
   codeCard: {
     alignItems: "center",
+    borderColor: "rgba(163, 230, 53, 0.45)",
+    backgroundColor: colors.surfaceElevated,
     gap: spacing.md,
     paddingVertical: spacing.xl,
   },

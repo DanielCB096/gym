@@ -37,6 +37,8 @@ Este módulo cubre la gestión de personal del gimnasio: alta y baja de empleado
 4. Se activa el usuario en el sistema con MFA si aplica para administración.
 5. El sistema registra la creación con bitácora de quién la autorizó.
 
+**MFA de personal:** las cuentas `owner`, `manager` y `accountant` pueden habilitar TOTP desde el flujo de autenticación. Mientras MFA está habilitado, la contraseña abre un desafío temporal de diez minutos; solo un código TOTP válido crea la sesión de ocho horas. El secreto se cifra con AES-256-GCM y los desafíos se almacenan únicamente por hash SHA-256. La baja o renovación de MFA debe revisarse profesionalmente antes de producción.
+
 ### Flujo alterno: cambio de turno o permiso
 1. El gerente o recepcionista crea una modificación de horario.
 2. El sistema valida si el cambio cumple la política de turno mínimo y horario del área.
