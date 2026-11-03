@@ -216,7 +216,7 @@ Este entorno desechable permite probar el checkout y recibir un webhook real de 
    New-Item -ItemType Directory -Force backend\.secrets
    ```
 
-2. Desde el modo de pruebas de Conekta, copia la API key sandbox a `CONEKTA_SANDBOX_API_KEY` en `.env`; descarga la llave pública RSA del webhook sandbox y guárdala en `backend/.secrets/conekta-webhook-public.pem`. Configura `CONEKTA_WEBHOOK_PUBLIC_KEY_FILE_HOST=backend/.secrets/conekta-webhook-public.pem`. No pegues la llave en la terminal ni en Git. Las URL de éxito/fracaso del ejemplo son HTTPS y no activan ni confirman el pago.
+2. Desde el modo de pruebas de Conekta, configura en el `.env` de la raíz `CONEKTA_SANDBOX_API_KEY` y `CONEKTA_SANDBOX_PUBLIC_KEY` con llaves `key_test_`; configura `MEMBERSHIP_PAYMENT_ENCRYPTION_KEY` con una clave aleatoria de 32 bytes en Base64 y `MEMBER_PAYMENT_METHOD_URL=http://127.0.0.1:3000/member/payment-method`. Descarga la llave pública RSA del webhook sandbox y guárdala en `backend/.secrets/conekta-webhook-public.pem`; configura `CONEKTA_WEBHOOK_PUBLIC_KEY_FILE_HOST=backend/.secrets/conekta-webhook-public.pem`. No pegues ninguna llave en la terminal, el chat ni Git. Las URL de éxito/fracaso del ejemplo son HTTPS y no activan ni confirman el pago.
 3. Inicia el backend y su PostgreSQL aislado:
 
    ```powershell
@@ -224,7 +224,8 @@ Este entorno desechable permite probar el checkout y recibir un webhook real de 
    docker compose -f compose.conekta-sandbox.yml ps
    ```
 
-   El esquema se migra automáticamente y la API solo se publica en `127.0.0.1:8000`. Este Compose no inyecta las otras credenciales de `.env` (por ejemplo PAC, SMTP o almacenamiento).
+   El esquema se migra automáticamente y la API solo se publica en `127.0.0.1:8000`. El Compose pasa al backend únicamente las llaves Conekta sandbox y la clave AES necesarias; no inyecta otras credenciales de `.env` (por ejemplo PAC, SMTP o almacenamiento).
+   Para abrir el tokenizador de captura inicial, inicia el panel web por separado desde `web/` con `npm run dev`; la URL local predeterminada es `http://127.0.0.1:3000/member/payment-method`.
 4. En una segunda terminal inicia el túnel temporal gratuito:
 
    ```powershell

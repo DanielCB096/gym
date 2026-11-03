@@ -24,6 +24,9 @@ services:
       PREVIEW_MODE: "false"
       CONEKTA_MODE: sandbox
       CONEKTA_SANDBOX_API_KEY: ${CONEKTA_SANDBOX_API_KEY:-}
+      CONEKTA_SANDBOX_PUBLIC_KEY: ${CONEKTA_SANDBOX_PUBLIC_KEY:-}
+      MEMBERSHIP_PAYMENT_ENCRYPTION_KEY: ${MEMBERSHIP_PAYMENT_ENCRYPTION_KEY:-}
+      MEMBER_PAYMENT_METHOD_URL: ${MEMBER_PAYMENT_METHOD_URL:-http://127.0.0.1:3000/member/payment-method}
       CONEKTA_SUCCESS_URL: ${CONEKTA_SUCCESS_URL:-https://example.com/sandbox-payment/return}
       CONEKTA_FAILURE_URL: ${CONEKTA_FAILURE_URL:-https://example.com/sandbox-payment/failure}
       CONEKTA_WEBHOOK_PUBLIC_KEY_FILE: /run/secrets/conekta_webhook_public_key

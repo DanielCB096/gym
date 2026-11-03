@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-11-03 · Preparación de E2E recurrente en sandbox
+
+- El Compose aislado pasa al backend la llave pública Conekta sandbox, la clave AES-256 y la URL local del tokenizador; el webhook continúa usando el PEM montado como secreto local.
+- La guía aclara la configuración requerida y cómo iniciar el panel web en `localhost` para capturar una tarjeta de prueba. No se incluyen credenciales en el repositorio.
+
 ## 2026-11-03 · Motor local de renovaciones automáticas
 
 - `run_membership_renewals.py` procesa vencimientos, cobros de ciclos posteriores, reintentos 1/3/5 y conciliación de órdenes inciertas; `ops_cron.py` instala la pasada cada 15 minutos por defecto.
