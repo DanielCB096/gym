@@ -149,11 +149,11 @@ Disponibles:
 
 ### 06-operacion
 - [primera-entrega.md](06-operacion/primera-entrega.md)
-- despliegue.md
-- respaldos-y-recuperacion.md
-- monitoreo.md (pendiente de redacción)
-- manual-de-incidentes.md (pendiente de redacción)
-- manual-usuario-recepcion.md
+- [despliegue.md](06-operacion/despliegue.md)
+- [respaldos-y-recuperacion.md](06-operacion/respaldos-y-recuperacion.md)
+- [monitoreo.md](06-operacion/monitoreo.md)
+- [manual-de-incidentes.md](06-operacion/manual-de-incidentes.md)
+- [manual-usuario-recepcion.md](06-operacion/manual-usuario-recepcion.md)
 - [manual-usuario-entrenador.md](06-operacion/manual-usuario-entrenador.md)
 - [manual-usuario-gerente.md](06-operacion/manual-usuario-gerente.md)
 - [manual-usuario-mantenimiento.md](06-operacion/manual-usuario-mantenimiento.md)
@@ -172,6 +172,7 @@ Cada cambio de regla de negocio, entidad o flujo debe dejar evidencia actualizad
 - **Alcance de primera entrega (ADR-086):** renovación automática aprobada como objetivo; consentimiento y motor de cobros en sandbox implementados, con E2E recurrente pendiente; acceso con código numérico sin hardware físico; sin terminal integrada; apertura a todos los socios después de aceptación en staging; fiscal excluido. El staging se prepara en una PC local y queda limitado a `localhost`; producción sigue por decidir. Los objetivos de recuperación son RPO de 15 minutos y RTO de 4 horas, aún por demostrar.
 - **Renovaciones automáticas (ADR-087):** el backend controla consentimiento, captura inicial y ciclos posteriores en sandbox. El cron cada 15 minutos procesa vencimientos, reintentos 1/3/5 y conciliación de órdenes sin crear un segundo intento ante un resultado incierto. La referencia del método se cifra; falta validar el ciclo recurrente E2E con la cuenta sandbox del responsable. Producción está deshabilitada.
 - **Novedades 2026-11-05:** la app del socio reserva clases premium sin cobro anticipado (el extra se cobra al marcar asistencia en recepción) y muestra la fecha límite de cancelación y si la cancelación será tardía; el POS genera tickets PDF desde la venta y el historial, con envío por correo y compartición. MFA TOTP está disponible para dueño, gerente y contador con códigos de respaldo; faltan rotación/deshabilitación desde la UI, pruebas dedicadas en PostgreSQL y revisión profesional. La suite backend queda en **744 pruebas: 736 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL`.
+- **Operación y monitoreo (2026-11-05):** se documentaron [monitoreo.md](06-operacion/monitoreo.md) y [manual-de-incidentes.md](06-operacion/manual-de-incidentes.md) con las señales reales: `/health`, las doce tareas del cron, sus bitácoras y las colas del panel. El monitoreo sigue siendo manual: no hay alertas automáticas, métricas, rotación de bitácoras ni Sentry; `SENTRY_DSN` y `LOG_LEVEL` están declaradas pero no se leen. Antes de producción hay que cerrar esas brechas y completar el entorno del cron, que solo inyecta `DATABASE_URL`.
 - **Avisos por correo al socio (ADR-081):** el socio activa por separado el email en Membresía, Clases, Facturas, Equipo o Fisioterapia; Rutinas y metas quedan fuera, y todo empieza apagado. El consentimiento conserva historial append-only; las entregas se encolan junto al aviso, se envían tras responder, revalidan dirección y preferencia, se reintentan de forma limitada y se recuperan por cron. La vista previa simula y no contacta SMTP. El 2026-11-02 se probaron el opt-in, la cola y la entrega con PostgreSQL y Mailpit, además de un único aviso sintético recibido por Gmail. La validación en dispositivo con VoiceOver/TalkBack no se realizó y, por decisión del usuario, se considera concluida para este alcance. No se validaron todas las categorías, staging ni producción.
 - **Reportes financieros programados (ADR-082/084):** el panel permite configurar destinatarios y reportes por correo con `finance.manage`; mantiene la allowlist del entorno, registra cambios sin guardar direcciones en la auditoría y conserva las variables de entorno como fallback hasta el primer guardado. Las migraciones `20261101_0079` a `20261101_0082` se validaron en PostgreSQL 16 desechable, incluyendo reversión/reaplicación y `alembic check`. El cron se probó en un contenedor Linux desechable con Mailpit. Además, una pasada SMTP real envió los seis reportes diarios vacíos/sintéticos a un único destinatario y el usuario confirmó su recepción. El staging local está en preparación; esa configuración aún no se ha iniciado ni validado con los módulos.
 - Fase actual: preparación del staging local para validación interna; aún no se ha construido ni levantado el stack. Los servicios publicados están limitados a localhost.

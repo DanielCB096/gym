@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-05 · Monitoreo y manual de incidentes
+
+- Se agregaron `docs/06-operacion/monitoreo.md` y `docs/06-operacion/manual-de-incidentes.md` con las señales reales del repositorio: `/health`, las doce tareas del cron, sus bitácoras, las colas del panel, la base, el disco y los respaldos.
+- El monitoreo queda documentado como **manual**: no hay alertas automáticas, métricas, APM, Sentry ni rotación de bitácoras; `SENTRY_DSN` y `LOG_LEVEL` están declaradas pero ningún módulo las lee. El manual de incidentes define severidades, triage, recuperación segura, escalamiento y cierre.
+- Se corrigió `despliegue.md`: el bloque tiene **doce** tareas (faltaba renovaciones), se agregó su fila y sus banderas, y se advirtió que el cron solo inyecta `DATABASE_URL`, que diez scripts usan `.\src` y que en Linux necesitan `PYTHONPATH=src`. También se alineó la entrada de deuda técnica del cron con las doce entradas actuales.
+- Sin cambios de código en este corte: solo documentación.
+
 ## 2026-11-05 · Corrección de documentación desfasada
 
 - Se alinearon README, estado del proyecto, roadmap, traspaso y primera entrega con el estado real: reservas de clases premium habilitadas desde la app, tickets PDF del POS, renovaciones automáticas implementadas en sandbox y MFA TOTP con códigos de respaldo.
