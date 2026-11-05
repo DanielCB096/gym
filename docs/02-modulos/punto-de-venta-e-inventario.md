@@ -12,6 +12,7 @@ Este módulo cubre la operación de caja del gimnasio, la venta de productos y a
 - historial de envíos del estado de cuenta y reintento de intentos fallidos o simulados
 - recordatorios de cobranza para saldos con cargos de más de 30 días, con control de frecuencia
 - corte de caja por turno
+- ticket comercial PDF y entrega por correo o compartición desde el mostrador y el historial
 - devoluciones, ajustes y mermas
 - inventario por ubicación y proveedor
 - orden de compra y alertas por mínimo de stock
@@ -43,6 +44,7 @@ El límite de crédito se administra con el permiso `sales.credit` (dueño y ger
 3. Agrega cantidades, aplica promociones si existen y valida stock disponible.
 4. El sistema presenta el total y acepta forma de pago: tarjeta, efectivo, transferencia o cuenta del socio.
 5. Se registra la venta, se descuenta el inventario y se cierra la venta con comprobante o ticket si aplica.
+5.1. La venta abierta desde el mostrador ofrece descargar el ticket PDF, enviarlo por correo y compartirlo mediante Web Share API o WhatsApp. Desde el historial de ventas puede repetirse la entrega con permiso `sales.read`; el correo puede tomar el dato registrado del socio o aceptarse durante la entrega.
 6. Al final del turno, el gerente o recepcionista hace el corte de caja.
 
 ### Flujo alterno: venta a cuenta del socio

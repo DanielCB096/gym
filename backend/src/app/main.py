@@ -375,6 +375,7 @@ from app.modules.inventory import (
     create_supplier,
     current_cash_session,
     get_purchase_order,
+    get_sale,
     list_cash_sessions,
     list_member_account_statement_deliveries,
     list_member_accounts,
@@ -400,6 +401,14 @@ from app.modules.inventory import (
     update_member_credit_limit,
     update_product,
     update_supplier,
+)
+from app.modules.inventory.tickets import (
+    TicketDeliveryFailed,
+    TicketEmailNotConfigured,
+    TicketError,
+    TicketRecipientMissing,
+    build_sale_ticket_pdf,
+    send_sale_ticket_email,
 )
 from app.modules.identity.service import (
     AuthenticatedUser,
@@ -1043,6 +1052,9 @@ class MemberClassResponse(BaseModel):
     extra_price_cents: int
     waitlist_enabled: bool
     cancel_window_hours: int
+    cancellation_deadline_at: datetime
+    can_cancel: bool
+    will_be_late_cancellation: bool
     notes: str | None
     reserved_count: int
     waitlist_count: int
@@ -7343,6 +7355,9 @@ _INVENTORY_ERROR_STATUS: tuple[tuple[type[InventoryError], int], ...] = (
     (StatementDeliveryRetryNotAllowed, status.HTTP_409_CONFLICT),
     (StatementReminderNotAllowed, status.HTTP_409_CONFLICT),
     (StatementEmailNotConfigured, status.HTTP_503_SERVICE_UNAVAILABLE),
+    (TicketEmailNotConfigured, status.HTTP_503_SERVICE_UNAVAILABLE),
+    (TicketDeliveryFailed, status.HTTP_502_BAD_GATEWAY),
+    (TicketRecipientMissing, status.HTTP_422_UNPROCESSABLE_ENTITY),
     (SaleNotFound, status.HTTP_404_NOT_FOUND),
     (SaleItemNotFound, status.HTTP_404_NOT_FOUND),
     (DuplicateProductSku, status.HTTP_409_CONFLICT),
@@ -7848,6 +7863,44 @@ def list_sales_endpoint(
             refunded_count=directory.summary.refunded_count,
         ),
     )
+
+
+@app.get("/admin/sales/{sale_id}/ticket.pdf", tags=["sales"])
+def download_sale_ticket_endpoint(
+    sale_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("sales.read"))],
+) -> Response:
+    try:
+        sale = get_sale(session, sale_id)
+        pdf = build_sale_ticket_pdf(sale)
+    except InventoryError as error:
+        raise _inventory_http_error(error) from error
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{sale.folio}.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post("/admin/sales/{sale_id}/ticket/email", tags=["sales"])
+def email_sale_ticket_endpoint(
+    sale_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AuthenticatedUser, Depends(require_api_permission("sales.read"))],
+    recipient: Annotated[EmailStr | None, Query(max_length=254)] = None,
+) -> dict[str, str]:
+    try:
+        sale = get_sale(session, sale_id)
+        delivery = send_sale_ticket_email(session, sale, recipient)
+        return {"status": delivery, "folio": sale.folio}
+    except TicketError as error:
+        raise _inventory_http_error(error) from error
+    except InventoryError as error:
+        raise _inventory_http_error(error) from error
 
 
 @app.post(
@@ -11586,6 +11639,9 @@ def _member_class_response(item: MemberClassItem) -> MemberClassResponse:
         extra_price_cents=item.extra_price_cents,
         waitlist_enabled=item.waitlist_enabled,
         cancel_window_hours=item.cancel_window_hours,
+        cancellation_deadline_at=item.cancellation_deadline_at,
+        can_cancel=item.can_cancel,
+        will_be_late_cancellation=item.will_be_late_cancellation,
         notes=item.notes,
         reserved_count=item.reserved_count,
         waitlist_count=item.waitlist_count,

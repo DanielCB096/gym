@@ -37,6 +37,7 @@ def _seed_users(session: Session) -> None:
         ("manager@example.com", "manager-strong-password", "manager"),
         ("reception@example.com", "reception-strong-password", "reception"),
         ("accountant@example.com", "accountant-strong-password", "accountant"),
+        ("trainer@example.com", "trainer-strong-password", "trainer"),
     ):
         register_user(session, email=email, password=password, role_codes=(role,))
 
@@ -104,17 +105,113 @@ def _offline_sale(
     member_id: str | None = None,
     sold_at: datetime | None = None,
 ) -> dict:
-    return {
+    payload = {
         "client_reference": client_reference,
         "items": [{"product_id": product_id, "quantity": quantity}],
         "payment_method": payment_method,
-        "member_id": member_id,
         "sold_at": (sold_at or datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat(),
     }
+    if member_id is not None:
+        payload["member_id"] = str(member_id)
+    return payload
 
 
 def _parse(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def test_sale_ticket_pdf_and_email_preview() -> None:
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        member_id, _ = _seed_members(session)
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            reception = _login(client, "reception@example.com", "reception-strong-password")
+            trainer = _login(client, "trainer@example.com", "trainer-strong-password")
+            product_id = _create_product(client, manager)
+            _open_shift(client, reception)
+            created = client.post(
+                "/admin/sales",
+                headers=reception,
+                json={
+                    "items": [{"product_id": product_id, "quantity": 2}],
+                    "payment_method": "cash",
+                    "member_id": str(member_id),
+                },
+            )
+            assert created.status_code == 201, created.text
+            sale = created.json()
+
+            pdf = client.get(
+                f"/admin/sales/{sale['id']}/ticket.pdf",
+                headers=reception,
+            )
+            assert pdf.status_code == 200, pdf.text
+            assert pdf.headers["content-type"].startswith("application/pdf")
+            assert pdf.content.startswith(b"%PDF")
+            assert "ticket.pdf" not in pdf.headers.get("content-disposition", "").lower()
+            assert sale["folio"] in pdf.headers["content-disposition"]
+            assert len(pdf.content) > 1000
+
+            assert client.get(f"/admin/sales/{sale['id']}/ticket.pdf").status_code == 401
+            assert client.get(
+                f"/admin/sales/{sale['id']}/ticket.pdf",
+                headers=trainer,
+            ).status_code == 403
+            assert client.get("/admin/sales/not-a-uuid/ticket.pdf", headers=reception).status_code == 422
+            assert client.get(
+                f"/admin/sales/{uuid4()}/ticket.pdf",
+                headers=reception,
+            ).status_code == 404
+
+            import os
+            os.environ["PREVIEW_MODE"] = "true"
+            emailed = client.post(
+                f"/admin/sales/{sale['id']}/ticket/email?recipient=socio%40example.com",
+                headers=reception,
+            )
+            assert emailed.status_code == 200, emailed.text
+            assert emailed.json()["status"] == "simulated"
+
+            invalid_email = client.post(
+                f"/admin/sales/{sale['id']}/ticket/email?recipient=correo-invalido",
+                headers=reception,
+            )
+            assert invalid_email.status_code == 422
+
+            import os
+            os.environ.pop("PREVIEW_MODE", None)
+            os.environ.pop("SMTP_HOST", None)
+            public_email = client.post(
+                f"/admin/sales/{sale['id']}/ticket/email?recipient=socio%40example.com",
+                headers=reception,
+            )
+            assert public_email.status_code == 503
+
+            missing_recipient = client.post(
+                "/admin/sales",
+                headers=reception,
+                json={
+                    "items": [{"product_id": product_id, "quantity": 1}],
+                    "payment_method": "cash",
+                },
+            )
+            assert missing_recipient.status_code == 201
+            public_sale = missing_recipient.json()
+            missing = client.post(
+                f"/admin/sales/{public_sale['id']}/ticket/email",
+                headers=reception,
+            )
+            assert missing.status_code == 422
+    finally:
+        import os
+        os.environ.pop("PREVIEW_MODE", None)
+        app.dependency_overrides.clear()
 
 
 def test_offline_sales_sync_is_idempotent_and_keeps_timestamps() -> None:

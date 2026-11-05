@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-11-05 · Tickets PDF y entrega desde el POS
+
+- La venta registrada en mostrador ahora ofrece descarga PDF, envío por correo y compartición manual mediante Web Share API o WhatsApp.
+- Se agregó el correo editable en el modal de entrega; si no se indica, se usa el correo registrado del socio cuando esté disponible.
+- Se añadieron endpoints protegidos para descargar y enviar el ticket comercial sin modificar ventas, stock, turnos ni CFDI.
+- Se agregó el botón Ticket en el historial de ventas recientes para volver a descargar, compartir o enviar comprobantes de ventas anteriores.
+
+## 2026-11-05 · Reservas premium y reglas de cancelación de clases
+
+- La app del socio ya puede reservar clases premium; el importe extra se cobra al marcar asistencia desde recepción, tal como estaba definido por el flujo operativo existente.
+- La cartelera ahora informa la fecha límite de cancelación, si una cancelación será tardía y si la reserva aún puede cancelarse.
+- La app pide confirmación antes de reservar una clase premium o cancelar cualquier reserva; las cancelaciones tardías siguen marcadas sin aplicar sanciones monetarias.
+
+## 2026-11-05 · Captura visual y compatibilidad de preview
+
+- Se agregó la compatibilidad de la base SQLite de preview con las columnas y tablas administrativas de MFA.
+- Se ejecutó la demo sintética completa y se creó una evidencia visual navegable en `artifacts/ui-screenshots/2026-11-05_0925`.
+- Se capturaron login y módulos del panel web, login/OTP/dashboard del socio, módulos móviles operativos y el kiosco.
+
 ## 2026-11-03 · Preparación de la app móvil para iPhone
 
 - Se configuraron permisos iOS para cámara, biblioteca y escritura de fotos usadas por fotos de progreso.

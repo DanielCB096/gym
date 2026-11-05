@@ -6178,6 +6178,7 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
   const canManageCredit = permissions.includes("sales.credit");
   const canRefundServices = permissions.includes("sales.service_refund");
   const showSalesActions = canSell || canRefundServices;
+  const showSalesHistoryActions = showSalesActions || canReadSales;
   const canReadInventory = permissions.includes("inventory.read") || canManageCatalog;
 
   const [tab, setTab] = useState<"venta" | "catalogo" | "caja" | "devoluciones" | "compras" | "cuentas">("venta");
@@ -6215,6 +6216,7 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
   const [saleNote, setSaleNote] = useState("");
   const [saleError, setSaleError] = useState("");
   const [saleBusy, setSaleBusy] = useState(false);
+  const [ticketSale, setTicketSale] = useState<{ id: string; folio: string; email: string | null } | null>(null);
   const [memberSearch, setMemberSearch] = useState("");
   const [memberResults, setMemberResults] = useState<BackendMember[]>([]);
   const [memberSearching, setMemberSearching] = useState(false);
@@ -6801,11 +6803,12 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
         queueOfflineSale("Sin conexión: venta guardada en este navegador. Se enviará al reconectar.");
         return;
       }
-      const payload = await response.json().catch(() => ({})) as { detail?: string; folio?: string };
+      const payload = await response.json().catch(() => ({})) as { detail?: string; id?: string; folio?: string };
       if (!response.ok) {
         setSaleError(payload.detail || "No se pudo registrar la venta.");
         return;
       }
+      const memberEmail = selectedMember?.email ?? null;
       setIsOffline(false);
       setCart([]);
       setSaleNote("");
@@ -6817,6 +6820,9 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
       setSalesRefresh((value) => value + 1);
       setCashRefresh((value) => value + 1);
       if (paymentMethod === "account") setAccountsRefresh((value) => value + 1);
+      if (payload.id) {
+        setTicketSale({ id: payload.id, folio: payload.folio ?? "", email: memberEmail });
+      }
       onToast(`Venta ${payload.folio ?? ""} registrada.`);
     } catch {
       queueOfflineSale("Sin conexión: venta guardada en este navegador. Se enviará al reconectar.");
@@ -7176,10 +7182,10 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
             <div><p className="section-kicker">HISTORIAL</p><h2>Ventas recientes</h2></div>
             <span className="table-hint">{saleSummary.count} ventas · {formatMoney(saleSummary.total_cents)}{saleSummary.refunds_cents > 0 ? ` · devuelto ${formatMoney(saleSummary.refunds_cents)}` : ""}</span>
           </div>
-          <div className="table-scroll"><table className="data-table"><thead><tr><th>FOLIO</th><th>HORA</th><th>PRODUCTOS</th><th>PAGO</th><th>SOCIO</th><th>TOTAL</th><th>ESTADO</th>{showSalesActions && <th />}</tr></thead><tbody>
-            {salesLoading ? <tr><td colSpan={showSalesActions ? 8 : 7} className="empty-row">Cargando ventas…</td></tr>
-              : salesError ? <tr><td colSpan={showSalesActions ? 8 : 7} className="empty-row">{salesError}</td></tr>
-              : saleItems.length === 0 ? <tr><td colSpan={showSalesActions ? 8 : 7} className="empty-row">Todavía no hay ventas registradas.</td></tr>
+          <div className="table-scroll"><table className="data-table"><thead><tr><th>FOLIO</th><th>HORA</th><th>PRODUCTOS</th><th>PAGO</th><th>SOCIO</th><th>TOTAL</th><th>ESTADO</th>{showSalesHistoryActions && <th />}</tr></thead><tbody>
+            {salesLoading ? <tr><td colSpan={showSalesHistoryActions ? 8 : 7} className="empty-row">Cargando ventas…</td></tr>
+              : salesError ? <tr><td colSpan={showSalesHistoryActions ? 8 : 7} className="empty-row">{salesError}</td></tr>
+              : saleItems.length === 0 ? <tr><td colSpan={showSalesHistoryActions ? 8 : 7} className="empty-row">Todavía no hay ventas registradas.</td></tr>
               : saleItems.map((sale) => {
                 const returnable = canSell && sale.lines.some((line) => line.product_id !== null && line.returnable_quantity > 0);
                 const refundableService = canRefundServices && sale.lines.some((line) => line.product_id === null && line.returnable_quantity > 0);
@@ -7193,7 +7199,28 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
                     <td>{sale.member_name ?? "Público general"}</td>
                     <td className="time-cell">{formatMoney(sale.total_cents)}{sale.refunded_cents > 0 && <small className="pos-min">devuelto {formatMoney(sale.refunded_cents)}</small>}</td>
                     <td><span className={`status-badge ${saleStatusBadges[sale.status] ?? "status-neutral"}`}><i />{saleStatusLabels[sale.status] ?? sale.status}</span></td>
-                    {showSalesActions && <td><div className="pos-row-actions">{returnable ? <button type="button" className="text-button" onClick={() => openReturn(sale)}>Devolver</button> : refundableService ? <button type="button" className="text-button" onClick={() => setServiceRefundSale(sale)}>Reembolsar</button> : <span className="table-hint">—</span>}</div></td>}
+                    {showSalesHistoryActions && (
+                      <td>
+                        <div className="pos-row-actions">
+                          {canReadSales && (
+                            <button
+                              type="button"
+                              className="text-button"
+                              onClick={() => setTicketSale({ id: sale.id, folio: sale.folio, email: null })}
+                            >
+                              <Receipt size={14} />Ticket
+                            </button>
+                          )}
+                          {returnable ? (
+                            <button type="button" className="text-button" onClick={() => openReturn(sale)}>Devolver</button>
+                          ) : refundableService ? (
+                            <button type="button" className="text-button" onClick={() => setServiceRefundSale(sale)}>Reembolsar</button>
+                          ) : !canReadSales ? (
+                            <span className="table-hint">—</span>
+                          ) : null}
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -7414,6 +7441,7 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
       <footer className="page-footer"><span>Centro Fit · Punto de venta e inventario</span><span>DATOS DEL BACKEND · PAGOS CON TERMINAL NO CONECTADOS</span></footer>
 
       {productModal && canManageCatalog && <ProductFormModal product={productModal.product} categories={categories} onClose={() => setProductModal(null)} onSaved={handleProductSaved} />}
+      {ticketSale && <SaleTicketModal sale={ticketSale} onClose={() => setTicketSale(null)} onUnauthorized={onUnauthorized} onToast={onToast} />}
       {stockModal && canManageCatalog && <StockMovementModal product={stockModal} onClose={() => setStockModal(null)} onSaved={handleStockSaved} />}
       {openCashOpen && canSell && <OpenCashModal onClose={() => setOpenCashOpen(false)} onOpened={handleCashOpened} />}
       {closeCashOpen && canSell && cashSession && <CloseCashModal cashSession={cashSession} onClose={() => setCloseCashOpen(false)} onClosed={handleCashClosed} />}
@@ -7426,6 +7454,82 @@ function InventoryView({ permissions, onUnauthorized, onToast }: { permissions: 
       {orderModalOpen && canManageCatalog && <PurchaseOrderFormModal onClose={() => setOrderModalOpen(false)} onSaved={handleOrderSaved} onUnauthorized={onUnauthorized} />}
       {receiveOrder && canManageCatalog && <ReceivePurchaseOrderModal order={receiveOrder} onClose={() => setReceiveOrder(null)} onSaved={handleOrderSaved} />}
     </>
+  );
+}
+
+function SaleTicketModal({ sale, onClose, onUnauthorized, onToast }: { sale: { id: string; folio: string; email: string | null }; onClose: () => void; onUnauthorized: () => void; onToast: (message: string) => void }) {
+  const [recipient, setRecipient] = useState(sale.email ?? "");
+  const [busy, setBusy] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const download = () => {
+    window.open(`/api/admin/sales/${sale.id}/ticket.pdf`, "_blank", "noopener,noreferrer");
+  };
+
+  const sendEmail = async () => {
+    const trimmedRecipient = recipient.trim();
+    if (trimmedRecipient && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedRecipient)) {
+      setError("Ingresa un correo válido.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const params = new URLSearchParams();
+      if (recipient.trim()) params.set("recipient", recipient.trim());
+      const response = await fetch(`/api/admin/sales/${sale.id}/ticket/email${params.size ? `?${params.toString()}` : ""}`, {
+        method: "POST",
+      });
+      if (response.status === 401) { onUnauthorized(); return; }
+      const payload = await response.json().catch(() => ({})) as { detail?: string; status?: string };
+      if (!response.ok) { setError(payload.detail || "No se pudo enviar el ticket."); return; }
+      onToast(payload.status === "simulated" ? "Ticket listo para envío (modo preview)." : "Ticket enviado por correo.");
+    } catch {
+      setError("No se pudo comunicar con el servidor.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const share = async () => {
+    setShareBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/admin/sales/${sale.id}/ticket.pdf`);
+      if (!response.ok) throw new Error("No se pudo preparar el ticket.");
+      const blob = await response.blob();
+      const file = new File([blob], `${sale.folio}.pdf`, { type: "application/pdf" });
+      if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+        await navigator.share({ title: `Ticket ${sale.folio}`, text: "Ticket de compra", files: [file] });
+        return;
+      }
+      window.open(`https://wa.me/?text=${encodeURIComponent(`Hola, te comparto el ticket ${sale.folio}.`)}`, "_blank", "noopener,noreferrer");
+      download();
+    } catch (shareError) {
+      if (shareError instanceof DOMException && shareError.name === "AbortError") return;
+      setError(shareError instanceof Error ? shareError.message : "No se pudo compartir el ticket.");
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="sale-ticket-title">
+        <div className="modal-header"><span className="modal-icon"><Receipt size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">VENTA REGISTRADA</p>
+        <h2 id="sale-ticket-title">Ticket {sale.folio}</h2>
+        <p className="modal-subtitle">Descarga el comprobante o compártelo con el socio.</p>
+        <label className="form-field"><span>Correo del socio (opcional)</span><input type="email" value={recipient} onChange={(event) => setRecipient(event.target.value)} placeholder="socio@ejemplo.com" /></label>
+        {error && <div className="login-error" role="alert">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="button button-secondary" onClick={download}><Download size={16} />Descargar PDF</button>
+          <button type="button" className="button button-secondary" disabled={busy} onClick={() => void sendEmail()}><Mail size={16} />{busy ? "Enviando…" : "Enviar correo"}</button>
+          <button type="button" className="button button-primary" disabled={busy || shareBusy} onClick={() => void share()}>{shareBusy ? "Compartiendo…" : "Compartir / WhatsApp"}</button>
+        </div>
+      </section>
+    </div>
   );
 }
 

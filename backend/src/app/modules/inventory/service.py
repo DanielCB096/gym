@@ -1311,6 +1311,15 @@ def _offline_sale_view(session: Session, reference: str) -> SaleItemView | None:
     return _sale_view(session, sale, lines, refunded_cents=refunded)
 
 
+def get_sale(session: Session, sale_id: UUID) -> SaleItemView:
+    sale = session.get(Sale, sale_id)
+    if sale is None:
+        raise SaleNotFound("Venta no encontrada")
+    lines = _lines_by_sale(session, [sale.id]).get(sale.id, [])
+    refunded = _refunded_cents_by_sale(session, [sale.id]).get(sale.id, 0)
+    return _sale_view(session, sale, lines, refunded_cents=refunded)
+
+
 def list_sales(
     session: Session,
     *,
