@@ -23,6 +23,11 @@ DB = r".\gym_preview.db"
 
 # Columns added after the preview database was first created.
 ADDED_COLUMNS = {
+    "app_users": {
+        "mfa_enabled": "BOOLEAN NOT NULL DEFAULT 0",
+        "mfa_secret_encrypted": "BLOB",
+        "mfa_enabled_at": "DATETIME",
+    },
     "exercises": {"equipment_id": "CHAR(32)"},
     "sales": {
         "origin": "VARCHAR(16) NOT NULL DEFAULT 'online'",
@@ -816,6 +821,45 @@ def main(reset_maintenance: bool) -> None:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS ix_invoices_related "
                 "ON invoices (related_invoice_id)"
+            )
+
+        if "app_users" in tables:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS mfa_challenges ("
+                "id CHAR(32) NOT NULL PRIMARY KEY, "
+                "user_id CHAR(32) NOT NULL, "
+                "challenge_sha256 VARCHAR(64) NOT NULL UNIQUE, "
+                "purpose VARCHAR(16) NOT NULL, "
+                "created_at DATETIME NOT NULL, "
+                "expires_at DATETIME NOT NULL, "
+                "used_at DATETIME, "
+                "failed_attempts INTEGER NOT NULL DEFAULT 0, "
+                "FOREIGN KEY(user_id) REFERENCES app_users(id) ON DELETE CASCADE"
+                ")"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS ix_mfa_challenges_user_expiry "
+                "ON mfa_challenges (user_id, expires_at, used_at)"
+            )
+            if "failed_attempts" not in column_names(connection, "mfa_challenges"):
+                connection.execute(
+                    "ALTER TABLE mfa_challenges ADD COLUMN "
+                    "failed_attempts INTEGER NOT NULL DEFAULT 0"
+                )
+                print("Added mfa_challenges.failed_attempts")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS mfa_backup_codes ("
+                "id CHAR(32) NOT NULL PRIMARY KEY, "
+                "user_id CHAR(32) NOT NULL, "
+                "code_sha256 VARCHAR(64) NOT NULL UNIQUE, "
+                "created_at DATETIME NOT NULL, "
+                "used_at DATETIME, "
+                "FOREIGN KEY(user_id) REFERENCES app_users(id) ON DELETE CASCADE"
+                ")"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS ix_mfa_backup_codes_user_used "
+                "ON mfa_backup_codes (user_id, used_at)"
             )
 
         if reset_maintenance:
