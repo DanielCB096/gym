@@ -21,7 +21,7 @@ El sistema de dinero ya existe: una venta (`sales` + `sale_items`) con turno de 
 - **Las devoluciones de producto no pueden tocar una línea de servicio.** `POST /admin/sales/{id}/returns` rechaza una línea con `product_id=NULL` y remite a la reserva: devolver un servicio por la pantalla de devoluciones del POS dejaría la reserva sin relación con su reembolso.
 - **La lista de espera cobra al promover y asistir, no al entrar.** La promoción solo cambia el estado a `reserved`; el cargo pendiente se muestra en la lista (`charge_status=null`, «cobro pendiente») y se crea al marcar la asistencia. Cancelar antes de asistir no reembolsa nada porque nunca hubo venta.
 - **La lista de la clase es la superficie del cobro.** El roster expone `charge_sale_id`, `charge_cents`, `charge_payment_method`, `charge_folio` y `charge_status` por reserva y muestra «pagado», «reembolsado» o «cobro pendiente» según el caso. En una clase premium el modal pide la forma de pago antes de marcar y permite corregir una asistencia con «No asistió», que reembolsa. Los avisos confirman importe, método y folio del cobro y el importe reembolsado.
-- **La reserva desde la app del socio sigue bloqueada.** Cobrar desde la app exigiría pasarela y elección de método; hasta entonces el socio reserva premium en recepción, donde se cobra al asistir.
+- **La reserva desde la app del socio ya está habilitada (2026-11-05).** El socio puede reservar una clase premium sin pagar el extra en la app; el cobro sigue ocurriendo en recepción al marcar la asistencia, porque no hay pasarela ni elección de método desde el teléfono.
 
 ## Consecuencias y límites
 

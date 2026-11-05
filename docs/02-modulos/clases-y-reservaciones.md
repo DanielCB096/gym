@@ -181,11 +181,11 @@ Primer incremento entregado (2026-10-17), centrado en la operación de la agenda
 
 Segundo incremento (2026-10-27): **reserva y cancelación desde la app del socio**, sin migración ni tablas nuevas. La capa `app.modules.portal.classes` reutiliza el servicio de clases y añade solo las reglas del socio:
 
-- `GET /member/classes` devuelve las sesiones futuras programadas (14 días por defecto, hasta 60) con cupo, lista de espera y la reserva propia; cada sesión trae `can_reserve` y `blocked_reason` (`already_reserved`, `membership_inactive`, `premium_class`, `started`, `full`).
-- `POST /member/classes/sessions/{id}/reservations` exige membresía activa, clase programada y futura, no premium y sin reserva viva; si está llena respeta `waitlist_enabled` y asigna posición. `origin` queda en `app`.
+- `GET /member/classes` devuelve las sesiones futuras programadas (14 días por defecto, hasta 60) con cupo, lista de espera, la reserva propia y los campos de cancelación `cancellation_deadline_at`, `can_cancel` y `will_be_late_cancellation`; cada sesión trae `can_reserve` y `blocked_reason` (`already_reserved`, `membership_inactive`, `started`, `full`).
+- `POST /member/classes/sessions/{id}/reservations` exige membresía activa, clase programada y futura y sin reserva viva; permite reservar clases incluidas y premium, sin cobrar el extra al reservar, y si está llena respeta `waitlist_enabled` y asigna posición. `origin` queda en `app`.
 - `POST /member/classes/reservations/{id}/cancel` solo permite reservas propias (las ajenas responden `404`) y solo antes del inicio de la clase; delega en la cancelación existente, que promueve al primero de la lista de espera y marca `late_cancellation` si aplica.
 - `cancelled_by` queda vacío en las cancelaciones del socio porque la columna es una FK a `app_users`; el rastro disponible es `origin = "app"`.
-- Las clases premium se muestran bloqueadas con el aviso de reservar en recepción hasta que exista el cobro del extra. La promoción desde la lista de espera ya avisa al socio promovido con `class_waitlist_promoted` y la reserva confirmada deja `class_reserved` en la bandeja (ver `notificaciones-del-socio.md`); el recordatorio de la clase próxima llegó después (ADR-035).
+- Las clases premium se pueden reservar desde la app desde el 2026-11-05; el importe extra se cobra en recepción al marcar la asistencia (ADR-033) y cancelar antes de asistir no genera cargo. La app confirma la reserva premium y muestra la fecha límite de cancelación o si la cancelación será tardía. La promoción desde la lista de espera ya avisa al socio promovido con `class_waitlist_promoted` y la reserva confirmada deja `class_reserved` en la bandeja (ver `notificaciones-del-socio.md`); el recordatorio de la clase próxima llegó después (ADR-035).
 
 Tercer incremento (2026-10-29): **cobro de clases premium al marcar asistencia**, sobre el ledger de ventas existente (ADR-033):
 
@@ -196,7 +196,7 @@ Tercer incremento (2026-10-29): **cobro de clases premium al marcar asistencia**
 - **API y panel**: cada reserva del roster expone `charge_sale_id`, `charge_cents`, `charge_payment_method`, `charge_folio` y `charge_status`. La lista muestra «cobro pendiente», «pagado $X» o «reembolsado $X», pide la forma de pago en las clases premium, confirma importe, método y folio del cobro, informa el reembolso y ofrece **«No asistió»** en una reserva ya marcada para corregirla y reembolsar.
 - **Caja**: `_cash_session_totals` dejó de filtrar ventas `completed`: una venta reembolsada desaparecía como ingreso y su devolución seguía restando, dejando el efectivo esperado en negativo. Ahora suma todas las ventas del turno y resta las devoluciones.
 - **Pruebas**: `backend/tests/test_class_premium_charge.py` (4 casos: efectivo con turno y reembolso, crédito de cuenta y reembolso de tarjeta al corregir la asistencia, promoción desde lista de espera con cobro pendiente, y reembolso en efectivo que exige turno abierto) más el caso de la devolución desde caja descrito abajo.
-- La app del socio sigue bloqueando reservar clases premium: se reserva en recepción y se cobra al asistir.
+- Desde el 2026-11-05 la app del socio permite reservar clases premium; el cobro del extra sigue ocurriendo solo al marcar asistencia en recepción, porque no hay pasarela de cobro desde el teléfono.
 
 Devolución de servicios desde la caja (2026-10-29, ADR-034): el cobro equivocado se corrige desde el historial de ventas del POS con `POST /admin/sales/{sale_id}/service-refund` y el permiso nuevo `sales.service_refund` (dueño y gerente, migración `20261029_0050`). Reembolsa el importe completo con motivo obligatorio, línea `write_off` y la forma de pago de la venta (efectivo exige turno abierto), y **no cambia el estado de la reserva**: quien asistió sigue `attended` y el roster muestra «Asistió · reembolsado». Una venta ya reembolsada responde `409`, una venta sin reserva de clase `422`. Como el roster solo ofrece «No asistió» en una reserva ya marcada, deshacer la asistencia después no vuelve a reembolsar y volver a marcarla crea un cargo nuevo. Cubierto por el quinto caso de `test_class_premium_charge.py` y por la prueba opt-in `backend/tests/test_service_refund_postgres.py` (dos reembolsos simultáneos pagan una sola vez; el reembolso cae en el turno que lo paga).
 
@@ -225,7 +225,7 @@ Sexto incremento (2026-10-29): **aviso de clase cancelada o reprogramada** (ADR-
 - **Migración**: `20261029_0053_class_change_notifications.py` ensancha `ck_member_notifications_kind` a catorce tipos, con la reconstrucción correspondiente en `preview_patch.py`.
 - Pruebas: dos casos nuevos en `test_class_notifications.py` (cancelación a reservas sentadas y en espera, sin aviso para una reserva ya cancelada ni para la segunda cancelación; reprogramación con las dos ventanas, silencio de las ediciones que no mueven el horario y un segundo movimiento con su propio aviso).
 
-Pendiente (documentado en `docs/deuda-tecnica.md`): reserva premium desde la app con pasarela, reserva automática desde control de acceso y penalizaciones efectivas por inasistencia (marcar `no_show` hoy reembolsa la clase premium).
+Pendiente (documentado en `docs/deuda-tecnica.md`): cobro del extra premium desde la app con pasarela (la reserva ya está habilitada y el cobro sigue en recepción), reserva automática desde control de acceso y penalizaciones efectivas por inasistencia (marcar `no_show` hoy reembolsa la clase premium).
 
 ## 14. Estado
 

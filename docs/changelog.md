@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-05 · Corrección de documentación desfasada
+
+- Se alinearon README, estado del proyecto, roadmap, traspaso y primera entrega con el estado real: reservas de clases premium habilitadas desde la app, tickets PDF del POS, renovaciones automáticas implementadas en sandbox y MFA TOTP con códigos de respaldo.
+- Se corrigieron los conteos de la suite a **744 pruebas: 736 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL`, y se actualizaron los límites pendientes de MFA (rotación/deshabilitación desde la UI, pruebas en PostgreSQL y revisión profesional).
+- Se corrigió la ruta de la app del socio de `app/` a `mobile/` en el traspaso y se aclaró que la renovación automática ya no está sin implementar, sino limitada a sandbox y pendiente de la E2E recurrente.
+- Sin cambios de código en este corte: solo documentación.
+
 ## 2026-11-05 · Tickets PDF y entrega desde el POS
 
 - La venta registrada en mostrador ahora ofrece descarga PDF, envío por correo y compartición manual mediante Web Share API o WhatsApp.

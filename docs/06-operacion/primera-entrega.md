@@ -15,8 +15,9 @@ pendiente de una evaluación posterior.
 ### Incluido
 
 - Cobro inicial y renovación automática de membresías. La renovación automática
-  está aprobada como alcance, pero aún no está implementada ni autorizada para
-  cobrar en producción.
+  está implementada y limitada al sandbox (consentimiento, captura y motor de
+  cobros); falta la validación E2E del ciclo recurrente y no está autorizada
+  para cobrar en producción.
 - Acceso del socio con el código numérico de seis dígitos que captura recepción
   en el kiosco. No incluye lector QR, torniquete, RFID ni biometría en esta
   entrega.
@@ -46,7 +47,7 @@ pendiente de una evaluación posterior.
 | Staging | PC local Windows 11, Docker Desktop Linux, acceso solo por `localhost`. | Acordado; usar datos sintéticos, PostgreSQL y servicios simulados. |
 | Producción | Local o VPS, por definir. | No iniciar despliegue ni cargar datos reales hasta evaluar disponibilidad, seguridad y recuperación. |
 | Responsables | El dueño asume aprobación de negocio, operación técnica y autorización de recuperaciones. | Asignados; el procedimiento permite que una persona cubra varios roles. |
-| Cobro de membresía | Incluir renovación automática además del pago inicial. | Alcance aprobado; diseño, implementación y validación pendientes. |
+| Cobro de membresía | Incluir renovación automática además del pago inicial. | Alcance aprobado; consentimiento y motor implementados en sandbox; E2E recurrente y producción pendientes. |
 | Método de acceso | Código numérico de seis dígitos capturado en el kiosco existente. | Aprobado; sin lector QR ni torniquete. |
 | Terminal bancaria | No integrar hardware; los cobros externos se registran manualmente. | Aprobado para esta entrega. |
 | RPO | Pérdida máxima objetivo de 15 minutos. | Aprobado; requiere una estrategia que lo demuestre. |
@@ -106,19 +107,23 @@ solo describe el staging local, no la disponibilidad de producción.
    en `localhost`. Usar Mailpit para capturar correos de prueba.
 2. **Evaluar la topología de producción:** decidir local o VPS, dominio y acceso
    remoto seguro; no publicar el staging local en Internet.
-3. **Cerrar seguridad y privacidad:** implementar MFA administrativo, revisar
-   permisos, sesiones, secretos y exposición de servicios; definir retenciones y
-   validar aviso de privacidad y atención ARCO con asesoría correspondiente.
+3. **Cerrar seguridad y privacidad:** cerrar MFA administrativo (rotación y
+   deshabilitación desde la UI, pruebas dedicadas en PostgreSQL y revisión
+   profesional) y revisar permisos, sesiones, secretos y exposición de
+   servicios; definir retenciones y validar aviso de privacidad y atención ARCO
+   con asesoría correspondiente.
 4. **Configurar recuperación:** establecer copias cifradas fuera del servidor,
    cubrir la base y los archivos críticos, alertar fallos y demostrar RPO/RTO
    mediante una restauración aislada.
 5. **Completar cobros recurrentes y operación de acceso:** el consentimiento
-   explícito y revocable está disponible desde la app (ADR-087); falta la
-   captura web segura de tarjeta, el cifrado/registro del método y el motor
-   idempotente de cobros y reintentos. La política no contempla periodo de
+   explícito y revocable está disponible desde la app (ADR-087), igual que la
+   captura web segura de tarjeta, el cifrado del método y el motor idempotente
+   de cobros y reintentos en sandbox. Falta validar el ciclo recurrente E2E con
+   la cuenta sandbox del responsable. La política no contempla periodo de
    gracia: suspende al vencimiento y reintenta los días 1, 3 y 5. Validar
-   webhooks, duplicados, discrepancias y recuperación de eventos en sandbox;
-   no usar credenciales productivas antes de la aprobación correspondiente.
+   también webhooks, duplicados, discrepancias y recuperación de eventos en
+   sandbox; no usar credenciales productivas antes de la aprobación
+   correspondiente.
 6. **Preparar operación:** configurar cron, monitoreo, alertas, bitácoras y
    manuales; comprobar caja, acceso, membresías, permisos, correo y tareas
    programadas en staging.
@@ -132,10 +137,13 @@ solo describe el staging local, no la disponibilidad de producción.
   4 GB de RAM libre para construirlo; la app móvil opcional requiere 5 GB.
 - Elegir más adelante topología y dominio de producción, considerando acceso
   remoto seguro, disponibilidad, respaldos externos y recuperación.
-- Diseñar, implementar y probar renovaciones automáticas con consentimiento
-  explícito, cancelación clara y manejo de cobros fallidos. La integración
-  existente de Conekta solo cubre un pago inicial en sandbox.
-- Implementar MFA administrativo y cerrar la revisión de seguridad y privacidad.
+- Validar E2E el ciclo recurrente de renovaciones automáticas con consentimiento
+  explícito, cancelación clara y manejo de cobros fallidos en sandbox. La
+  integración de Conekta ya cubre el pago inicial y el motor local de
+  renovaciones, pero no está autorizada para producción.
+- Cerrar MFA administrativo (rotación y deshabilitación desde la UI, pruebas en
+  PostgreSQL y revisión profesional) y cerrar la revisión de seguridad y
+  privacidad.
 - Configurar respaldos productivos y demostrar recuperación dentro de los
   objetivos aprobados, incluyendo fotos de progreso si se conservan en
   archivos aparte. El ensayo local de staging y sus scripts ya están disponibles,

@@ -35,7 +35,7 @@ Aplicación Expo/React Native para el socio del club. En este incremento cubre e
   - cartelera de los próximos 14 días (fecha, tipo, salón, instructor y lugares disponibles);
   - reserva de un lugar o ingreso a la lista de espera cuando la clase está llena;
   - cancelación de la propia reserva, con aviso de la ventana sin penalización;
-  - bloqueo explicado para clases premium, membresía inactiva, clases llenas sin lista de espera y clases ya iniciadas;
+  - bloqueo explicado para membresía inactiva, clases llenas sin lista de espera y clases ya iniciadas, y confirmación antes de reservar una clase premium o cancelar;
   - actualización manual con deslizamiento.
 - Pantalla de rutinas y progreso con:
   - resumen de entrenamientos totales, de los últimos 30 días y del último peso registrado;
@@ -165,7 +165,7 @@ El conteo refleja las entradas ya registradas, no la decisión del kiosco: si el
 3. `POST /member/classes/reservations/{reservation_id}/cancel` cancela una reserva propia antes del inicio de la clase.
 4. La app refresca la cartelera después de cada acción para mostrar el estado y los lugares actualizados.
 
-Las reservas usan el origen `app`; el backend reutiliza las reglas del módulo de clases (aforo, bloqueo de fila, lista de espera y ventana de cancelación). Las clases premium se muestran pero no se pueden reservar desde la app hasta que exista el cobro del precio extra.
+Las reservas usan el origen `app`; el backend reutiliza las reglas del módulo de clases (aforo, bloqueo de fila, lista de espera y ventana de cancelación). Las clases premium se pueden reservar desde la app desde el 2026-11-05; el extra se cobra en recepción al marcar la asistencia. La app confirma la reserva premium y muestra la fecha límite de cancelación o si la cancelación quedará marcada como tardía.
 
 ## Flujo de rutinas y progreso
 

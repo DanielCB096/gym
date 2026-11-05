@@ -51,7 +51,8 @@ capacidades ya implementadas.
 - La renovación automática amplía el alcance: requiere diseño funcional,
   consentimiento, cancelación, idempotencia, avisos, pruebas de fallos y
   aprobación del proveedor. No se deriva de la implementación del checkout
-  único.
+  único. (Implementada después en sandbox por ADR-087; la E2E recurrente y la
+  autorización de producción siguen pendientes.)
 - El código numérico permite usar el kiosco actual, pero no automatiza una
   puerta o torniquete.
 - Abrir a todos los socios desde el primer despliegue aumenta el impacto de

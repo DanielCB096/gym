@@ -65,7 +65,7 @@ Gestionar la operación completa de un gimnasio con foco en:
 - Web admin: Next.js + TypeScript
 - App móvil: React Native + Expo (acceso del socio con código OTP por correo)
 - Kiosco: PWA estática sin dependencias (`kiosk/`) para una tablet de recepción, con un cartel pasivo (`cartel.html`) para la TV de recepción
-- Autenticación: sesiones opacas Bearer con RBAC para el personal y OTP por correo para socios; MFA para administradores pendiente
+- Autenticación: sesiones opacas Bearer con RBAC para el personal y OTP por correo para socios; MFA TOTP opcional para dueño, gerente y contador, con códigos de respaldo; la rotación/deshabilitación desde la UI y la revisión profesional siguen pendientes
 - Facturación: integración con PAC vía XML/JSON
 - Pagos: Conekta como pasarela recomendada para México
 

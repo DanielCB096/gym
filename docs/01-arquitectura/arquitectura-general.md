@@ -28,7 +28,7 @@ B --> L[Auditoría]
 
 ### 2. Frontend móvil
 - app Expo/React Native para socios (`mobile/`): acceso sin contraseña con código OTP por correo, consulta de perfil, membresía, acceso habilitado y saldo, reserva o cancelación de clases con lista de espera sobre la agenda del club, consulta de rutinas asignadas, entrenamientos (con detalle por serie), medidas y metas, registro de entrenamientos con series (pendientes de revisión del entrenador), de medidas y de metas propias —con cancelación de esas últimas— desde la app, consulta de pagos de membresía y estado de cuenta, y bandeja de avisos del club (revisiones, cambios de metas, lugares liberados y vencimiento de la membresía) con insignia de no leídos en el inicio
-- pendiente: pago en línea, facturas, cobro de clases premium, fotos de progreso desde la app, aprobación de las metas del socio por el entrenador y notificaciones push o por correo (la bandeja ya existe, pero el aviso solo se ve al abrir la app)
+- estado de la app: ya incluye registro de entrenamientos, medidas y metas propias, fotos de progreso, consulta de pagos, solicitud de facturas, push y correo opcional por categoría; siguen pendientes la revisión o aprobación de las metas del socio por el entrenador, la pasarela de pago en producción (el pago en línea existe solo en sandbox) y el cobro del extra premium desde la app (se cobra en recepción).
 
 ### 3. Kiosco de recepción
 - check-in y flujo de acceso rápido
