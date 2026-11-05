@@ -181,8 +181,11 @@ def test_member_class_list_reserve_waitlist_and_cancel(monkeypatch) -> None:
             assert included_item["reservation"] is None
 
             premium_item = items[str(premium.id)]
-            assert premium_item["can_reserve"] is False
-            assert premium_item["blocked_reason"] == "premium_class"
+            assert premium_item["can_reserve"] is True
+            assert premium_item["blocked_reason"] is None
+            assert premium_item["cancellation_deadline_at"]
+            assert premium_item["can_cancel"] is False
+            assert premium_item["will_be_late_cancellation"] is False
 
             carla_listing = client.get("/member/classes", headers=carla_headers)
             assert carla_listing.status_code == 200
@@ -190,13 +193,11 @@ def test_member_class_list_reserve_waitlist_and_cancel(monkeypatch) -> None:
             assert carla_items[str(included.id)]["can_reserve"] is False
             assert carla_items[str(included.id)]["blocked_reason"] == "membership_inactive"
 
-            assert (
-                client.post(
-                    f"/member/classes/sessions/{premium.id}/reservations",
-                    headers=ana_headers,
-                ).status_code
-                == 409
+            premium_reserved = client.post(
+                f"/member/classes/sessions/{premium.id}/reservations",
+                headers=ana_headers,
             )
+            assert premium_reserved.status_code == 201, premium_reserved.text
             past_reservation = client.post(
                 f"/member/classes/sessions/{past.id}/reservations",
                 headers=ana_headers,

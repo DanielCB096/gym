@@ -6,7 +6,7 @@ This is a thin, member-scoped layer over the classes module. The schedule rules
 their own behalf:
 
 * only an active membership can book;
-* premium classes are not bookable from the app until the extra charge exists;
+* premium classes are bookable without charging before attendance;
 * a member never sees or touches another member's reservation.
 """
 
@@ -32,6 +32,7 @@ from app.modules.classes import (
 )
 from app.modules.classes.models import (
     ACTIVE_RESERVATION_STATUSES,
+    SEATED_RESERVATION_STATUSES,
     ClassReservation,
     utc_now,
 )
@@ -72,6 +73,9 @@ class MemberClassItem:
     extra_price_cents: int
     waitlist_enabled: bool
     cancel_window_hours: int
+    cancellation_deadline_at: datetime
+    can_cancel: bool
+    will_be_late_cancellation: bool
     notes: str | None
     reserved_count: int
     waitlist_count: int
@@ -164,11 +168,6 @@ def reserve_member_class(
         raise InvalidSessionState("La clase está cancelada")
     if _as_utc(class_session.starts_at) <= occurred:
         raise MemberClassNotAllowed("La clase ya comenzó; no se puede reservar.")
-    if class_session.access_type != "included":
-        raise MemberClassNotAllowed(
-            "Esta clase es premium y todavía no se puede reservar desde la app."
-        )
-
     existing = session.exec(
         select(ClassReservation).where(
             ClassReservation.session_id == session_id,
@@ -248,8 +247,6 @@ def _booking_state(
         return False, "already_reserved"
     if not access_enabled:
         return False, "membership_inactive"
-    if item.access_type != "included":
-        return False, "premium_class"
     if _as_utc(item.starts_at) <= now:
         return False, "started"
     if item.spots_left <= 0 and not item.waitlist_enabled:
@@ -270,6 +267,7 @@ def _member_class_item(
         access_enabled=access_enabled,
         now=now,
     )
+    deadline = _as_utc(item.starts_at) - timedelta(hours=item.cancel_window_hours)
     return MemberClassItem(
         id=item.id,
         title=item.title,
@@ -283,6 +281,13 @@ def _member_class_item(
         extra_price_cents=item.extra_price_cents,
         waitlist_enabled=item.waitlist_enabled,
         cancel_window_hours=item.cancel_window_hours,
+        cancellation_deadline_at=deadline,
+        can_cancel=reservation is not None
+        and reservation.status in ACTIVE_RESERVATION_STATUSES
+        and _as_utc(item.starts_at) > now,
+        will_be_late_cancellation=reservation is not None
+        and reservation.status in SEATED_RESERVATION_STATUSES
+        and now > deadline,
         notes=item.notes,
         reserved_count=item.reserved_count,
         waitlist_count=item.waitlist_count,

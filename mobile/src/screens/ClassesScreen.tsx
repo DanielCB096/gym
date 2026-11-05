@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -92,6 +93,20 @@ export function ClassesScreen({
   }
 
   function handleReserve(item: MemberClass) {
+    if (item.access_type === "premium") {
+      Alert.alert(
+        "Reservar clase premium",
+        `El costo extra de ${formatMoney(item.extra_price_cents)} se cobra al marcar tu asistencia en recepción. ¿Confirmas la reserva?`,
+        [
+          { text: "Ahora no", style: "cancel" },
+          {
+            text: "Reservar",
+            onPress: () => void runAction(item, () => reserveMemberClass(token, item.id)),
+          },
+        ],
+      );
+      return;
+    }
     void runAction(item, () => reserveMemberClass(token, item.id));
   }
 
@@ -100,7 +115,24 @@ export function ClassesScreen({
     if (!reservation) {
       return;
     }
-    void runAction(item, () => cancelMemberReservation(token, reservation.id));
+    const lateMessage = item.will_be_late_cancellation
+      ? "Esta cancelación quedará marcada como tardía."
+      : `Puedes cancelar sin marca tardía hasta el ${formatDateTime(item.cancellation_deadline_at)}.`;
+    Alert.alert(
+      "Cancelar reserva",
+      `${item.title}\n\n${lateMessage}\n\n¿Quieres continuar?`,
+      [
+        { text: "No cancelar", style: "cancel" },
+        {
+          text: "Sí, cancelar",
+          style: "destructive",
+          onPress: () =>
+            void runAction(item, () =>
+              cancelMemberReservation(token, reservation.id),
+            ),
+        },
+      ],
+    );
   }
 
   const focusedClass =
@@ -121,6 +153,7 @@ export function ClassesScreen({
   function renderAction(item: MemberClass) {
     const busy = busyId === item.id;
     const cancelable =
+      item.can_cancel &&
       item.reservation !== null &&
       (item.reservation.status === "reserved" || item.reservation.status === "waitlist");
 
@@ -313,8 +346,9 @@ export function ClassesScreen({
 
           {item.reservation ? (
             <Text style={sharedStyles.hint}>
-              Cancelación sin penalización hasta {item.cancel_window_hours} h antes
-              del inicio.
+              {item.will_be_late_cancellation
+                ? "Cancelación tardía si la confirmas ahora."
+                : `Fecha límite de cancelación normal: ${formatDateTime(item.cancellation_deadline_at)}.`}
             </Text>
           ) : null}
         </View>

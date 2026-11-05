@@ -78,6 +78,9 @@ export type MemberClass = {
   extra_price_cents: number;
   waitlist_enabled: boolean;
   cancel_window_hours: number;
+  cancellation_deadline_at: string;
+  can_cancel: boolean;
+  will_be_late_cancellation: boolean;
   notes: string | null;
   reserved_count: number;
   waitlist_count: number;
