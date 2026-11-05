@@ -4,6 +4,14 @@ Actualizado: 2026-11-05 · Rama: `main` · MFA TOTP con códigos de respaldo y r
 
 Esta nota es el punto de entrada para otra persona o IA. El estado detallado vive en [README.md](README.md#estado-del-proyecto) y el histórico en [changelog.md](changelog.md); aquí solo se resume qué está hecho, qué sigue y qué no debe tocarse sin pedirlo.
 
+## Memoria local para retomar trabajo
+
+Existe una herramienta opcional en [`tools/memoria`](../tools/memoria/README.md)
+para indexar y recuperar fragmentos del repositorio. Puede ayudar a localizar
+documentos, ADR, reglas y decisiones, pero no reemplaza leer los documentos
+fuente ni verificar el estado real de la rama. Generar el índice es local: nunca
+subir `tools/memoria/memoria_db/`, conversaciones, datos reales o secretos.
+
 ## Preparación de la primera entrega (ADR-086)
 
 El alcance de producto quedó acordado: renovaciones automáticas (consentimiento

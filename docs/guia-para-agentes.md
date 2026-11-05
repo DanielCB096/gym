@@ -12,6 +12,20 @@ Esta guía ayuda a agentes de IA y colaboradores a iniciar trabajo en el proyect
 4. Define el alcance y valida solo lo necesario para ese cambio. No ejecutes comandos que modifiquen datos o servicios compartidos sin autorización.
 5. Si la documentación y el comportamiento implementado contradicen una regla de negocio, detente y consulta antes de decidir.
 
+## Memoria local semantica
+
+El proyecto incluye una herramienta local de recuperación en
+[`tools/memoria`](../tools/memoria/README.md). Permite indexar el repositorio y
+buscar fragmentos relacionados con reglas, ADR, procesos, modulo y traspasos.
+Los resultados sirven como punto de entrada para una tarea; siempre se debe
+verificar el documento fuente completo antes de implementar.
+
+Generar el indice es opcional y local. Antes de indexar, confirma que no haya
+base de datos, datos reales ni secretos en la carpeta objetivo. No subas
+`tools/memoria/memoria_db/`; debe quedar excluido por Git. No uses el indice para
+aplicar decisiones fiscales, financieras, legales o de seguridad sin revisar la
+documentacion oficial y la revision profesional correspondiente.
+
 ## Selección de skills
 
 Las skills disponibles dependen del entorno del agente y pueden cambiar. Son ayudas opcionales: no son dependencias del producto, no se deben instalar ni invocar por rutina y su ausencia no bloquea el trabajo. Usa una cuando su descripción coincida directamente con la tarea; continúa con las instrucciones del repositorio si no está disponible.

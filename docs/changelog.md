@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-05 · Memoria local para agentes
+
+- Se agregó `tools/memoria/` como herramienta opcional para indexar y recuperar
+  documentación, código, ADR, procesos y notas de traspaso.
+- Se incluyó el servidor MCP con búsqueda, notas y reindexación, con corrección
+  de UTF-8, guardado atómico, recuperación ante índices dañados, exclusión segura
+  de índices dentro de carpetas indexadas y manejo controlado de PDFs corruptos.
+- La guía para agentes y el documento de traspaso explican cuándo usarla y sus
+  límites. No reemplaza la lectura de fuentes ni las reglas profesionales de
+  cobros, facturación, nómina, biométricos y seguridad.
+- El índice local queda excluido de Git. La herramienta evita secretos, archivos
+  de entorno, bases locales, datos reales, artefactos y directorios generados.
+
 ## 2026-11-05 · Monitoreo y manual de incidentes
 
 - Se agregaron `docs/06-operacion/monitoreo.md` y `docs/06-operacion/manual-de-incidentes.md` con las señales reales del repositorio: `/health`, las doce tareas del cron, sus bitácoras, las colas del panel, la base, el disco y los respaldos.

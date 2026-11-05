@@ -55,6 +55,10 @@ exports/
 *.bak
 *.zip
 
+# Local semantic memory
+tools/memoria/memoria_db/
+*.corrupto-*
+
 # Real data
 clientes-real/
 reales/
