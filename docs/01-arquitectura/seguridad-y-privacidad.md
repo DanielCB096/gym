@@ -10,7 +10,7 @@
 
 - cifrado en tránsito con HTTPS
 - en reposo para datos sensibles y plantillas biométricas
-- autenticación con MFA TOTP para administradores y acceso financiero; el secreto se cifra en reposo y el desafío temporal se consume una sola vez
+- autenticación con MFA TOTP opcional para dueño, gerente y contador; el secreto se cifra en reposo, el desafío temporal se consume una sola vez y la gestión autoservicio (alta, rotación y baja) exige contraseña y un código vigente, con bloqueo tras cinco fallos en diez minutos (ADR-089, ADR-090)
 - permisos validados en backend
 - secretos solo en variables de entorno
 

@@ -27,6 +27,8 @@ ADDED_COLUMNS = {
         "mfa_enabled": "BOOLEAN NOT NULL DEFAULT 0",
         "mfa_secret_encrypted": "BLOB",
         "mfa_enabled_at": "DATETIME",
+        "mfa_pending_secret_encrypted": "BLOB",
+        "mfa_pending_created_at": "DATETIME",
     },
     "exercises": {"equipment_id": "CHAR(32)"},
     "sales": {

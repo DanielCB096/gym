@@ -3188,6 +3188,7 @@ export default function HomePage() {
   const [accessPage, setAccessPage] = useState(1);
   const [occupancy, setOccupancy] = useState<AccessOccupancy | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
+  const [securityOpen, setSecurityOpen] = useState(false);
   const [newMemberOpen, setNewMemberOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -3878,6 +3879,7 @@ export default function HomePage() {
         <div className="profile-row">
           <div className="profile-avatar">{currentUser.email.slice(0, 2).toUpperCase()}</div>
           <div className="profile-copy"><strong>{currentUser.email}</strong><span>{roleLabels[currentUser.roles[0]] ?? "Colaborador"}</span></div>
+          <button className="icon-button profile-menu" aria-label="Seguridad de la cuenta" title="Seguridad de la cuenta" onClick={() => setSecurityOpen(true)}><ShieldCheck size={17} /></button>
           <button className="icon-button profile-menu" aria-label="Cerrar sesión" title="Cerrar sesión" onClick={logout}><LogOut size={17} /></button>
         </div>
       </aside>
@@ -3991,6 +3993,7 @@ export default function HomePage() {
       </main>
 
       {manualOpen && hasPermission("access.manual_override") && <ManualAccessModal onClose={() => setManualOpen(false)} onCreated={handleManualCreated} />}
+      {securityOpen && <MfaSecurityModal onClose={() => setSecurityOpen(false)} onToast={showToast} />}
       {newMemberOpen && hasPermission("members.manage") && <NewMemberModal onClose={() => setNewMemberOpen(false)} onCreated={handleMemberCreated} />}
       {activeMember && hasPermission("members.manage") && <MemberModal member={activeMember} onClose={() => setActiveMember(null)} onChanged={handleMemberChanged} />}
       {toast && <div className="toast"><span className="toast-check"><Check size={14} /></span>{toast}</div>}
@@ -6120,6 +6123,234 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
 
 function SessionLoading() {
   return <main className="session-loading"><div className="session-spinner" /><span>Validando sesión segura…</span></main>;
+}
+
+type MfaAccountStatus = {
+  enabled: boolean;
+  enabled_at: string | null;
+  backup_codes_remaining: number;
+  pending: boolean;
+  available: boolean;
+};
+
+function MfaSecurityModal({ onClose, onToast }: { onClose: () => void; onToast: (message: string) => void }) {
+  const [status, setStatus] = useState<MfaAccountStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [mode, setMode] = useState<"idle" | "enroll" | "rotate" | "disable">("idle");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [newSecret, setNewSecret] = useState("");
+  const [newUri, setNewUri] = useState("");
+  const [backupCodes, setBackupCodes] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const loadStatus = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch("/api/auth/mfa/status", { cache: "no-store" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || "No se pudo consultar la seguridad de la cuenta.");
+      setStatus(payload as MfaAccountStatus);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "No se pudo consultar la seguridad de la cuenta.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadStatus();
+  }, []);
+
+  const resetForm = () => {
+    setMode("idle");
+    setPassword("");
+    setCode("");
+    setError("");
+  };
+
+  const start = async () => {
+    if (!password) {
+      setError("Escribe tu contraseña para continuar.");
+      return;
+    }
+    if (mode === "rotate" && !code.trim()) {
+      setError("Escribe el código actual de tu autenticador.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(mode === "rotate" ? "/api/auth/mfa/rotate" : "/api/auth/mfa/enroll", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(mode === "rotate" ? { password, code: code.trim() } : { password }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || "No se pudo iniciar la configuración MFA.");
+      setNewSecret(payload.secret);
+      setNewUri(payload.otpauth_uri);
+      setPassword("");
+      setCode("");
+    } catch (startError) {
+      setError(startError instanceof Error ? startError.message : "No se pudo iniciar la configuración MFA.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirm = async () => {
+    if (!code.trim()) {
+      setError("Escribe el código de seis dígitos de tu autenticador.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(mode === "rotate" ? "/api/auth/mfa/rotate/confirm" : "/api/auth/mfa/enroll/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: code.trim() }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || "No se pudo confirmar el código MFA.");
+      setBackupCodes(Array.isArray(payload.backup_codes) ? payload.backup_codes : []);
+      setNewSecret("");
+      setNewUri("");
+      setCode("");
+      await loadStatus();
+      onToast(mode === "rotate" ? "Autenticador rotado." : "MFA activado.");
+    } catch (confirmError) {
+      setError(confirmError instanceof Error ? confirmError.message : "No se pudo confirmar el código MFA.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disable = async () => {
+    if (!password || !code.trim()) {
+      setError("Escribe tu contraseña y el código actual para desactivar MFA.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/auth/mfa/disable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password, code: code.trim() }),
+      });
+      if (response.status !== 204) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || "No se pudo desactivar MFA.");
+      }
+      setPassword("");
+      setCode("");
+      resetForm();
+      await loadStatus();
+      onToast("MFA desactivado.");
+    } catch (disableError) {
+      setError(disableError instanceof Error ? disableError.message : "No se pudo desactivar MFA.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyCodes = async () => {
+    try {
+      await navigator.clipboard.writeText(backupCodes.join("\n"));
+      onToast("Códigos de respaldo copiados.");
+    } catch {
+      setError("No se pudieron copiar los códigos; anótalos manualmente.");
+    }
+  };
+
+  const enabledSince = status?.enabled_at
+    ? new Date(status.enabled_at).toLocaleDateString("es-MX", { day: "2-digit", month: "long", year: "numeric" })
+    : null;
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="mfa-security-title">
+        <div className="modal-header"><span className="modal-icon"><ShieldCheck size={19} /></span><button className="icon-button" aria-label="Cerrar" onClick={onClose}><X size={19} /></button></div>
+        <p className="section-kicker">SEGURIDAD DE LA CUENTA</p>
+        <h2 id="mfa-security-title">Verificación en dos pasos</h2>
+        <p className="modal-subtitle">Protege tu cuenta con un código temporal de tu aplicación autenticadora, además de tu contraseña.</p>
+
+        {loading ? (
+          <p className="modal-subtitle">Cargando estado de MFA…</p>
+        ) : error && !status ? (
+          <div className="login-error" role="alert">{error}</div>
+        ) : status === null ? null : !status.available ? (
+          <div className="modal-note"><ShieldCheck size={15} />MFA está disponible solo para las cuentas de dueño, gerente y contador.</div>
+        ) : backupCodes.length > 0 ? (
+          <>
+            <div className="modal-note"><ShieldCheck size={15} />Guarda estos códigos ahora. Cada uno sirve una sola vez y no se vuelven a mostrar.</div>
+            <div className="mfa-code-grid">{backupCodes.map((backupCode) => <code key={backupCode}>{backupCode}</code>)}</div>
+            {error && <div className="login-error" role="alert">{error}</div>}
+            <div className="modal-actions">
+              <button type="button" className="button button-secondary" onClick={() => void copyCodes()}>Copiar códigos</button>
+              <button type="button" className="button button-primary" onClick={() => { setBackupCodes([]); resetForm(); }}>Entendido</button>
+            </div>
+          </>
+        ) : newSecret ? (
+          <>
+            <div className="modal-note"><ShieldCheck size={15} />Agrega esta clave en tu aplicación autenticadora y confirma con el código de seis dígitos que muestre.</div>
+            <label className="form-field"><span>Clave secreta</span><input className="mfa-secret" type="text" value={newSecret} readOnly autoComplete="off" /></label>
+            <label className="form-field"><span>URI de configuración</span><input className="mfa-secret" type="text" value={newUri} readOnly autoComplete="off" /></label>
+            <label className="form-field"><span>Código de verificación</span><input type="text" value={code} onChange={(event) => setCode(event.target.value)} placeholder="123456" autoComplete="one-time-code" inputMode="numeric" /></label>
+            {error && <div className="login-error" role="alert">{error}</div>}
+            <div className="modal-actions">
+              <button type="button" className="button button-secondary" disabled={busy} onClick={() => { setNewSecret(""); setNewUri(""); resetForm(); }}>Cancelar</button>
+              <button type="button" className="button button-primary" disabled={busy} onClick={() => void confirm()}>{busy ? "Confirmando…" : "Confirmar y activar"}</button>
+            </div>
+          </>
+        ) : mode === "idle" ? (
+          <>
+            <div className="modal-section">
+              <p className="modal-section-title">Estado</p>
+              <p className="modal-feedback">
+                {status.enabled
+                  ? `MFA activo${enabledSince ? ` desde el ${enabledSince}` : ""}. Códigos de respaldo disponibles: ${status.backup_codes_remaining}.`
+                  : "MFA inactivo. Tu cuenta entra solo con contraseña."}
+              </p>
+              {status.pending && <p className="modal-subtitle">Hay una configuración pendiente sin confirmar; al iniciarla de nuevo se reemplaza.</p>}
+            </div>
+            {error && <div className="login-error" role="alert">{error}</div>}
+            <div className="modal-actions">
+              {status.enabled ? (
+                <>
+                  <button type="button" className="button button-secondary" onClick={() => { resetForm(); setMode("rotate"); }}>Rotar autenticador</button>
+                  <button type="button" className="button button-danger" onClick={() => { resetForm(); setMode("disable"); }}>Desactivar MFA</button>
+                </>
+              ) : (
+                <button type="button" className="button button-primary" onClick={() => { resetForm(); setMode("enroll"); }}>Activar MFA</button>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            {mode === "disable" && <div className="modal-note"><ShieldAlert size={15} />Sin MFA, tu cuenta quedará protegida solo por la contraseña. Confirma con tu contraseña y un código actual.</div>}
+            {mode === "rotate" && <div className="modal-note"><ShieldCheck size={15} />El autenticador actual sigue funcionando hasta que confirmes el nuevo código.</div>}
+            {mode === "enroll" && <div className="modal-note"><ShieldCheck size={15} />Te pediremos la contraseña y después el código de tu autenticador para activar MFA.</div>}
+            <label className="form-field"><span>Contraseña</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>
+            {(mode === "rotate" || mode === "disable") && (
+              <label className="form-field"><span>{mode === "disable" ? "Código actual o de respaldo" : "Código actual"}</span><input type="text" value={code} onChange={(event) => setCode(event.target.value)} placeholder="123456" autoComplete="one-time-code" /></label>
+            )}
+            {error && <div className="login-error" role="alert">{error}</div>}
+            <div className="modal-actions">
+              <button type="button" className="button button-secondary" disabled={busy} onClick={resetForm}>Cancelar</button>
+              <button type="button" className={mode === "disable" ? "button button-danger" : "button button-primary"} disabled={busy} onClick={() => void (mode === "disable" ? disable() : start())}>
+                {busy ? "Procesando…" : mode === "enroll" ? "Continuar" : mode === "rotate" ? "Generar nuevo secreto" : "Desactivar MFA"}
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+    </div>
+  );
 }
 
 function LoginView({ email, password, error, busy, onEmailChange, onPasswordChange, onSubmit, mfaChallengeActive, mfaSetupRequired, mfaSetupSecret, mfaSetupUri, mfaBackupCodes, mfaCode, onMfaCodeChange, onMfaSubmit }: { email: string; password: string; error: string; busy: boolean; onEmailChange: (value: string) => void; onPasswordChange: (value: string) => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void; mfaChallengeActive: boolean; mfaSetupRequired: boolean; mfaSetupSecret: string; mfaSetupUri: string; mfaBackupCodes: string[]; mfaCode: string; onMfaCodeChange: (value: string) => void; onMfaSubmit: (event: FormEvent<HTMLFormElement>) => void }) {

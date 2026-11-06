@@ -418,6 +418,10 @@ from app.modules.identity.service import (
     InvalidMfaChallenge,
     InvalidSession,
     LastOwnerRequired,
+    MfaManagementLocked,
+    MfaNotAvailable,
+    MfaPasswordRejected,
+    MfaStateConflict,
     PermissionDenied,
     PermissionNotFound,
     RoleNotFound,
@@ -426,6 +430,12 @@ from app.modules.identity.service import (
     assign_role,
     authenticate_session,
     authenticate_user,
+    begin_mfa_enrollment,
+    begin_mfa_rotation,
+    confirm_mfa_enrollment,
+    confirm_mfa_rotation,
+    disable_mfa,
+    get_mfa_status,
     start_mfa_setup,
     verify_mfa_challenge,
     bootstrap_initial_owner,
@@ -928,6 +938,38 @@ class MfaSetupRequest(BaseModel):
 class MfaSetupResponse(BaseModel):
     secret: str
     otpauth_uri: str
+    backup_codes: list[str] = Field(default_factory=list)
+
+
+class MfaStatusResponse(BaseModel):
+    enabled: bool
+    enabled_at: datetime | None
+    backup_codes_remaining: int
+    pending: bool
+    available: bool
+
+
+class MfaPasswordRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class MfaCodeRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=32)
+
+
+class MfaFactorRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=1024)
+    code: str = Field(min_length=6, max_length=32)
+
+
+class MfaSecretResponse(BaseModel):
+    secret: str
+    otpauth_uri: str
+    expires_at: datetime
+
+
+class MfaConfirmResponse(BaseModel):
+    rotated: bool
     backup_codes: list[str] = Field(default_factory=list)
 
 
@@ -4121,6 +4163,138 @@ def mfa_verify(request: MfaChallengeRequest, session: SessionDependency) -> Logi
 @app.get("/auth/me", response_model=UserResponse, tags=["authentication"])
 def auth_me(principal: Annotated[AuthenticatedUser, Depends(get_current_principal)]) -> UserResponse:
     return _principal_response(principal)
+
+
+def _mfa_http_error(error: IdentityError) -> HTTPException:
+    if isinstance(error, MfaManagementLocked):
+        status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    elif isinstance(error, MfaStateConflict):
+        status_code = status.HTTP_409_CONFLICT
+    elif isinstance(error, (MfaNotAvailable, MfaPasswordRejected)):
+        status_code = status.HTTP_403_FORBIDDEN
+    elif isinstance(error, UserUnavailable):
+        status_code = status.HTTP_404_NOT_FOUND
+    else:
+        status_code = status.HTTP_400_BAD_REQUEST
+    return HTTPException(status_code=status_code, detail=str(error))
+
+
+@app.get("/auth/mfa/status", response_model=MfaStatusResponse, tags=["authentication"])
+def auth_mfa_status(
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+) -> MfaStatusResponse:
+    try:
+        mfa_status = get_mfa_status(session, user_id=principal.user_id)
+    except IdentityError as error:
+        raise _mfa_http_error(error) from error
+    return MfaStatusResponse(
+        enabled=mfa_status.enabled,
+        enabled_at=mfa_status.enabled_at,
+        backup_codes_remaining=mfa_status.backup_codes_remaining,
+        pending=mfa_status.pending,
+        available=mfa_status.available,
+    )
+
+
+@app.post("/auth/mfa/enroll", response_model=MfaSecretResponse, tags=["authentication"])
+def auth_mfa_enroll(
+    request: MfaPasswordRequest,
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+) -> MfaSecretResponse:
+    try:
+        enrollment = begin_mfa_enrollment(
+            session,
+            user_id=principal.user_id,
+            password=request.password,
+        )
+    except IdentityError as error:
+        raise _mfa_http_error(error) from error
+    return MfaSecretResponse(
+        secret=enrollment.secret,
+        otpauth_uri=enrollment.otp_uri,
+        expires_at=enrollment.expires_at,
+    )
+
+
+@app.post("/auth/mfa/enroll/confirm", response_model=MfaConfirmResponse, tags=["authentication"])
+def auth_mfa_enroll_confirm(
+    request: MfaCodeRequest,
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+) -> MfaConfirmResponse:
+    try:
+        confirmation = confirm_mfa_enrollment(
+            session,
+            user_id=principal.user_id,
+            code=request.code,
+        )
+    except IdentityError as error:
+        raise _mfa_http_error(error) from error
+    return MfaConfirmResponse(
+        rotated=confirmation.rotated,
+        backup_codes=list(confirmation.backup_codes),
+    )
+
+
+@app.post("/auth/mfa/rotate", response_model=MfaSecretResponse, tags=["authentication"])
+def auth_mfa_rotate(
+    request: MfaFactorRequest,
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+) -> MfaSecretResponse:
+    try:
+        enrollment = begin_mfa_rotation(
+            session,
+            user_id=principal.user_id,
+            password=request.password,
+            code=request.code,
+        )
+    except IdentityError as error:
+        raise _mfa_http_error(error) from error
+    return MfaSecretResponse(
+        secret=enrollment.secret,
+        otpauth_uri=enrollment.otp_uri,
+        expires_at=enrollment.expires_at,
+    )
+
+
+@app.post("/auth/mfa/rotate/confirm", response_model=MfaConfirmResponse, tags=["authentication"])
+def auth_mfa_rotate_confirm(
+    request: MfaCodeRequest,
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+) -> MfaConfirmResponse:
+    try:
+        confirmation = confirm_mfa_rotation(
+            session,
+            user_id=principal.user_id,
+            code=request.code,
+        )
+    except IdentityError as error:
+        raise _mfa_http_error(error) from error
+    return MfaConfirmResponse(
+        rotated=confirmation.rotated,
+        backup_codes=list(confirmation.backup_codes),
+    )
+
+
+@app.post("/auth/mfa/disable", status_code=status.HTTP_204_NO_CONTENT, tags=["authentication"])
+def auth_mfa_disable(
+    request: MfaFactorRequest,
+    principal: Annotated[AuthenticatedUser, Depends(get_current_principal)],
+    session: SessionDependency,
+) -> None:
+    try:
+        disable_mfa(
+            session,
+            user_id=principal.user_id,
+            password=request.password,
+            code=request.code,
+        )
+    except IdentityError as error:
+        raise _mfa_http_error(error) from error
 
 
 @app.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT, tags=["authentication"])

@@ -141,9 +141,10 @@ solo describe el staging local, no la disponibilidad de producción.
   explícito, cancelación clara y manejo de cobros fallidos en sandbox. La
   integración de Conekta ya cubre el pago inicial y el motor local de
   renovaciones, pero no está autorizada para producción.
-- Cerrar MFA administrativo (rotación y deshabilitación desde la UI, pruebas en
-  PostgreSQL y revisión profesional) y cerrar la revisión de seguridad y
-  privacidad.
+- Validar MFA administrativo en PostgreSQL, definir la recuperación cuando se
+  pierden el autenticador y los códigos de respaldo, y cerrar la revisión de
+  seguridad y privacidad. La rotación y la deshabilitación desde el panel ya
+  existen (ADR-090).
 - Configurar respaldos productivos y demostrar recuperación dentro de los
   objetivos aprobados, incluyendo fotos de progreso si se conservan en
   archivos aparte. El ensayo local de staging y sus scripts ya están disponibles,

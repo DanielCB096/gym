@@ -342,6 +342,9 @@ h1 { margin-bottom: 5px; font-size: 29px; line-height: 1.1; letter-spacing: -.45
 .member-modal-error { margin: 0 0 10px; color: #a94e3d; font-size: 10px; }
 .member-modal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .modal-feedback { margin-top: 10px; padding: 9px 11px; border: 1px solid #d6e1f2; border-radius: 5px; color: #3c5488; background: #eef3fb; font-size: 10px; }
+.mfa-code-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin: 13px 0; padding: 12px; border: 1px solid #dfe6e0; border-radius: 6px; background: #f7f9f6; color: #2f3d33; font-size: 11px; letter-spacing: .4px; }
+.mfa-code-grid code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.mfa-secret { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .3px; }
 .role-picker { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 4px 0 12px; }
 .role-picker .form-check { margin: 0; }
 .toast { position: fixed; z-index: 40; right: 22px; bottom: 22px; display: flex; align-items: center; gap: 9px; padding: 12px 15px; border: 1px solid #dce7d5; border-radius: 6px; color: #33483a; background: #fff; box-shadow: var(--shadow); font-size: 11px; animation: lift-in .2s ease-out; }.toast-check { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: #3c7246; background: #e7f2dc; }

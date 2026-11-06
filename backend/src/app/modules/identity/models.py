@@ -94,6 +94,8 @@ class AppUser(SQLModel, table=True):
     )
     mfa_secret_encrypted: bytes | None = Field(default=None, sa_type=LargeBinary)
     mfa_enabled_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    mfa_pending_secret_encrypted: bytes | None = Field(default=None, sa_type=LargeBinary)
+    mfa_pending_created_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),

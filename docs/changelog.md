@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-06 · Gestión autoservicio de MFA
+
+- El panel estrena «Seguridad de la cuenta» (botón de escudo del perfil) para activar, rotar y desactivar MFA TOTP sin salir de la sesión.
+- El backend agrega `GET /auth/mfa/status`, `POST /auth/mfa/enroll`, `POST /auth/mfa/enroll/confirm`, `POST /auth/mfa/rotate`, `POST /auth/mfa/rotate/confirm` y `POST /auth/mfa/disable`, con sus rutas BFF en `/api/auth/mfa/*`.
+- La rotación usa un secreto pendiente de 15 minutos: el autenticador anterior sigue funcionando hasta confirmar el nuevo. Al confirmar se regeneran los diez códigos de respaldo y se vencen los desafíos abiertos.
+- El alta y la rotación exigen contraseña; la rotación y la baja exigen además un código vigente. Cinco fallos de contraseña o código en diez minutos bloquean la gestión con `429` (`MfaManagementLocked`).
+- La migración `20261105_0091_mfa_management.py` agrega `app_users.mfa_pending_secret_encrypted` y `app_users.mfa_pending_created_at`; `preview_patch.py` replica ambas columnas.
+- `test_mfa_management.py` suma 8 pruebas; la suite backend queda en **752 pruebas: 744 aprobadas y 8 omitidas**. Faltan las pruebas en PostgreSQL, la recuperación ante pérdida de factores y la revisión profesional.
+
 ## 2026-11-05 · Memoria local para agentes
 
 - Se agregó `tools/memoria/` como herramienta opcional para indexar y recuperar

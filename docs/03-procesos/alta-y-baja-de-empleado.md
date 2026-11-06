@@ -31,7 +31,7 @@ Este proceso administra el directorio operativo, las cuentas de usuario y las as
 - Los permisos se validan en cada endpoint del backend; ocultar acciones en la interfaz no es control de autorización.
 - Login responde con mensaje genérico para credenciales incorrectas o cuentas no válidas.
 - La base conserva únicamente el hash del token de sesión; el token crudo se muestra una sola vez al iniciar sesión.
-- El cierre de MFA (rotación/deshabilitación desde la UI y revisión profesional), la limitación de intentos, la recuperación de contraseña y las notificaciones de seguridad son pendientes antes de producción.
+- Las pruebas de MFA en PostgreSQL, la recuperación ante pérdida de factores y la revisión profesional de MFA, la recuperación de contraseña y las notificaciones de seguridad son pendientes antes de producción. La rotación y la baja desde el panel y el bloqueo de la gestión por intentos ya existen (ADR-090).
 
 ## KPIs
 
@@ -46,4 +46,4 @@ Este proceso administra el directorio operativo, las cuentas de usuario y las as
 - La contraseña se guarda con Argon2 y nunca se devuelve; la creación queda auditada con el responsable (`account_created`, `employee_created`).
 - La asignación y revocación de roles por cuenta ya se hacen desde la pestaña «Usuarios», con protección del último dueño (`409`), y las sesiones activas se listan y revocan desde «Sesiones».
 - La baja ya se ejecuta desde el panel: la pestaña «Usuarios» permite deshabilitar o habilitar la cuenta (`PATCH /admin/users/{user_id}`). Al deshabilitar se revocan las sesiones abiertas de inmediato, se rechazan nuevos inicios de sesión y se impide dejar al club sin ningún dueño activo (`409`). El expediente, los roles y los eventos de auditoría se conservan; no se elimina nada físicamente. El reingreso se hace habilitando la cuenta de nuevo.
-- Quedan pendientes: contratos y obligaciones laborales, el cierre de MFA (rotación/deshabilitación desde la UI y revisión profesional), la limitación de intentos, la recuperación de contraseña y el auto-marcaje de asistencia.
+- Quedan pendientes: contratos y obligaciones laborales, las pruebas de MFA en PostgreSQL y la recuperación ante pérdida de factores, la revocación de sesiones al rotar o deshabilitar MFA, la recuperación de contraseña y el auto-marcaje de asistencia. La rotación y la baja desde el panel ya existen (ADR-090).

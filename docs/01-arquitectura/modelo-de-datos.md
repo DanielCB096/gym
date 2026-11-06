@@ -318,7 +318,7 @@ El control de duplicados agrega una tabla de política, no de eventos: `20261028
 - `user_role_assignments` conserva actor, fecha, vencimiento y revocación de cada asignación.
 - `user_sessions` almacena solo SHA-256 del token opaco, con vencimiento y revocación server-side.
 - `auth_events` registra login exitoso/fallido, logout, creación de usuario y cambios de rol sin guardar contraseñas ni tokens.
-- `app_users` incluye estado MFA y el secreto TOTP cifrado con AES-256-GCM; la migración `20261103_0089` conserva las cuentas existentes con MFA deshabilitado hasta su alta.
-- `mfa_challenges` guarda desafíos temporales de 10 minutos solo como SHA-256, separados por propósito `setup` o `login`, con consumo único.
-- `mfa_backup_codes` guarda diez códigos alternativos como SHA-256; cada código se consume una sola vez y queda asociado al usuario.
-- Los roles predeterminados se siembran en la migración Alembic; rate limiting, recuperación de contraseña y nómina requieren incrementos adicionales.
+- `app_users` incluye estado MFA, el secreto TOTP cifrado con AES-256-GCM y un secreto pendiente (`mfa_pending_secret_encrypted`, `mfa_pending_created_at`) que la migración `20261105_0091` agrega para rotar sin dejar la cuenta sin factor; `20261103_0089` conservó las cuentas existentes con MFA deshabilitado hasta su alta.
+- `mfa_challenges` guarda desafíos temporales de 10 minutos solo como SHA-256, separados por propósito `setup` o `login`, con consumo único; el alta, la rotación y la baja vencen los desafíos abiertos de la cuenta.
+- `mfa_backup_codes` guarda diez códigos alternativos como SHA-256; cada código se consume una sola vez y queda asociado al usuario. El alta y la rotación borran los anteriores y entregan diez nuevos; la tabla conserva el hash, nunca el código en claro.
+- Los roles predeterminados se siembran en la migración Alembic; rate limiting general (fuera del bloqueo de la gestión MFA), recuperación de contraseña y nómina requieren incrementos adicionales.

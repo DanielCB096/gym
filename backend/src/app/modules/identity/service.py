@@ -32,6 +32,10 @@ from app.modules.identity.models import (
 
 PASSWORD_MIN_LENGTH = 12
 SESSION_LIFETIME = timedelta(hours=8)
+MFA_PENDING_LIFETIME = timedelta(minutes=15)
+MFA_MANAGEMENT_WINDOW = timedelta(minutes=10)
+MFA_MANAGEMENT_MAX_FAILURES = 5
+MFA_MANAGEMENT_ROLES = frozenset({"owner", "manager", "accountant"})
 PASSWORD_HASHER = PasswordHash.recommended()
 DUMMY_PASSWORD_HASH = PASSWORD_HASHER.hash(secrets.token_urlsafe(32))
 
@@ -135,6 +139,22 @@ class InvalidMfaChallenge(IdentityError):
     pass
 
 
+class MfaNotAvailable(IdentityError):
+    pass
+
+
+class MfaStateConflict(IdentityError):
+    pass
+
+
+class MfaPasswordRejected(IdentityError):
+    pass
+
+
+class MfaManagementLocked(IdentityError):
+    pass
+
+
 class InvalidSession(IdentityError):
     pass
 
@@ -221,6 +241,28 @@ class SessionOverview:
     expires_at: datetime
     last_seen_at: datetime | None
     is_current: bool
+
+
+@dataclass(frozen=True)
+class MfaStatus:
+    enabled: bool
+    enabled_at: datetime | None
+    backup_codes_remaining: int
+    pending: bool
+    available: bool
+
+
+@dataclass(frozen=True)
+class MfaEnrollment:
+    secret: str
+    otp_uri: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class MfaConfirmation:
+    rotated: bool
+    backup_codes: tuple[str, ...]
 
 
 def ensure_default_access_control(session: Session) -> None:
@@ -696,6 +738,17 @@ def _create_mfa_challenge(
     return raw_challenge
 
 
+def _otp_uri(secret: str, account_email: str) -> str:
+    issuer = "Centro Fit"
+    return (
+        "otpauth://totp/"
+        + f"{issuer}:{account_email}"
+        + "?secret=" + secret
+        + "&issuer=" + issuer.replace(" ", "%20")
+        + "&algorithm=SHA1&digits=6&period=30"
+    )
+
+
 def start_mfa_setup(
     session: Session,
     *,
@@ -722,14 +775,7 @@ def start_mfa_setup(
     session.add(user)
     session.commit()
     backup_codes = _generate_backup_codes(session, user_id=user.id, now=occurred_at)
-    issuer = "Centro Fit"
-    otp_uri = (
-        "otpauth://totp/"
-        + f"{issuer}:{account_email}"
-        + "?secret=" + secret
-        + "&issuer=" + issuer.replace(" ", "%20")
-        + "&algorithm=SHA1&digits=6&period=30"
-    )
+    otp_uri = _otp_uri(secret, account_email)
     return secret, otp_uri, backup_codes
 
 
@@ -822,6 +868,421 @@ def verify_mfa_challenge(
     session.commit()
     principal = _build_principal(session, user, user_session, occurred_at)
     return LoginResult(raw_token, "Bearer", expires_at, principal)
+
+
+def _user_for_management(session: Session, user_id: UUID) -> AppUser:
+    user = session.get(AppUser, user_id)
+    if user is None or user.status != "active":
+        raise UserUnavailable("La cuenta no está disponible.")
+    return user
+
+
+def _mfa_management_failures(
+    session: Session,
+    *,
+    user_id: UUID,
+    occurred_at: datetime,
+) -> int:
+    since = occurred_at - MFA_MANAGEMENT_WINDOW
+    last_success = session.exec(
+        select(func.max(AuthEvent.occurred_at)).where(
+            AuthEvent.user_id == user_id,
+            AuthEvent.event_type.in_(("mfa_enabled", "mfa_rotated", "mfa_disabled")),
+            AuthEvent.result == "success",
+            AuthEvent.occurred_at >= since,
+        )
+    ).one()
+    if last_success is not None:
+        since = max(since, _as_utc(last_success))
+    return session.exec(
+        select(func.count())
+        .select_from(AuthEvent)
+        .where(
+            AuthEvent.user_id == user_id,
+            AuthEvent.event_type == "mfa_management",
+            AuthEvent.result == "failure",
+            AuthEvent.occurred_at >= since,
+        )
+    ).one()
+
+
+def _require_mfa_management_unlocked(
+    session: Session,
+    *,
+    user_id: UUID,
+    occurred_at: datetime,
+) -> None:
+    if _mfa_management_failures(
+        session,
+        user_id=user_id,
+        occurred_at=occurred_at,
+    ) >= MFA_MANAGEMENT_MAX_FAILURES:
+        raise MfaManagementLocked(
+            "Demasiados intentos fallidos. Espera diez minutos antes de volver a intentarlo."
+        )
+
+
+def _record_mfa_management_failure(
+    session: Session,
+    *,
+    user_id: UUID,
+    reason: str,
+    occurred_at: datetime,
+) -> None:
+    session.add(
+        AuthEvent(
+            user_id=user_id,
+            event_type="mfa_management",
+            result="failure",
+            reason_code=reason,
+            occurred_at=occurred_at,
+        )
+    )
+    session.commit()
+    _require_mfa_management_unlocked(
+        session,
+        user_id=user_id,
+        occurred_at=occurred_at,
+    )
+
+
+def _require_mfa_password(
+    session: Session,
+    *,
+    user: AppUser,
+    password: str,
+    occurred_at: datetime,
+) -> None:
+    try:
+        valid = PASSWORD_HASHER.verify(password, user.password_hash)
+    except Exception:
+        valid = False
+    if valid:
+        return
+    _record_mfa_management_failure(
+        session,
+        user_id=user.id,
+        reason="invalid_password",
+        occurred_at=occurred_at,
+    )
+    raise MfaPasswordRejected("La contraseña no coincide.")
+
+
+def _verify_active_mfa_factor(
+    session: Session,
+    *,
+    user: AppUser,
+    code: str,
+    occurred_at: datetime,
+) -> bool:
+    if user.mfa_secret_encrypted is None:
+        return False
+    secret = _decrypt_mfa_secret(user.mfa_secret_encrypted, user.id)
+    if _verify_totp(secret, code):
+        return True
+    backup_code = session.exec(
+        select(MfaBackupCode).where(
+            MfaBackupCode.user_id == user.id,
+            MfaBackupCode.code_sha256 == _backup_code_hash(code),
+            MfaBackupCode.used_at.is_(None),
+        )
+    ).first()
+    if backup_code is None:
+        return False
+    backup_code.used_at = occurred_at
+    session.add(backup_code)
+    session.add(
+        AuthEvent(
+            user_id=user.id,
+            event_type="mfa_backup_code",
+            result="success",
+            occurred_at=occurred_at,
+        )
+    )
+    return True
+
+
+def _issue_pending_secret(
+    session: Session,
+    *,
+    user: AppUser,
+    occurred_at: datetime,
+) -> tuple[str, str]:
+    secret = _base32_secret()
+    user.mfa_pending_secret_encrypted = _encrypt_mfa_secret(secret, user.id)
+    user.mfa_pending_created_at = occurred_at
+    session.add(user)
+    session.commit()
+    return secret, _otp_uri(secret, user.email)
+
+
+def _require_pending_secret(user: AppUser, occurred_at: datetime) -> str:
+    if user.mfa_pending_secret_encrypted is None or user.mfa_pending_created_at is None:
+        raise InvalidMfaChallenge("No hay una configuración MFA pendiente.")
+    created_at = _as_utc(user.mfa_pending_created_at)
+    if created_at + MFA_PENDING_LIFETIME <= occurred_at:
+        raise InvalidMfaChallenge(
+            "La configuración MFA pendiente expiró. Inicia el proceso de nuevo."
+        )
+    return _decrypt_mfa_secret(user.mfa_pending_secret_encrypted, user.id)
+
+
+def _clear_backup_codes(session: Session, user_id: UUID) -> None:
+    rows = session.exec(
+        select(MfaBackupCode).where(MfaBackupCode.user_id == user_id)
+    ).all()
+    for row in rows:
+        session.delete(row)
+
+
+def _expire_mfa_challenges(
+    session: Session,
+    *,
+    user_id: UUID,
+    occurred_at: datetime,
+) -> None:
+    challenges = session.exec(
+        select(MfaChallenge).where(
+            MfaChallenge.user_id == user_id,
+            MfaChallenge.used_at.is_(None),
+        )
+    ).all()
+    for challenge in challenges:
+        challenge.used_at = occurred_at
+        session.add(challenge)
+
+
+def get_mfa_status(
+    session: Session,
+    *,
+    user_id: UUID,
+    now: datetime | None = None,
+) -> MfaStatus:
+    occurred_at = now or utc_now()
+    user = _user_for_management(session, user_id)
+    remaining = session.exec(
+        select(func.count())
+        .select_from(MfaBackupCode)
+        .where(
+            MfaBackupCode.user_id == user.id,
+            MfaBackupCode.used_at.is_(None),
+        )
+    ).one()
+    pending = False
+    if user.mfa_pending_secret_encrypted is not None and user.mfa_pending_created_at is not None:
+        pending = _as_utc(user.mfa_pending_created_at) + MFA_PENDING_LIFETIME > occurred_at
+    return MfaStatus(
+        enabled=user.mfa_enabled,
+        enabled_at=user.mfa_enabled_at,
+        backup_codes_remaining=remaining,
+        pending=pending,
+        available=user.mfa_enabled
+        or _user_has_role(session, user.id, MFA_MANAGEMENT_ROLES),
+    )
+
+
+def begin_mfa_enrollment(
+    session: Session,
+    *,
+    user_id: UUID,
+    password: str,
+    now: datetime | None = None,
+) -> MfaEnrollment:
+    occurred_at = now or utc_now()
+    user = _user_for_management(session, user_id)
+    _require_mfa_management_unlocked(session, user_id=user.id, occurred_at=occurred_at)
+    if not _user_has_role(session, user.id, MFA_MANAGEMENT_ROLES):
+        raise MfaNotAvailable(
+            "MFA está disponible solo para las cuentas de dueño, gerente y contador."
+        )
+    if user.mfa_enabled:
+        raise MfaStateConflict("MFA ya está activo en esta cuenta.")
+    _require_mfa_password(session, user=user, password=password, occurred_at=occurred_at)
+    secret, otp_uri = _issue_pending_secret(session, user=user, occurred_at=occurred_at)
+    session.add(
+        AuthEvent(
+            user_id=user.id,
+            actor_id=user.id,
+            event_type="mfa_enrollment_started",
+            result="success",
+            occurred_at=occurred_at,
+        )
+    )
+    session.commit()
+    return MfaEnrollment(
+        secret=secret,
+        otp_uri=otp_uri,
+        expires_at=occurred_at + MFA_PENDING_LIFETIME,
+    )
+
+
+def confirm_mfa_enrollment(
+    session: Session,
+    *,
+    user_id: UUID,
+    code: str,
+    now: datetime | None = None,
+) -> MfaConfirmation:
+    occurred_at = now or utc_now()
+    user = _user_for_management(session, user_id)
+    _require_mfa_management_unlocked(session, user_id=user.id, occurred_at=occurred_at)
+    if user.mfa_enabled:
+        raise MfaStateConflict("MFA ya está activo en esta cuenta.")
+    secret = _require_pending_secret(user, occurred_at)
+    if not _verify_totp(secret, code):
+        _record_mfa_management_failure(
+            session,
+            user_id=user.id,
+            reason="invalid_code",
+            occurred_at=occurred_at,
+        )
+        raise InvalidMfaChallenge("Código MFA inválido.")
+
+    user.mfa_enabled = True
+    user.mfa_enabled_at = occurred_at
+    user.mfa_secret_encrypted = user.mfa_pending_secret_encrypted
+    user.mfa_pending_secret_encrypted = None
+    user.mfa_pending_created_at = None
+    session.add(user)
+    _clear_backup_codes(session, user.id)
+    _expire_mfa_challenges(session, user_id=user.id, occurred_at=occurred_at)
+    session.add(
+        AuthEvent(
+            user_id=user.id,
+            actor_id=user.id,
+            event_type="mfa_enabled",
+            result="success",
+            occurred_at=occurred_at,
+        )
+    )
+    session.flush()
+    backup_codes = _generate_backup_codes(session, user_id=user.id, now=occurred_at)
+    return MfaConfirmation(rotated=False, backup_codes=tuple(backup_codes))
+
+
+def begin_mfa_rotation(
+    session: Session,
+    *,
+    user_id: UUID,
+    password: str,
+    code: str,
+    now: datetime | None = None,
+) -> MfaEnrollment:
+    occurred_at = now or utc_now()
+    user = _user_for_management(session, user_id)
+    _require_mfa_management_unlocked(session, user_id=user.id, occurred_at=occurred_at)
+    if not user.mfa_enabled or user.mfa_secret_encrypted is None:
+        raise MfaStateConflict("MFA no está activo en esta cuenta.")
+    _require_mfa_password(session, user=user, password=password, occurred_at=occurred_at)
+    if not _verify_active_mfa_factor(session, user=user, code=code, occurred_at=occurred_at):
+        _record_mfa_management_failure(
+            session,
+            user_id=user.id,
+            reason="invalid_code",
+            occurred_at=occurred_at,
+        )
+        raise InvalidMfaChallenge("Código MFA inválido.")
+    secret, otp_uri = _issue_pending_secret(session, user=user, occurred_at=occurred_at)
+    session.add(
+        AuthEvent(
+            user_id=user.id,
+            actor_id=user.id,
+            event_type="mfa_rotation_started",
+            result="success",
+            occurred_at=occurred_at,
+        )
+    )
+    session.commit()
+    return MfaEnrollment(
+        secret=secret,
+        otp_uri=otp_uri,
+        expires_at=occurred_at + MFA_PENDING_LIFETIME,
+    )
+
+
+def confirm_mfa_rotation(
+    session: Session,
+    *,
+    user_id: UUID,
+    code: str,
+    now: datetime | None = None,
+) -> MfaConfirmation:
+    occurred_at = now or utc_now()
+    user = _user_for_management(session, user_id)
+    _require_mfa_management_unlocked(session, user_id=user.id, occurred_at=occurred_at)
+    if not user.mfa_enabled:
+        raise MfaStateConflict("MFA no está activo en esta cuenta.")
+    secret = _require_pending_secret(user, occurred_at)
+    if not _verify_totp(secret, code):
+        _record_mfa_management_failure(
+            session,
+            user_id=user.id,
+            reason="invalid_code",
+            occurred_at=occurred_at,
+        )
+        raise InvalidMfaChallenge("Código MFA inválido.")
+
+    user.mfa_secret_encrypted = user.mfa_pending_secret_encrypted
+    user.mfa_pending_secret_encrypted = None
+    user.mfa_pending_created_at = None
+    session.add(user)
+    _clear_backup_codes(session, user.id)
+    _expire_mfa_challenges(session, user_id=user.id, occurred_at=occurred_at)
+    session.add(
+        AuthEvent(
+            user_id=user.id,
+            actor_id=user.id,
+            event_type="mfa_rotated",
+            result="success",
+            occurred_at=occurred_at,
+        )
+    )
+    session.flush()
+    backup_codes = _generate_backup_codes(session, user_id=user.id, now=occurred_at)
+    return MfaConfirmation(rotated=True, backup_codes=tuple(backup_codes))
+
+
+def disable_mfa(
+    session: Session,
+    *,
+    user_id: UUID,
+    password: str,
+    code: str,
+    now: datetime | None = None,
+) -> None:
+    occurred_at = now or utc_now()
+    user = _user_for_management(session, user_id)
+    _require_mfa_management_unlocked(session, user_id=user.id, occurred_at=occurred_at)
+    if not user.mfa_enabled:
+        raise MfaStateConflict("MFA no está activo en esta cuenta.")
+    _require_mfa_password(session, user=user, password=password, occurred_at=occurred_at)
+    if not _verify_active_mfa_factor(session, user=user, code=code, occurred_at=occurred_at):
+        _record_mfa_management_failure(
+            session,
+            user_id=user.id,
+            reason="invalid_code",
+            occurred_at=occurred_at,
+        )
+        raise InvalidMfaChallenge("Código MFA inválido.")
+
+    user.mfa_enabled = False
+    user.mfa_enabled_at = None
+    user.mfa_secret_encrypted = None
+    user.mfa_pending_secret_encrypted = None
+    user.mfa_pending_created_at = None
+    session.add(user)
+    _clear_backup_codes(session, user.id)
+    _expire_mfa_challenges(session, user_id=user.id, occurred_at=occurred_at)
+    session.add(
+        AuthEvent(
+            user_id=user.id,
+            actor_id=user.id,
+            event_type="mfa_disabled",
+            result="success",
+            occurred_at=occurred_at,
+        )
+    )
+    session.commit()
 
 
 def authenticate_user(
