@@ -1,4 +1,0 @@
-numpy>=2.0
-sentence-transformers>=5.0
-pypdf>=6.0
-mcp

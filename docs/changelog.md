@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-06 · Retiro de la herramienta de memoria local
+
+- Se retiraron `tools/memoria/`, sus reglas de `.gitignore` y la configuración MCP de VS Code. La herramienta no formaba parte del producto y su índice vivía solo en local, sin compartirse entre clones, máquinas ni agentes.
+- Motivos: duplicaba el índice versionado (`docs/README.md`, ADR, `TRASPASO.md` y este changelog); sin `sentence-transformers` caía a una búsqueda léxica inferior a `grep`; añadía dependencias pesadas; y la lista de exclusiones no cubría `backend/.secrets/`.
+- El código se conserva fuera del repositorio, con la exclusión de `.secrets`, `backups`, `exports` y `demo`, y con `MEMORIA_ROOT` para limitar el indexado del servidor MCP.
+- Para contexto y búsquedas, los agentes deben seguir usando la documentación versionada, `grep`/`glob` y este changelog; no hay una memoria paralela que mantener.
+
 ## 2026-11-06 · Gestión autoservicio de MFA
 
 - El panel estrena «Seguridad de la cuenta» (botón de escudo del perfil) para activar, rotar y desactivar MFA TOTP sin salir de la sesión.
@@ -21,6 +28,8 @@
   cobros, facturación, nómina, biométricos y seguridad.
 - El índice local queda excluido de Git. La herramienta evita secretos, archivos
   de entorno, bases locales, datos reales, artefactos y directorios generados.
+- Retirada el 2026-11-06; consulta la entrada superior para el motivo y la
+  ubicación del código conservado fuera del repositorio.
 
 ## 2026-11-05 · Monitoreo y manual de incidentes
 

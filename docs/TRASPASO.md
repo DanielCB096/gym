@@ -1,16 +1,8 @@
 # Traspaso para retomar el trabajo
 
-Actualizado: 2026-11-06 · Rama: `main` · gestión autoservicio de MFA en esta iteración (commit pendiente), MFA TOTP con códigos de respaldo y rediseño móvil en `9842d72`, tickets PDF del POS en `b394116`, reserva de clases premium y cancelación con aviso de tardanza en `a4bc422`, y capturas de vista previa en `609f302`; motor local de renovaciones automáticas en esta iteración (commit pendiente), ADR-082 a ADR-084 en `756c5ff` (backend y cron) y `4bd37a3` (panel), custodia de catálogos en `8101b1b`, fronteras de nota de la conciliación en `e267763`, estados bancarios en una sola tupla en `214108a`, nombre y frecuencia del reporte en una sola tupla en `c3066ab`, bitácora de reportes en UTC en `efe6147`, custodia del seed RBAC en `ca136bd`, cotas de clase en tres capas en `83d80c1`, ADR-077 en `62680be`, ADR-080 en `dab7a5e`, ADR-079 en `4ee66d5`, ADR-078 en `162abf2`, ADR-076 en `84dae39`, ADR-075 en `38d19bf`, ADR-074 en `eaf09b2`, ADR-073 en `097176a`, ADR-072 en `cf1930f`, ADR-071 en `cb87609`, ADR-070 en `316ede7`, ADR-069 en `b6ea88f`, ADR-068 en `036f553`, ADR-067 en `b2b454a`, ADR-065 en `6cb1632`, ADR-064 en `7ee0bdd`, ADR-063 en `96e967f`, ADR-062 en `d9594e4`, ADR-061 en `dd482d7`, ADR-059 en `984c901`, ADR-058 en `f4280ae`, ADR-057 en `39391dc`, ADR-056 en `e4c4399`, ADR-055 en `d7c21ac`, ADR-054 en `94c3a6a` y ADR-050 a ADR-053 en `8a0daa8`.
+Actualizado: 2026-11-06 · Rama: `main` · gestión autoservicio de MFA en `25ba708`, retiro de la memoria local en esta iteración, MFA TOTP con códigos de respaldo y rediseño móvil en `9842d72`, tickets PDF del POS en `b394116`, reserva de clases premium y cancelación con aviso de tardanza en `a4bc422`, y capturas de vista previa en `609f302`; motor local de renovaciones automáticas en esta iteración (commit pendiente), ADR-082 a ADR-084 en `756c5ff` (backend y cron) y `4bd37a3` (panel), custodia de catálogos en `8101b1b`, fronteras de nota de la conciliación en `e267763`, estados bancarios en una sola tupla en `214108a`, nombre y frecuencia del reporte en una sola tupla en `c3066ab`, bitácora de reportes en UTC en `efe6147`, custodia del seed RBAC en `ca136bd`, cotas de clase en tres capas en `83d80c1`, ADR-077 en `62680be`, ADR-080 en `dab7a5e`, ADR-079 en `4ee66d5`, ADR-078 en `162abf2`, ADR-076 en `84dae39`, ADR-075 en `38d19bf`, ADR-074 en `eaf09b2`, ADR-073 en `097176a`, ADR-072 en `cf1930f`, ADR-071 en `cb87609`, ADR-070 en `316ede7`, ADR-069 en `b6ea88f`, ADR-068 en `036f553`, ADR-067 en `b2b454a`, ADR-065 en `6cb1632`, ADR-064 en `7ee0bdd`, ADR-063 en `96e967f`, ADR-062 en `d9594e4`, ADR-061 en `dd482d7`, ADR-059 en `984c901`, ADR-058 en `f4280ae`, ADR-057 en `39391dc`, ADR-056 en `e4c4399`, ADR-055 en `d7c21ac`, ADR-054 en `94c3a6a` y ADR-050 a ADR-053 en `8a0daa8`.
 
 Esta nota es el punto de entrada para otra persona o IA. El estado detallado vive en [README.md](README.md#estado-del-proyecto) y el histórico en [changelog.md](changelog.md); aquí solo se resume qué está hecho, qué sigue y qué no debe tocarse sin pedirlo.
-
-## Memoria local para retomar trabajo
-
-Existe una herramienta opcional en [`tools/memoria`](../tools/memoria/README.md)
-para indexar y recuperar fragmentos del repositorio. Puede ayudar a localizar
-documentos, ADR, reglas y decisiones, pero no reemplaza leer los documentos
-fuente ni verificar el estado real de la rama. Generar el índice es local: nunca
-subir `tools/memoria/memoria_db/`, conversaciones, datos reales o secretos.
 
 ## Preparación de la primera entrega (ADR-086)
 
