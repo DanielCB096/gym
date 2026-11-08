@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-08 · Revocación de sesiones al rotar o deshabilitar MFA
+
+- Al confirmar una rotación de MFA o deshabilitarlo, el backend revoca las demás sesiones abiertas de la cuenta y conserva la sesión que hizo el cambio, para expulsar a un posible intruso sin sacar de la sesión a quien opera el panel.
+- Cada sesión revocada deja un evento `session_revoked` en `auth_events` con el motivo `mfa_rotated` o `mfa_disabled`; no hay migración ni cambio de contrato.
+- `test_mfa_management.py` suma 2 pruebas de servicio y amplía el recorrido HTTP con una segunda sesión: la suite backend queda en **754 pruebas: 746 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL`.
+- Se actualizan `ADR-090`, `personal-y-roles.md`, `alta-y-baja-de-empleado.md`, `deuda-tecnica.md`, `plan-de-pruebas.md`, `TRASPASO.md`, `README.md` y `roadmap.md`.
+
 ## 2026-11-06 · Retiro de la herramienta de memoria local
 
 - Se retiraron `tools/memoria/`, sus reglas de `.gitignore` y la configuración MCP de VS Code. La herramienta no formaba parte del producto y su índice vivía solo en local, sin compartirse entre clones, máquinas ni agentes.

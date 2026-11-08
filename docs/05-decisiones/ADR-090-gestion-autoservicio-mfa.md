@@ -2,7 +2,7 @@
 
 ## Estado
 
-Implementado en local para dueño, gerente y contador, en backend y panel. Pendiente de pruebas dedicadas en PostgreSQL y de revisión profesional antes de producción.
+Implementado en local para dueño, gerente y contador, en backend y panel. La rotación y la baja revocan las demás sesiones de la cuenta. Pendiente de pruebas dedicadas en PostgreSQL y de revisión profesional antes de producción.
 
 ## Contexto
 
@@ -37,6 +37,7 @@ El panel expone las seis rutas por BFF bajo `/api/auth/mfa/*` y las usa el botó
 - El alta y la rotación exigen contraseña; la rotación y la baja exigen además un código vigente. Rotar y deshabilitar aceptan un código de respaldo y lo consumen.
 - La confirmación de un secreto nuevo acepta solo TOTP, no códigos de respaldo: el respaldo pertenece al secreto ya activo.
 - Solo `owner`, `manager` y `accountant` pueden iniciar el alta; para el resto, `available` es `false` y el alta responde `403`. Rotar y deshabilitar siguen disponibles si la cuenta ya tenía MFA, aunque después pierda el rol.
+- Rotar o deshabilitar **revoca las demás sesiones abiertas** de la cuenta y conserva la sesión que hizo el cambio, para expulsar a un intruso sin sacar a quien está operando el panel. Cada sesión revocada deja un `session_revoked` en `auth_events` con el motivo `mfa_rotated` o `mfa_disabled`.
 - Cada fallo de contraseña o de código se registra como `mfa_management` con `result = failure` en `auth_events`. Cinco fallos en diez minutos bloquean la gestión con `429` (`MfaManagementLocked`); el bloqueo también rechaza un intento con credenciales correctas, se libera al pasar la ventana y confirmar un alta o rotación —o deshabilitar— reinicia el conteo. Los eventos exitosos son `mfa_enrollment_started`, `mfa_enabled`, `mfa_rotation_started`, `mfa_rotated`, `mfa_disabled` y `mfa_backup_code`.
 - El mapa HTTP es: `429` bloqueo, `409` estado incompatible, `403` MFA no disponible o contraseña rechazada, `404` cuenta no disponible y `400` código o configuración pendiente inválidos.
 
@@ -51,7 +52,7 @@ El panel expone las seis rutas por BFF bajo `/api/auth/mfa/*` y las usa el botó
 
 - **MFA no es obligatorio al iniciar sesión.** Las cuentas privilegiadas siguen entrando solo con contraseña hasta que deciden activarlo. No hay plazo ni recordatorio de alta obligatoria.
 - **No hay recuperación si se pierden el autenticador y los códigos de respaldo.** La baja exige un código vigente, así que la cuenta quedaría sin acceso y solo una intervención directa en la base podría limpiar el secreto. Falta definir un procedimiento de recuperación con verificación de identidad y auditoría.
-- **Rotar o deshabilitar no revoca las sesiones abiertas.** Una sesión creada antes del cambio sigue vigente hasta su vencimiento de ocho horas; si el objetivo es expulsar a un intruso, hay que revocar sesiones aparte.
+- **La revocación alcanza a las sesiones, no a los desafíos de otro dispositivo.** Un desafío MFA abierto se vence al rotar, pero la revocación no distingue sesiones por navegador ni notifica al dueño de que se cerró una sesión; el rastro queda solo en `auth_events`.
 - Los códigos de respaldo nuevos se muestran una sola vez; si la pantalla se cierra sin copiarlos, hay que rotar de nuevo.
 - La ventana de bloqueo cuenta sobre `auth_events` y no se apoya en un almacén distribuido; con varias instancias del backend el conteo sigue siendo consistente porque vive en la base, pero no hay alerta ni notificación al dueño.
 - Faltan las pruebas dedicadas en PostgreSQL (el resto corre en SQLite) y la revisión profesional de seguridad. Hasta entonces no se debe presentar como control listo para producción.

@@ -1035,6 +1035,43 @@ def _clear_backup_codes(session: Session, user_id: UUID) -> None:
         session.delete(row)
 
 
+def _revoke_other_sessions(
+    session: Session,
+    *,
+    user_id: UUID,
+    keep_session_id: UUID | None,
+    reason_code: str,
+    occurred_at: datetime,
+) -> None:
+    """Revoke the account's open sessions, preserving the one that acts.
+
+    Rotating or disabling MFA is the moment to expel a possible intruder, but
+    the person doing it from the panel must stay signed in. Every revoked
+    session keeps its own audit row with the reason that triggered it.
+    """
+    open_sessions = session.exec(
+        select(UserSession).where(
+            UserSession.user_id == user_id,
+            UserSession.revoked_at.is_(None),
+        )
+    ).all()
+    for user_session in open_sessions:
+        if keep_session_id is not None and user_session.id == keep_session_id:
+            continue
+        user_session.revoked_at = occurred_at
+        session.add(user_session)
+        session.add(
+            AuthEvent(
+                user_id=user_id,
+                actor_id=user_id,
+                event_type="session_revoked",
+                result="success",
+                reason_code=reason_code,
+                occurred_at=occurred_at,
+            )
+        )
+
+
 def _expire_mfa_challenges(
     session: Session,
     *,
@@ -1205,8 +1242,15 @@ def confirm_mfa_rotation(
     *,
     user_id: UUID,
     code: str,
+    current_session_id: UUID | None = None,
     now: datetime | None = None,
 ) -> MfaConfirmation:
+    """Promote the pending secret and close the account's other sessions.
+
+    ``current_session_id`` is the session performing the rotation. When it is
+    omitted every open session is revoked, which is the safe default for
+    callers that do not have an acting session.
+    """
     occurred_at = now or utc_now()
     user = _user_for_management(session, user_id)
     _require_mfa_management_unlocked(session, user_id=user.id, occurred_at=occurred_at)
@@ -1228,6 +1272,13 @@ def confirm_mfa_rotation(
     session.add(user)
     _clear_backup_codes(session, user.id)
     _expire_mfa_challenges(session, user_id=user.id, occurred_at=occurred_at)
+    _revoke_other_sessions(
+        session,
+        user_id=user.id,
+        keep_session_id=current_session_id,
+        reason_code="mfa_rotated",
+        occurred_at=occurred_at,
+    )
     session.add(
         AuthEvent(
             user_id=user.id,
@@ -1248,8 +1299,10 @@ def disable_mfa(
     user_id: UUID,
     password: str,
     code: str,
+    current_session_id: UUID | None = None,
     now: datetime | None = None,
 ) -> None:
+    """Turn MFA off and close the account's other open sessions."""
     occurred_at = now or utc_now()
     user = _user_for_management(session, user_id)
     _require_mfa_management_unlocked(session, user_id=user.id, occurred_at=occurred_at)
@@ -1273,6 +1326,13 @@ def disable_mfa(
     session.add(user)
     _clear_backup_codes(session, user.id)
     _expire_mfa_challenges(session, user_id=user.id, occurred_at=occurred_at)
+    _revoke_other_sessions(
+        session,
+        user_id=user.id,
+        keep_session_id=current_session_id,
+        reason_code="mfa_disabled",
+        occurred_at=occurred_at,
+    )
     session.add(
         AuthEvent(
             user_id=user.id,

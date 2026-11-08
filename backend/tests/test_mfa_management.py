@@ -11,10 +11,13 @@ from app.main import app, get_session
 from app.modules.identity import service as identity_service
 from app.modules.identity.models import AuthEvent
 from app.modules.identity.service import (
+    AuthenticatedUser,
     InvalidMfaChallenge,
+    InvalidSession,
     MfaManagementLocked,
     MfaNotAvailable,
     MfaPasswordRejected,
+    authenticate_session,
     authenticate_user,
     begin_mfa_enrollment,
     begin_mfa_rotation,
@@ -59,6 +62,29 @@ def _enable_mfa(session: Session, user) -> tuple[str, list[str]]:
         now=NOW,
     )
     return enrollment.secret, list(confirmation.backup_codes)
+
+
+def _open_mfa_session(session: Session, user, secret: str) -> tuple[str, AuthenticatedUser]:
+    login = authenticate_user(session, email=user.email, password=PASSWORD, now=NOW)
+    assert login.mfa_required is True
+    assert login.mfa_challenge_id is not None
+    verified = verify_mfa_challenge(
+        session,
+        challenge_id=login.mfa_challenge_id,
+        code=identity_service._totp(secret),
+        now=NOW,
+    )
+    assert verified.access_token is not None
+    principal = authenticate_session(session, verified.access_token, now=NOW)
+    return verified.access_token, principal
+
+
+def _revocation_events(session: Session) -> list[AuthEvent]:
+    return list(
+        session.exec(
+            select(AuthEvent).where(AuthEvent.event_type == "session_revoked")
+        ).all()
+    )
 
 
 def test_enrollment_activates_mfa_and_issues_ten_backup_codes(session: Session, owner) -> None:
@@ -188,6 +214,61 @@ def test_rotation_keeps_the_old_factor_until_it_is_confirmed(session: Session, o
             code=old_codes[0],
             now=NOW,
         )
+
+
+def test_confirming_rotation_revokes_the_other_open_sessions(session: Session, owner) -> None:
+    secret, _ = _enable_mfa(session, owner)
+    current_token, current = _open_mfa_session(session, owner, secret)
+    other_token, _ = _open_mfa_session(session, owner, secret)
+
+    rotation = begin_mfa_rotation(
+        session,
+        user_id=owner.id,
+        password=PASSWORD,
+        code=identity_service._totp(secret),
+        now=NOW,
+    )
+    confirm_mfa_rotation(
+        session,
+        user_id=owner.id,
+        code=identity_service._totp(rotation.secret),
+        current_session_id=current.session_id,
+        now=NOW,
+    )
+
+    # The session that confirmed the rotation stays usable; every other one dies.
+    assert authenticate_session(session, current_token, now=NOW).session_id == current.session_id
+    with pytest.raises(InvalidSession):
+        authenticate_session(session, other_token, now=NOW)
+
+    events = _revocation_events(session)
+    assert [(event.user_id, event.actor_id, event.reason_code) for event in events] == [
+        (owner.id, owner.id, "mfa_rotated")
+    ]
+
+
+def test_disabling_mfa_revokes_the_other_open_sessions(session: Session, owner) -> None:
+    secret, _ = _enable_mfa(session, owner)
+    current_token, current = _open_mfa_session(session, owner, secret)
+    other_token, _ = _open_mfa_session(session, owner, secret)
+
+    disable_mfa(
+        session,
+        user_id=owner.id,
+        password=PASSWORD,
+        code=identity_service._totp(secret),
+        current_session_id=current.session_id,
+        now=NOW,
+    )
+
+    assert authenticate_session(session, current_token, now=NOW).session_id == current.session_id
+    with pytest.raises(InvalidSession):
+        authenticate_session(session, other_token, now=NOW)
+
+    events = _revocation_events(session)
+    assert [(event.user_id, event.actor_id, event.reason_code) for event in events] == [
+        (owner.id, owner.id, "mfa_disabled")
+    ]
 
 
 def test_expired_rotation_does_not_replace_the_active_secret(session: Session, owner) -> None:
@@ -369,6 +450,25 @@ def test_mfa_management_endpoints_are_wired(monkeypatch: pytest.MonkeyPatch) -> 
             assert enabled["enabled"] is True
             assert enabled["backup_codes_remaining"] == 10
 
+            second_login = client.post(
+                "/auth/login",
+                json={"email": "owner-api-mfa@example.com", "password": PASSWORD},
+            )
+            assert second_login.status_code == 200
+            assert second_login.json()["mfa_required"] is True
+            second_verified = client.post(
+                "/auth/mfa/verify",
+                json={
+                    "challenge_id": second_login.json()["mfa_challenge_id"],
+                    "code": identity_service._totp(secret),
+                },
+            )
+            assert second_verified.status_code == 200
+            second_headers = {
+                "Authorization": f"Bearer {second_verified.json()['access_token']}"
+            }
+            assert client.get("/auth/me", headers=second_headers).status_code == 200
+
             rotated = client.post(
                 "/auth/mfa/rotate",
                 headers=headers,
@@ -384,6 +484,8 @@ def test_mfa_management_endpoints_are_wired(monkeypatch: pytest.MonkeyPatch) -> 
             )
             assert rotation_confirmed.status_code == 200
             assert rotation_confirmed.json()["rotated"] is True
+            assert client.get("/auth/me", headers=headers).status_code == 200
+            assert client.get("/auth/me", headers=second_headers).status_code == 401
 
             disabled = client.post(
                 "/auth/mfa/disable",
@@ -392,6 +494,7 @@ def test_mfa_management_endpoints_are_wired(monkeypatch: pytest.MonkeyPatch) -> 
             )
             assert disabled.status_code == 204
             assert client.get("/auth/mfa/status", headers=headers).json()["enabled"] is False
+            assert client.get("/auth/me", headers=headers).status_code == 200
     finally:
         app.dependency_overrides.pop(get_session, None)
         engine.dispose()

@@ -4271,6 +4271,7 @@ def auth_mfa_rotate_confirm(
             session,
             user_id=principal.user_id,
             code=request.code,
+            current_session_id=principal.session_id,
         )
     except IdentityError as error:
         raise _mfa_http_error(error) from error
@@ -4292,6 +4293,7 @@ def auth_mfa_disable(
             user_id=principal.user_id,
             password=request.password,
             code=request.code,
+            current_session_id=principal.session_id,
         )
     except IdentityError as error:
         raise _mfa_http_error(error) from error
