@@ -424,6 +424,34 @@ Verificado contra el backend de vista previa el 2026-10-31 sobre una copia desec
 - **Altas simultáneas**: dos hilos reservan las 10:00 y las 10:10 del mismo especialista con un servicio de 30 minutos y una pausa de 0,3 s en `_resolve_pack_for` que corre con el bloqueo tomado; una cita queda creada y la otra recibe `409` con «fisioterapeuta» en el mensaje.
 - Corrida el 2026-10-31 contra PostgreSQL 16 en Docker: la prueba pasa 5 de 5 veces. Un sondeo del mismo escenario sin el `FOR UPDATE` de la fila del empleado deja dos citas solapadas en 5 de 5 rondas, así que la prueba detecta la regresión.
 
+## Cobertura de MFA contra PostgreSQL (ADR-089 y ADR-090)
+
+`backend/tests/test_mfa_management_postgres.py` (6 pruebas opt-in con `TEST_POSTGRES_URL`) exige una base desechable **migrada con `alembic upgrade head`**: no llama `create_all` y compara `alembic_version` con la cabeza del repositorio, así que falla en voz alta si se apunta a una base armada por los modelos. Cubre lo que SQLite no puede mostrar, porque allí `LargeBinary` no es `bytea` y `DateTime(timezone=True)` no es `timestamptz`:
+
+- **Esquema de `20261105_0091`**: `information_schema` devuelve `mfa_pending_secret_encrypted` como `bytea` y `mfa_pending_created_at` como `timestamp with time zone`, ambas con `is_nullable = YES`.
+- **Round-trip del cifrado**: otra sesión lee lo que PostgreSQL guardó, comprueba el prefijo de versión y la longitud, descifra el secreto, verifica un TOTP y exige que descifrar con otro `user_id` falle —el AAD ata el ciphertext a la cuenta—.
+- **Caducidad del pendiente**: el `created_at` vuelve con zona; `get_mfa_status` marca `pending` a los 14 minutos y lo apaga a los 15; confirmar en el minuto 15 exacto responde «expiró» sin activar MFA ni borrar el pendiente, y un segundo antes el mismo código sí activa y deja las dos columnas en `NULL`.
+- **Ventana de fallos**: cuatro contraseñas incorrectas no bloquean, la quinta sí, el bloqueo rechaza también la contraseña correcta y se libera al pasar los diez minutos; los cinco eventos `mfa_management` vuelven con zona.
+- **Reinicio tras un éxito**: cuatro fallos, un alta confirmada y cuatro fallos más no bloquean —sin el reinicio serían ocho y bloquearían al primero—; el quinto después del éxito sí bloquea.
+- **Revocación de sesiones**: con tres sesiones abiertas, rotar conservando la que actúa revoca las otras dos con `revoked_at` con zona y dos `session_revoked` (`mfa_rotated`), y `authenticate_session` de las revocadas responde `InvalidSession`; una sesión abierta después de la rotación la revoca la baja (`mfa_disabled`), que deja el secreto y las columnas pendientes en `NULL` y la sesión que actúa intacta.
+
+Corrida el 2026-11-08 contra PostgreSQL 16 (`postgres:16-alpine` en Docker, base desechable en `127.0.0.1:55432`): la cadena Alembic llegó a `20261105_0091`, `downgrade -1` y `upgrade head` volvieron sin restos y `alembic check` respondió «No new upgrade operations detected». Las 6 pruebas pasan y la suite completa con `TEST_POSTGRES_URL` queda en **760 aprobadas y 0 omitidas**. Cinco mutaciones producen cinco detecciones: vida del pendiente a 16 minutos, ventana que no se reinicia tras un éxito, AAD retirado en el cifrado y el descifrado, `keep_session_id=None` en rotación y baja, y la columna `mfa_pending_created_at` alterada a `timestamp without time zone` en la base aplicada —esta última la detectan la prueba de esquema y la de caducidad—. `service.py` volvió a su sha256 original y la columna a `timestamptz`.
+
+Para repetirla, con una base **desechable** —nunca la del club ni `gym_preview.db`— y las mismas credenciales locales que usa CI:
+
+```bash
+docker run -d --name gym-mfa-pg -e POSTGRES_USER=gym -e POSTGRES_PASSWORD=gym \
+  -e POSTGRES_DB=gym_mfa -p 127.0.0.1:55432:5432 postgres:16-alpine
+cd backend
+DATABASE_URL="postgresql+psycopg://gym:gym@127.0.0.1:55432/gym_mfa" \
+  .venv/Scripts/python.exe -m alembic upgrade head
+TEST_POSTGRES_URL="postgresql+psycopg://gym:gym@127.0.0.1:55432/gym_mfa" \
+  .venv/Scripts/python.exe -m pytest -q tests/test_mfa_management_postgres.py
+docker rm -f gym-mfa-pg
+```
+
+**Límite honesto**: CI no corre estas pruebas. El job «Database migrations (PostgreSQL)» aplica y revierte la cadena sobre una base vacía y el job «Backend tests and lint» no define `TEST_POSTGRES_URL`, así que las 14 opt-in se omiten en cada push. La validación es local y repetible; falta decidir si se añade un job que la ejecute.
+
 ## Cobertura de la retención del push (ADR-074)
 
 `backend/tests/test_push_retention.py` (17 pruebas) cubre el módulo y el script de poda del push del socio:
@@ -1085,3 +1113,5 @@ La suite automatizada del backend cubría entonces **616 pruebas** (608 pasaban 
 **Actualización 2026-11-06 (gestión autoservicio de MFA):** la suite backend queda en **752 pruebas: 744 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL`; `npx tsc --noEmit` del panel pasa. `test_mfa_management.py` estrena 8 pruebas: el alta con contraseña y diez códigos de respaldo, la contraseña incorrecta, la restricción a roles de gestión, la rotación en dos fases que mantiene el autenticador anterior hasta confirmar el nuevo, la rotación vencida que no reemplaza el secreto, la baja con contraseña y código, el bloqueo real tras cinco fallos en diez minutos —que también rechaza el código correcto y se libera al pasar la ventana— y el recorrido HTTP de los seis endpoints. La migración `20261105_0091` agrega `app_users.mfa_pending_secret_encrypted` y `app_users.mfa_pending_created_at`; `preview_patch.py` replica ambas columnas. Siguen pendientes las pruebas dedicadas en PostgreSQL y la revisión profesional.
 
 **Actualización 2026-11-08 (revocación de sesiones al cambiar MFA):** la suite backend queda en **754 pruebas: 746 aprobadas y 8 omitidas** sin `TEST_POSTGRES_URL`. `test_mfa_management.py` pasa a 10 pruebas: dos nuevas comprueban que al confirmar una rotación y al deshabilitar MFA se revoca la otra sesión abierta, la sesión que hizo el cambio sigue válida y queda un `session_revoked` con su motivo (`mfa_rotated`/`mfa_disabled`); el recorrido HTTP suma una segunda sesión y verifica el `401` de la revocada sin perder la actual. Sin migración ni cambio de contrato.
+
+**Actualización 2026-11-08 (MFA contra PostgreSQL):** la suite backend queda en **760 pruebas: 746 aprobadas y 14 omitidas** sin `TEST_POSTGRES_URL` y en **760 aprobadas** con ella. `test_mfa_management_postgres.py` estrena 6 pruebas opt-in sobre una base desechable migrada con Alembic —no `create_all`— que fijan los tipos de `20261105_0091`, el round-trip del secreto en `bytea` con su AAD, la caducidad del pendiente en el minuto 15, la ventana de fallos y su reinicio tras un éxito, y la revocación de las demás sesiones al rotar y al deshabilitar. Cinco mutaciones producen cinco detecciones. Se corrigió el conteo de `deuda-tecnica.md`, que contaba las 10 de `test_mfa_management.py` entre las omitidas. CI sigue sin correr las opt-in.

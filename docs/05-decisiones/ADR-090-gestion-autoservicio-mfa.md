@@ -2,7 +2,7 @@
 
 ## Estado
 
-Implementado en local para dueño, gerente y contador, en backend y panel. La rotación y la baja revocan las demás sesiones de la cuenta. Pendiente de pruebas dedicadas en PostgreSQL y de revisión profesional antes de producción.
+Implementado en local para dueño, gerente y contador, en backend y panel. La rotación y la baja revocan las demás sesiones de la cuenta. Validado en PostgreSQL 16 el 2026-11-08 con seis pruebas opt-in (`backend/tests/test_mfa_management_postgres.py`); pendiente de revisión profesional antes de producción.
 
 ## Contexto
 
@@ -55,4 +55,4 @@ El panel expone las seis rutas por BFF bajo `/api/auth/mfa/*` y las usa el botó
 - **La revocación alcanza a las sesiones, no a los desafíos de otro dispositivo.** Un desafío MFA abierto se vence al rotar, pero la revocación no distingue sesiones por navegador ni notifica al dueño de que se cerró una sesión; el rastro queda solo en `auth_events`.
 - Los códigos de respaldo nuevos se muestran una sola vez; si la pantalla se cierra sin copiarlos, hay que rotar de nuevo.
 - La ventana de bloqueo cuenta sobre `auth_events` y no se apoya en un almacén distribuido; con varias instancias del backend el conteo sigue siendo consistente porque vive en la base, pero no hay alerta ni notificación al dueño.
-- Faltan las pruebas dedicadas en PostgreSQL (el resto corre en SQLite) y la revisión profesional de seguridad. Hasta entonces no se debe presentar como control listo para producción.
+- Las pruebas dedicadas en PostgreSQL ya existen: `backend/tests/test_mfa_management_postgres.py` (6 opt-in con `TEST_POSTGRES_URL`) exige una base desechable migrada con `alembic upgrade head`, compara `alembic_version` con la cabeza del repositorio y no llama `create_all`; el resto de la suite corre en SQLite. Cubre lo que SQLite no muestra —`bytea` y `timestamptz` de `20261105_0091`, el round-trip del secreto cifrado con el AAD atado al `user_id`, la caducidad del pendiente en el minuto 15, la ventana de fallos y su reinicio tras un éxito, y la revocación de las demás sesiones— y se verificó por mutación (cinco mutaciones, cinco detecciones). **CI no las corre**: el job de migraciones usa una base vacía y el de pruebas no define `TEST_POSTGRES_URL`, así que se omiten en cada push; hay que repetirlas a mano o añadir un job que las ejecute. Falta la revisión profesional de seguridad; hasta entonces no se debe presentar como control listo para producción.

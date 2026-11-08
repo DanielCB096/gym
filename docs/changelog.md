@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-08 · MFA validado contra PostgreSQL
+
+- Se añadió `backend/tests/test_mfa_management_postgres.py`: 6 pruebas opt-in con `TEST_POSTGRES_URL` que exigen una base desechable **migrada con Alembic** —no `create_all`— y fallan en voz alta si la revisión aplicada no es la cabeza del repositorio.
+- Cubren lo que SQLite no muestra: `mfa_pending_secret_encrypted` como `bytea` y `mfa_pending_created_at` como `timestamptz`, el round-trip del secreto cifrado leído desde otra sesión con el AAD atado al `user_id`, la caducidad del pendiente un segundo antes y en el minuto 15 exacto, la ventana de cinco fallos en diez minutos contada sobre `auth_events` con zona y su liberación, el reinicio del conteo tras un éxito, y la revocación de las demás sesiones al rotar y al deshabilitar conservando la que actúa.
+- Corrida el 2026-11-08 contra PostgreSQL 16 (`postgres:16-alpine` en Docker, base desechable): `alembic upgrade head` aplicó la cadena hasta `20261105_0091`, `downgrade -1` y `upgrade head` volvieron sin restos y `alembic check` respondió «No new upgrade operations detected». Las 6 pruebas pasan y **cinco mutaciones producen cinco detecciones**: vida del pendiente a 16 minutos, ventana que no se reinicia tras un éxito, AAD retirado en los dos sentidos, `keep_session_id=None` en rotación y baja, y la columna `mfa_pending_created_at` alterada a `timestamp without time zone` en la base aplicada. `service.py` volvió a su sha256 original y la columna a `timestamptz`.
+- La suite backend queda en **760 pruebas: 746 aprobadas y 14 omitidas** sin `TEST_POSTGRES_URL`, y **760 aprobadas** con ella. Se corrigió `docs/deuda-tecnica.md`, que contaba las 10 pruebas de `test_mfa_management.py` entre las 8 omitidas: esas corren en SQLite y las omitidas eran las de los cinco archivos `*_postgres.py`.
+- Sin cambios de producción: no se tocan el servicio, la migración ni el contrato. Se actualizan `ADR-090`, `deuda-tecnica.md`, `plan-de-pruebas.md`, `TRASPASO.md`, `README.md` y `roadmap.md`.
+- Límite honesto: CI sigue sin correr las pruebas opt-in —el job de migraciones usa una base vacía y el de pruebas no define `TEST_POSTGRES_URL`—, así que esta validación es local y hay que repetirla o añadir un job que la ejecute. Siguen pendientes la recuperación ante pérdida de factores y la revisión profesional.
+
 ## 2026-11-08 · Revocación de sesiones al rotar o deshabilitar MFA
 
 - Al confirmar una rotación de MFA o deshabilitarlo, el backend revoca las demás sesiones abiertas de la cuenta y conserva la sesión que hizo el cambio, para expulsar a un posible intruso sin sacar de la sesión a quien opera el panel.
