@@ -1,13 +1,16 @@
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.main import app, get_session
+from app.modules.classes.models import ACTIVE_RESERVATION_STATUSES, ClassReservation
 from app.modules.identity.service import ensure_default_access_control, register_user
 from app.modules.memberships.models import Member
 
@@ -514,5 +517,117 @@ def test_summary_and_total_are_not_inflated_by_the_search_filter() -> None:
             ).json()
             assert two_of_three["total"] == 0
             assert two_of_three["summary"]["total"] == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_a_cancelled_or_missed_reservation_does_not_block_booking_again() -> None:
+    """El predicado del índice parcial deja fuera el historial: cancelar o faltar no
+    impide volver a reservar, y los tres estados vivos siguen chocando en la base."""
+    engine = _build_engine()
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        _seed_users(session)
+        ana = _add_member(session, first="Ana")
+        beto = _add_member(session, first="Beto")
+
+    app.dependency_overrides[get_session] = _override(engine)
+    try:
+        with TestClient(app) as client:
+            manager = _login(client, "manager@example.com", "manager-strong-password")
+            type_id, room_id = _create_catalog(client, manager)
+            morning = _create_session(
+                client, manager, class_type_id=type_id, room_id=room_id, capacity=5
+            )
+            evening = _create_session(
+                client,
+                manager,
+                class_type_id=type_id,
+                room_id=room_id,
+                capacity=5,
+                starts_at=FUTURE + timedelta(hours=3),
+                title="Spinning 9am",
+            )
+            assert morning.status_code == 201, morning.text
+            assert evening.status_code == 201, evening.text
+            session_id = UUID(morning.json()["id"])
+
+            def reserve():
+                return client.post(
+                    f"/admin/classes/sessions/{session_id}/reservations",
+                    headers=manager,
+                    json={"member_id": str(ana), "origin": "reception"},
+                )
+
+            booked = reserve()
+            assert booked.status_code == 201, booked.text
+            assert reserve().status_code == 409
+            first_id = booked.json()["id"]
+
+            cancelled = client.post(
+                f"/admin/classes/reservations/{first_id}/cancel", headers=manager
+            )
+            assert cancelled.status_code == 200, cancelled.text
+            assert cancelled.json()["status"] == "cancelled"
+            # La fila cancelada sigue en la tabla para el historial, pero ya no
+            # ocupa el índice: el socio puede volver a reservar la misma clase.
+            again = reserve()
+            assert again.status_code == 201, again.text
+            second_id = again.json()["id"]
+
+            missed = client.post(
+                f"/admin/classes/reservations/{second_id}/attendance",
+                headers=manager,
+                json={"attended": False},
+            )
+            assert missed.status_code == 200, missed.text
+            assert missed.json()["status"] == "no_show"
+            third = reserve()
+            assert third.status_code == 201, third.text
+            live_id = UUID(third.json()["id"])
+            assert reserve().status_code == 409
+
+        with Session(engine) as db:
+            def insert(status: str, *, member_id=ana, target: UUID = session_id) -> ClassReservation:
+                row = ClassReservation(session_id=target, member_id=member_id, status=status)
+                db.add(row)
+                db.flush()
+                return row
+
+            # Sin pasar por la guarda del servicio: los tres estados vivos chocan
+            # contra el índice, no solo contra la consulta que los busca.
+            for status in ACTIVE_RESERVATION_STATUSES:
+                with pytest.raises(IntegrityError):
+                    insert(status)
+                db.rollback()
+
+            # El historial no ocupa plaza: dos canceladas y una falta conviven con
+            # la reserva viva del mismo socio en la misma clase.
+            db.get(ClassReservation, live_id).status = "cancelled"
+            db.flush()
+            insert("cancelled")
+            insert("no_show")
+            insert("reserved")
+            db.commit()
+
+            # El índice es por par socio-clase, no por socio ni por clase.
+            insert("reserved", member_id=beto)
+            insert("reserved", target=UUID(evening.json()["id"]))
+            db.commit()
+
+            rows = db.exec(
+                select(ClassReservation).where(
+                    ClassReservation.session_id == session_id,
+                    ClassReservation.member_id == ana,
+                )
+            ).all()
+            assert sorted(row.status for row in rows) == [
+                "cancelled",
+                "cancelled",
+                "cancelled",
+                "no_show",
+                "no_show",
+                "reserved",
+            ]
     finally:
         app.dependency_overrides.clear()

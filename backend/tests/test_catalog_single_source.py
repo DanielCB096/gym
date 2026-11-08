@@ -24,6 +24,17 @@ los modelos de petición y ninguna vez en la base, que solo acotaba por debajo.
 Salen ahora del mismo ``MAX_CLASS_CAPACITY`` y ``MAX_CANCEL_WINDOW_HOURS`` del
 modelo, el ``CHECK`` que renderizan es el que aplicó ``20261101_0082`` y el
 contrato OpenAPI es la prueba de que el panel ofrece esa misma cota.
+
+El índice parcial de reservas vivas (``uq_class_reservations_active``) es el mismo
+problema con un predicado en lugar de un ``CHECK``: la lista estaba escrita a mano
+dos veces —una por dialecto— y la migración ``20261017_0009`` aplicó solo la de
+PostgreSQL, así que la de SQLite podía quedarse con otra lista sin que nada lo
+notara. Sale ahora de ``ACTIVE_RESERVATION_STATUSES``, la tupla con la que el
+servicio y el portal cuentan las plazas ocupadas; el SQL compilado es idéntico al
+aplicado en los dos dialectos, así que no hizo falta migración.
+``APPLIED_INDEX_PREDICATES`` fija el texto de ambos y una prueba de comportamiento
+comprueba que los tres estados vivos chocan en la base mientras que ``cancelled``
+y ``no_show`` dejan volver a reservar.
 """
 
 from __future__ import annotations
@@ -38,6 +49,7 @@ from sqlmodel import SQLModel
 from app.constraints import sql_in_list
 from app.main import app
 from app.modules.classes import models as classes_models
+from app.modules.classes import service as classes_service
 from app.modules.finance import models as finance_models
 from app.modules.finance import service as finance_service
 from app.modules.inventory import models as inventory_models
@@ -47,6 +59,7 @@ from app.modules.maintenance import service as maintenance_service
 from app.modules.memberships import models as membership_models
 from app.modules.memberships import service as membership_service
 from app.modules.physio import models as physio_models
+from app.modules.portal import classes as portal_classes
 from app.modules.reports import models as reports_models
 from app.modules.reports import scheduled as scheduled_reports
 from app.modules.reports.scheduled_configuration import _REPORT_FIELDS
@@ -163,6 +176,50 @@ APPLIED_CHECKS: dict[tuple[str, str], str] = {
 }
 
 
+# El predicado del índice parcial se aplicó en `20261017_0009` solo para
+# PostgreSQL; el de SQLite lo añade el modelo para que las pruebas vean la misma
+# unicidad. Se fijan los dos: si uno se queda atrás, la base de producción y la de
+# pruebas dejan de rechazar lo mismo.
+APPLIED_INDEX_PREDICATES: dict[tuple[str, str], str] = {
+    (
+        "class_reservations",
+        "uq_class_reservations_active",
+    ): "status IN ('waitlist', 'reserved', 'attended')",
+}
+
+
+def _index_predicates(table: str, name: str) -> dict[str, str]:
+    indexes = [index for index in SQLModel.metadata.tables[table].indexes if index.name == name]
+    assert len(indexes) == 1, f"{table} no tiene exactamente un índice llamado {name}"
+    index = indexes[0]
+    assert index.unique, f"{name} dejó de ser único: el predicado por sí solo no impide la segunda reserva"
+    return {
+        dialect: str(index.dialect_options[dialect]["where"])
+        for dialect in ("postgresql", "sqlite")
+    }
+
+
+@pytest.mark.parametrize(("table", "name"), sorted(APPLIED_INDEX_PREDICATES))
+def test_derived_index_predicate_still_matches_the_applied_sql(table: str, name: str) -> None:
+    for dialect, predicate in _index_predicates(table, name).items():
+        assert predicate == APPLIED_INDEX_PREDICATES[(table, name)], (
+            f"El predicado de {dialect} del índice {name} cambió de texto. Se renderiza desde "
+            "ACTIVE_RESERVATION_STATUSES, así que la tupla cambió: hace falta una migración "
+            "para la base existente y actualizar aquí el SQL aplicado."
+        )
+
+
+def test_the_active_reservation_index_reads_the_tuple_the_service_counts() -> None:
+    """El índice y el conteo de plazas tienen que llamar «viva» a la misma fila."""
+    expected = f"status IN {sql_in_list(classes_models.ACTIVE_RESERVATION_STATUSES)}"
+    for dialect, predicate in _index_predicates(
+        "class_reservations", "uq_class_reservations_active"
+    ).items():
+        assert predicate == expected, (
+            f"el predicado de {dialect} dice {predicate!r} y la tupla del servicio rinde {expected!r}."
+        )
+
+
 def _check_sql(table: str, name: str) -> str:
     constraints = [
         constraint
@@ -216,6 +273,9 @@ def test_the_service_uses_the_models_tuple_not_a_copy() -> None:
         finance_service.FLAGGABLE_BANK_MOVEMENT_STATUSES
         is finance_models.FLAGGABLE_BANK_MOVEMENT_STATUSES
     )
+    for module in (classes_service, portal_classes):
+        assert module.ACTIVE_RESERVATION_STATUSES is classes_models.ACTIVE_RESERVATION_STATUSES
+        assert module.SEATED_RESERVATION_STATUSES is classes_models.SEATED_RESERVATION_STATUSES
 
 
 def test_the_bank_labels_cover_exactly_the_movement_statuses() -> None:
@@ -266,6 +326,17 @@ def test_each_vocabulary_gains_only_the_documented_value() -> None:
         set(finance_models.BANK_MOVEMENT_STATUSES)
         - set(finance_models.FLAGGABLE_BANK_MOVEMENT_STATUSES)
         == {"reconciled"}
+    )
+    # El historial de una reserva son los dos estados que no ocupan plaza; de las
+    # vivas, la lista de espera es la única que aún no tiene asiento.
+    assert (
+        set(classes_models.RESERVATION_STATUSES) - set(classes_models.ACTIVE_RESERVATION_STATUSES)
+        == {"no_show", "cancelled"}
+    )
+    assert (
+        set(classes_models.ACTIVE_RESERVATION_STATUSES)
+        - set(classes_models.SEATED_RESERVATION_STATUSES)
+        == {"waitlist"}
     )
 
 

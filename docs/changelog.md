@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-08 · El índice de reservas activas, en una sola fuente
+
+- `uq_class_reservations_active` (`backend/src/app/modules/classes/models.py`) renderiza ahora su predicado con `sql_in_list(ACTIVE_RESERVATION_STATUSES)` en los dos dialectos. La lista estaba escrita a mano dos veces y la migración `20261017_0009` aplicó solo la de PostgreSQL: la de SQLite podía separarse —y con ella la unicidad que ven las pruebas— sin que nada lo detectara. El índice y el conteo de plazas del servicio y del portal leen ahora la misma tupla.
+- **Sin migración.** El DDL compilado con `CreateIndex` para `postgresql` y `sqlite` antes y después del cambio es idéntico byte a byte: `CREATE UNIQUE INDEX uq_class_reservations_active ON class_reservations (session_id, member_id) WHERE status IN ('waitlist', 'reserved', 'attended')`.
+- `tests/test_catalog_single_source.py` pasa de 35 a 37 pruebas: `APPLIED_INDEX_PREDICATES` compara el texto de los dos dialectos con el que dejó la migración, otra prueba exige que ambos salgan de la tupla del modelo, la identidad (`is`) se extiende a `classes/service.py` y `portal/classes.py` para las tuplas activa y sentada, y dos diferencias de conjuntos fijan que el historial son `no_show` y `cancelled` y que de las vivas solo `waitlist` no tiene asiento.
+- `tests/test_classes_api.py` suma una prueba de comportamiento que faltaba: reservar, cancelar y volver a reservar responde `201` (antes ninguna prueba re-reservaba tras cancelar), marcar `no_show` y volver a reservar también, y el duplicado vivo sigue en `409`. Después, insertando por ORM sin pasar por la guarda del servicio, los tres estados vivos chocan con `IntegrityError`, tres filas de historial conviven con una viva, y el índice no bloquea a otro socio en la misma clase ni al mismo socio en otra.
+- **Seis mutaciones, seis detecciones**: la tupla gana `no_show`; el predicado de PostgreSQL se reescribe a mano sin `attended`; solo el de SQLite gana `cancelled`; el índice deja de ser `unique`; el servicio redeclara su propia copia; el portal redeclara la suya. La mutación de PostgreSQL **no** la ve la prueba de comportamiento —corre en SQLite— y la detecta la custodia del texto aplicado, que es exactamente el agujero que había. Los tres archivos volvieron a su sha256 original.
+- La suite backend queda en **763 pruebas: 749 aprobadas y 14 omitidas** sin `TEST_POSTGRES_URL`, y **763 aprobadas** con ella. Sin cambios de contrato ni de producción. Se actualizan `ADR-085`, `deuda-tecnica.md`, `plan-de-pruebas.md`, `TRASPASO.md`, `README.md` y `roadmap.md`.
+- Límite honesto: en PostgreSQL el predicado se comprueba por texto, no insertando filas contra un motor real; la carrera de dos reservas simultáneas sigue cubierta por el bloqueo de fila, que en SQLite es un no-op.
+
 ## 2026-11-08 · MFA validado contra PostgreSQL
 
 - Se añadió `backend/tests/test_mfa_management_postgres.py`: 6 pruebas opt-in con `TEST_POSTGRES_URL` que exigen una base desechable **migrada con Alembic** —no `create_all`— y fallan en voz alta si la revisión aplicada no es la cabeza del repositorio.

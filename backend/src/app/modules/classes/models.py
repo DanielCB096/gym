@@ -211,14 +211,16 @@ class ClassReservation(SQLModel, table=True):
             name="ck_class_reservations_position_positive",
         ),
         # A member can hold at most one live reservation per session; cancelled
-        # (and no_show) rows stay for history without blocking a new booking.
+        # (and no_show) rows stay for history without blocking a new booking. The
+        # predicate reads the tuple the service counts against capacity, so the
+        # index and the seat count can never disagree on what "live" means.
         Index(
             "uq_class_reservations_active",
             "session_id",
             "member_id",
             unique=True,
-            postgresql_where=text("status IN ('waitlist', 'reserved', 'attended')"),
-            sqlite_where=text("status IN ('waitlist', 'reserved', 'attended')"),
+            postgresql_where=text(f"status IN {sql_in_list(ACTIVE_RESERVATION_STATUSES)}"),
+            sqlite_where=text(f"status IN {sql_in_list(ACTIVE_RESERVATION_STATUSES)}"),
         ),
         Index("ix_class_reservations_session_status", "session_id", "status"),
         Index("ix_class_reservations_member_time", "member_id", "created_at"),
