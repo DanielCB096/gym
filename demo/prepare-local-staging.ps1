@@ -24,6 +24,13 @@ function New-RandomHex([int]$byteCount) {
 $lines = @(
     "STAGING_DB_PASSWORD=$(New-RandomHex 32)"
     "STAGING_SECRET_KEY=$(New-RandomHex 64)"
+    "SMTP_HOST=mailpit"
+    "SMTP_PORT=1025"
+    "SMTP_USER="
+    "SMTP_PASSWORD="
+    "SMTP_FROM=staging@centrofit.local"
+    "SMTP_USE_TLS=false"
+    "SMTP_USE_SSL=false"
 )
 [System.IO.File]::WriteAllLines($EnvFile, $lines, [System.Text.Encoding]::ASCII)
 Write-Host "Secretos locales de staging generados en $EnvFile (archivo ignorado por Git)." -ForegroundColor Green

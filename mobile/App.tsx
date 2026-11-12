@@ -14,8 +14,6 @@ import { AccessCodeScreen } from "./src/screens/AccessCodeScreen";
 import { ClassesScreen } from "./src/screens/ClassesScreen";
 import { CodeScreen } from "./src/screens/CodeScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
-import { InvoiceRequestScreen } from "./src/screens/InvoiceRequestScreen";
-import { InvoicesScreen } from "./src/screens/InvoicesScreen";
 import { LoginScreen } from "./src/screens/LoginScreen";
 import { NotificationsScreen } from "./src/screens/NotificationsScreen";
 import { PaymentsScreen } from "./src/screens/PaymentsScreen";
@@ -51,8 +49,6 @@ type Stage =
   | "routineDetail"
   | "progressPhotos"
   | "payments"
-  | "invoices"
-  | "invoiceRequest"
   | "notifications";
 
 export default function App() {
@@ -312,15 +308,6 @@ export default function App() {
     openSection("payments");
   }
 
-  function handleOpenInvoices() {
-    openSection("invoices");
-  }
-
-  function handleOpenInvoiceRequest() {
-    setFocus(null);
-    setStage("invoiceRequest");
-  }
-
   function handleOpenNotifications() {
     openSection("notifications");
   }
@@ -378,7 +365,6 @@ export default function App() {
             onOpenPhysio={handleOpenPhysio}
             onOpenRoutines={handleOpenRoutines}
             onOpenPayments={handleOpenPayments}
-            onOpenInvoices={handleOpenInvoices}
             unreadNotifications={unreadNotifications}
             onOpenNotifications={handleOpenNotifications}
           />
@@ -435,22 +421,6 @@ export default function App() {
           <PaymentsScreen
             token={token}
             onBack={handleBackHome}
-            onSessionExpired={() => void handleSessionExpired()}
-          />
-        ) : null}
-        {stage === "invoices" && token ? (
-          <InvoicesScreen
-            token={token}
-            focusRefId={focusRefFor("invoices")}
-            onBack={handleBackHome}
-            onRequestInvoice={handleOpenInvoiceRequest}
-            onSessionExpired={() => void handleSessionExpired()}
-          />
-        ) : null}
-        {stage === "invoiceRequest" && token ? (
-          <InvoiceRequestScreen
-            token={token}
-            onBack={() => setStage("invoices")}
             onSessionExpired={() => void handleSessionExpired()}
           />
         ) : null}

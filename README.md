@@ -6,15 +6,21 @@ Sistema integral de gestión para un solo gimnasio en México. Este repositorio 
 
 Gestionar la operación completa de un gimnasio con foco en:
 
-- membresías y cobro recurrente
+- membresías y registro manual de cobros presenciales
 - acceso y seguridad
 - clases y reservas
 - rutinas y progreso
 - punto de venta e inventario
-- facturación CFDI 4.0
+- facturación CFDI 4.0 (capacidad futura, fuera de la primera entrega)
 - mantenimiento de equipos
 - gestión de personal
 - extensibilidad para servicios extra futuros
+
+**Alcance de la primera entrega:** el sistema registra los cobros presenciales
+de forma manual, pero no ofrece facturación fiscal ni pagos en línea. El código
+de Conekta y CFDI corresponde a capacidades diferidas y queda deshabilitado en
+esta entrega. El envío de correos requiere configurar un SMTP real; en staging
+local, Mailpit los captura sin enviarlos a Internet.
 
 ## Estructura del repositorio
 
@@ -67,7 +73,8 @@ Gestionar la operación completa de un gimnasio con foco en:
 - Kiosco: PWA estática sin dependencias (`kiosk/`) para una tablet de recepción, con un cartel pasivo (`cartel.html`) para la TV de recepción
 - Autenticación: sesiones opacas Bearer con RBAC para el personal y OTP por correo para socios; MFA TOTP opcional para dueño, gerente y contador, con códigos de respaldo; la rotación/deshabilitación desde la UI y la revisión profesional siguen pendientes
 - Facturación: integración con PAC vía XML/JSON
-- Pagos: Conekta como pasarela recomendada para México
+- Pagos: Conekta como posible integración futura; pagos en línea deshabilitados
+  en la primera entrega
 
 ## Reglas de negocio clave
 

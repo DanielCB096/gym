@@ -42,7 +42,6 @@ const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 const DESTINATION_LABELS: Record<NotificationDestination, string> = {
   home: "el inicio",
-  invoices: "facturas",
   classes: "clases",
   physio: "fisioterapia",
   routines: "rutinas",
@@ -104,14 +103,26 @@ export function NotificationsScreen({
           getMemberNotifications(token),
           getMemberNotificationPreferences(token),
         ]);
-        setInbox(next);
-        setPreferences(prefs.items);
+        const visibleItems = next.items.filter(
+          (item) => !item.kind.startsWith("invoice_"),
+        );
+        const visibleUnreadTotal = visibleItems.filter(
+          (item) => !item.read_at,
+        ).length;
+        setInbox({
+          ...next,
+          items: visibleItems,
+          unread_total: visibleUnreadTotal,
+        });
+        setPreferences(
+          prefs.items.filter((item) => item.category !== "billing"),
+        );
         setEmailAvailable(prefs.email_available);
         setQuietHours(prefs.quiet_hours);
         setClubQuietHours(prefs.club_quiet_hours);
         setQuietStart(prefs.quiet_hours?.start ?? "");
         setQuietEnd(prefs.quiet_hours?.end ?? "");
-        onUnreadChange(next.unread_total);
+        onUnreadChange(visibleUnreadTotal);
         setError(null);
       } catch (loadError) {
         if (loadError instanceof ApiError && loadError.status === 401) {
@@ -185,7 +196,7 @@ export function NotificationsScreen({
       setNotice(
         updated === 0
           ? "Ya no tienes avisos sin leer."
-          : `Marcaste ${updated} aviso${updated === 1 ? "" : "s"} como leído${updated === 1 ? "" : "s"}.`,
+          : "Marcaste todos los avisos como leídos.",
       );
       setError(null);
     } catch (markError) {
@@ -226,7 +237,9 @@ export function NotificationsScreen({
           ? { category, push_enabled: enabled }
           : { category, email_enabled: enabled },
       ]);
-      setPreferences(updated.items);
+      setPreferences(
+        updated.items.filter((item) => item.category !== "billing"),
+      );
       setEmailAvailable(updated.email_available);
       const channelLabel = channel === "push" ? "teléfono" : "correo";
       setNotice(`${CATEGORY_LABELS[category]}: ${
@@ -251,7 +264,9 @@ export function NotificationsScreen({
     setQuietBusy(true);
     try {
       const updated = await updateMemberNotificationQuietHours(token, payload);
-      setPreferences(updated.items);
+      setPreferences(
+        updated.items.filter((item) => item.category !== "billing"),
+      );
       setEmailAvailable(updated.email_available);
       setQuietHours(updated.quiet_hours);
       setClubQuietHours(updated.club_quiet_hours);
@@ -348,7 +363,7 @@ export function NotificationsScreen({
         <Text style={sharedStyles.title}>Notificaciones</Text>
         <Text style={sharedStyles.body}>
           Lo que pasó en el gimnasio: revisiones de tus entrenamientos, cambios en
-          tus metas, lugares que se liberaron y tu membresía.
+          tus metas, clases, fisioterapia, equipo y membresía.
         </Text>
         {inbox ? (
           <Text style={sharedStyles.hint}>
@@ -635,11 +650,11 @@ export function NotificationsScreen({
       ) : null}
 
       <Text style={sharedStyles.hint}>
-        Toca un aviso para marcarlo como leído. Los de factura abren Facturas; los de
-        clase, Clases; los de fisioterapia, Fisioterapia; los de rutina y equipo,
-        Rutinas; y los de membresía, el inicio. Si el aviso apunta a una factura, una
-        clase, una cita o una meta, esa pantalla la resalta. Los avisos no se borran:
-        quedan en tu historial. Desliza hacia abajo para actualizar.
+        Toca un aviso para marcarlo como leído. Los de clase abren Clases; los de
+        fisioterapia, Fisioterapia; los de rutina y equipo, Rutinas; y los de
+        membresía, el inicio. Si el aviso apunta a una clase, una cita o una meta,
+        esa pantalla la resalta. Los avisos no se borran: quedan en tu historial.
+        Desliza hacia abajo para actualizar.
       </Text>
     </ScrollView>
   );

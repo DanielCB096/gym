@@ -2,6 +2,14 @@
 
 La app usa un sistema visual oscuro con acentos verdes y componentes consistentes para inicio de sesión, resumen, estados de acceso, acciones y formularios. El tema compartido está en `src/theme.ts`; la pantalla principal presenta accesos rápidos, membresía, saldo y datos de cuenta.
 
+## Alcance de primera entrega
+
+La app conserva el estado de cuenta y el historial de pagos registrados por el
+gimnasio, pero no ofrece checkout, captura de tarjeta ni renovación automática.
+Las pantallas de facturas y solicitud de CFDI tampoco están disponibles. El
+correo de OTP y avisos requiere un SMTP real para salir a destinatarios; en
+staging predeterminado los mensajes se capturan en Mailpit.
+
 ## Preparación iOS
 
 - La app declara el identificador `com.centrofit.socio` y admite iPhone y iPad.

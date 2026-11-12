@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  AppState,
   ActivityIndicator,
-  Linking,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -13,13 +11,8 @@ import {
 
 import {
   ApiError,
-  createMemberCheckout,
-  createMemberPaymentMethodSetup,
-  getMemberAutoRenewal,
   getMemberAccount,
-  getMemberCheckoutPlans,
   getMemberPayments,
-  updateMemberAutoRenewal,
 } from "../api";
 import { describeError } from "../errors";
 import {
@@ -31,13 +24,7 @@ import {
   paymentMethodLabel,
 } from "../format";
 import { colors, radius, sharedStyles, spacing } from "../theme";
-import type {
-  MemberAccount,
-  MemberAutoRenewal,
-  MemberCheckoutPlan,
-  MemberCheckoutPlanList,
-  MemberPaymentPage,
-} from "../types";
+import type { MemberAccount, MemberPaymentPage } from "../types";
 
 type Props = {
   token: string;
@@ -48,60 +35,22 @@ type Props = {
 export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
   const [payments, setPayments] = useState<MemberPaymentPage | null>(null);
   const [account, setAccount] = useState<MemberAccount | null>(null);
-  const [checkoutPlans, setCheckoutPlans] = useState<MemberCheckoutPlanList | null>(null);
-  const [autoRenewal, setAutoRenewal] = useState<MemberAutoRenewal | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [checkoutError, setCheckoutError] = useState<string | null>(null);
-  const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
-  const [autoRenewalError, setAutoRenewalError] = useState<string | null>(null);
-  const [autoRenewalNotice, setAutoRenewalNotice] = useState<string | null>(null);
-  const [autoRenewalBusy, setAutoRenewalBusy] = useState(false);
-  const [autoRenewalConsentAccepted, setAutoRenewalConsentAccepted] = useState(false);
-  const [startingCheckoutPlanId, setStartingCheckoutPlanId] = useState<string | null>(null);
-  const [paymentMethodSetupBusy, setPaymentMethodSetupBusy] = useState(false);
-  const [pendingCheckout, setPendingCheckout] = useState<{
-    plan: MemberCheckoutPlan;
-    idempotencyKey: string;
-    checkoutUrl: string | null;
-  } | null>(null);
-  const checkoutOpenedRef = useRef(false);
-  const paymentMethodSetupOpenedRef = useRef(false);
 
   const load = useCallback(
     async (mode: "initial" | "refresh") => {
       setLoading(mode === "initial");
       setRefreshing(mode === "refresh");
       try {
-        const [nextPayments, nextAccount, nextAutoRenewal] = await Promise.all([
+        const [nextPayments, nextAccount] = await Promise.all([
           getMemberPayments(token),
           getMemberAccount(token),
-          getMemberAutoRenewal(token),
         ]);
         setPayments(nextPayments);
         setAccount(nextAccount);
-        setAutoRenewal(nextAutoRenewal);
         setError(null);
-        try {
-          const nextCheckoutPlans = await getMemberCheckoutPlans(token);
-          setCheckoutPlans(nextCheckoutPlans);
-          setPendingCheckout(
-            nextCheckoutPlans.pending_checkout
-              ? {
-                  plan: nextCheckoutPlans.pending_checkout.plan,
-                  idempotencyKey: nextCheckoutPlans.pending_checkout.idempotency_key,
-                  checkoutUrl: nextCheckoutPlans.pending_checkout.checkout_url,
-                }
-              : null,
-          );
-          setCheckoutError(null);
-        } catch (checkoutLoadError) {
-          if (checkoutLoadError instanceof ApiError && checkoutLoadError.status === 401) {
-            throw checkoutLoadError;
-          }
-          setCheckoutError(describeError(checkoutLoadError));
-        }
       } catch (loadError) {
         if (loadError instanceof ApiError && loadError.status === 401) {
           onSessionExpired();
@@ -116,134 +65,9 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
     [onSessionExpired, token],
   );
 
-  async function changeAutoRenewal(enabled: boolean) {
-    if (autoRenewalBusy || (enabled && !autoRenewalConsentAccepted)) {
-      return;
-    }
-    setAutoRenewalBusy(true);
-    setAutoRenewalError(null);
-    setAutoRenewalNotice(null);
-    try {
-      const result = await updateMemberAutoRenewal(token, enabled);
-      setAutoRenewal(result);
-      setAutoRenewalConsentAccepted(false);
-      setAutoRenewalNotice(
-        enabled
-          ? "Tu autorización quedó registrada. No se realizó ningún cobro; si ya pagaste tu periodo actual, completarás el primer cobro y la captura de tarjeta en la fecha de vencimiento. Los cobros automáticos posteriores comenzarán cuando el servicio esté habilitado."
-          : "La renovación automática quedó desactivada. Tu periodo ya pagado no cambia.",
-      );
-    } catch (updateError) {
-      if (updateError instanceof ApiError && updateError.status === 401) {
-        onSessionExpired();
-        return;
-      }
-      setAutoRenewalError(describeError(updateError));
-    } finally {
-      setAutoRenewalBusy(false);
-    }
-  }
-
   useEffect(() => {
     void load("initial");
   }, [load]);
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (nextState) => {
-      if (nextState === "active") {
-        if (checkoutOpenedRef.current) {
-          checkoutOpenedRef.current = false;
-          setCheckoutNotice(
-            "Regresaste del checkout. El gimnasio confirmará el pago cuando reciba el aviso seguro de Conekta; desliza hacia abajo para actualizar.",
-          );
-          void load("refresh");
-        } else if (paymentMethodSetupOpenedRef.current) {
-          paymentMethodSetupOpenedRef.current = false;
-          setAutoRenewalNotice(
-            "Regresaste de la captura de tarjeta. El gimnasio confirmará la renovación cuando reciba el aviso seguro de Conekta; desliza hacia abajo para actualizar.",
-          );
-          void load("refresh");
-        }
-      }
-    });
-    return () => subscription.remove();
-  }, [load]);
-
-  async function openCheckout(plan: MemberCheckoutPlan) {
-    if (startingCheckoutPlanId) {
-      return;
-    }
-    setStartingCheckoutPlanId(plan.id);
-    setCheckoutError(null);
-    setCheckoutNotice(null);
-    const existing = pendingCheckout?.plan.id === plan.id ? pendingCheckout : null;
-    const checkout = existing ?? {
-      plan,
-      idempotencyKey: `member-checkout-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      checkoutUrl: null,
-    };
-    setPendingCheckout(checkout);
-    try {
-      let checkoutUrl = checkout.checkoutUrl;
-      if (!checkoutUrl) {
-        const result = await createMemberCheckout(
-          token,
-          plan.id,
-          checkout.idempotencyKey,
-        );
-        checkoutUrl = result.checkout_url;
-        if (!checkoutUrl) {
-          throw new Error("Conekta no devolvió un enlace para continuar el pago.");
-        }
-        setPendingCheckout({ ...checkout, checkoutUrl });
-      }
-      checkoutOpenedRef.current = true;
-      await Linking.openURL(checkoutUrl);
-      setCheckoutNotice(
-        "Se abrió el checkout seguro de Conekta. La app no recibe ni guarda los datos de tu tarjeta. El pago solo se confirma cuando el gimnasio recibe y valida el aviso de Conekta.",
-      );
-    } catch (checkoutStartError) {
-      checkoutOpenedRef.current = false;
-      if (checkoutStartError instanceof ApiError && checkoutStartError.status === 401) {
-        onSessionExpired();
-        return;
-      }
-      setCheckoutError(
-        checkoutStartError instanceof ApiError && checkoutStartError.status === 503
-          ? "El pago en línea no está disponible en este momento. Consulta en recepción."
-          : describeError(checkoutStartError),
-      );
-    } finally {
-      setStartingCheckoutPlanId(null);
-    }
-  }
-
-  async function openPaymentMethodSetup() {
-    if (paymentMethodSetupBusy) {
-      return;
-    }
-    setPaymentMethodSetupBusy(true);
-    setAutoRenewalError(null);
-    setAutoRenewalNotice(null);
-    try {
-      const setup = await createMemberPaymentMethodSetup(token);
-      paymentMethodSetupOpenedRef.current = true;
-      await Linking.openURL(setup.setup_url);
-      setAutoRenewalNotice(
-        `Se abrirá el formulario seguro de Conekta. Al terminar, se intentará el cobro normal de renovación de ${formatMoney(setup.amount_cents, setup.currency)}; no es un cargo de verificación.`,
-      );
-    } catch (setupError) {
-      paymentMethodSetupOpenedRef.current = false;
-      if (setupError instanceof ApiError && setupError.status === 401) {
-        onSessionExpired();
-        return;
-      }
-      setAutoRenewalError(describeError(setupError));
-    } finally {
-      setPaymentMethodSetupBusy(false);
-    }
-  }
-
-  const balance = account?.balance_cents ?? 0;
 
   return (
     <ScrollView
@@ -271,275 +95,25 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
 
       <View style={styles.hero}>
         <Text style={sharedStyles.label}>Tu cuenta</Text>
-        <Text style={sharedStyles.title}>Pagos y estado de cuenta</Text>
+        <Text style={sharedStyles.title}>Estado de cuenta</Text>
         <Text style={sharedStyles.body}>
-          Consulta tus pagos de membresía y los movimientos de tu cuenta del
-          gimnasio.
+          Consulta los cargos y pagos registrados por el gimnasio. Los pagos se
+          realizan en recepción.
         </Text>
       </View>
 
       {error ? (
         <View style={styles.errorBanner}>
-          <Text style={sharedStyles.error}>{error}</Text>
-        </View>
-      ) : null}
-      {checkoutPlans ? (
-        <View style={sharedStyles.card}>
-          <Text style={styles.sectionTitle}>Inscripción con pago en línea</Text>
-          <Text style={sharedStyles.body}>
-            Paga una primera membresía con tarjeta en el checkout seguro de Conekta.
-            La app nunca recibe ni guarda los datos de tu tarjeta.
-          </Text>
-          {pendingCheckout ? (
-            <View style={styles.checkoutPlan}>
-              <Text style={styles.rowTitle}>{pendingCheckout.plan.name}</Text>
-              <Text style={sharedStyles.hint}>
-                {formatMoney(
-                  pendingCheckout.plan.price_cents,
-                  pendingCheckout.plan.currency,
-                )} ·{" "}
-                {pendingCheckout.plan.duration_days} días
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={
-                  startingCheckoutPlanId === pendingCheckout.plan.id
-                    ? `Abriendo checkout para ${pendingCheckout.plan.name}`
-                    : pendingCheckout.checkoutUrl
-                      ? `Volver a abrir checkout de ${pendingCheckout.plan.name}`
-                      : `Reintentar la creación del checkout de ${pendingCheckout.plan.name}`
-                }
-                accessibilityState={{ disabled: startingCheckoutPlanId !== null }}
-                disabled={startingCheckoutPlanId !== null}
-                onPress={() => void openCheckout(pendingCheckout.plan)}
-                style={({ pressed }) => [
-                  sharedStyles.primaryButton,
-                  pressed && startingCheckoutPlanId === null
-                    ? sharedStyles.primaryButtonPressed
-                    : null,
-                  startingCheckoutPlanId !== null
-                    ? sharedStyles.primaryButtonDisabled
-                    : null,
-                ]}
-              >
-                {startingCheckoutPlanId === pendingCheckout.plan.id ? (
-                  <ActivityIndicator color={colors.accentText} />
-                ) : (
-                  <Text style={sharedStyles.primaryButtonText}>
-                    {pendingCheckout.checkoutUrl
-                      ? "Volver al checkout"
-                      : "Reintentar checkout"}
-                  </Text>
-                )}
-              </Pressable>
-            </View>
-          ) : !checkoutPlans.checkout_enabled ? (
-            <Text style={sharedStyles.hint}>
-              El pago en línea no está habilitado en este momento. Consulta en recepción.
-            </Text>
-          ) : !checkoutPlans.eligible ? (
-            <Text style={sharedStyles.hint}>
-              Ya tienes una membresía activa o un pago en proceso. El pago en línea está
-              disponible solo para una primera inscripción; para renovar o cambiar tu
-              plan, consulta en recepción.
-            </Text>
-          ) : checkoutPlans.items.length === 0 ? (
-            <Text style={sharedStyles.hint}>
-              No hay planes disponibles para inscripción en línea.
-            </Text>
-          ) : (
-            checkoutPlans.items.map((plan) => {
-              const isStarting = startingCheckoutPlanId === plan.id;
-              const disabled = startingCheckoutPlanId !== null;
-              return (
-                <View key={plan.id} style={styles.checkoutPlan}>
-                  <View style={styles.rowHeading}>
-                    <Text style={styles.rowTitle}>{plan.name}</Text>
-                    <Text style={styles.rowAmount}>
-                      {formatMoney(plan.price_cents, plan.currency)}
-                    </Text>
-                  </View>
-                  <Text style={sharedStyles.hint}>
-                    {plan.duration_days} días · {plan.currency}
-                  </Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={
-                      isStarting
-                        ? `Abriendo checkout para ${plan.name}`
-                        : `Pagar ${plan.name} por ${formatMoney(
-                            plan.price_cents,
-                            plan.currency,
-                          )}`
-                    }
-                    accessibilityState={{ disabled }}
-                    disabled={disabled}
-                    onPress={() => void openCheckout(plan)}
-                    style={({ pressed }) => [
-                      sharedStyles.primaryButton,
-                      pressed && !disabled ? sharedStyles.primaryButtonPressed : null,
-                      disabled ? sharedStyles.primaryButtonDisabled : null,
-                    ]}
-                  >
-                    {isStarting ? (
-                      <ActivityIndicator color={colors.accentText} />
-                    ) : (
-                      <Text style={sharedStyles.primaryButtonText}>Continuar al pago</Text>
-                    )}
-                  </Pressable>
-                </View>
-              );
-            })
-          )}
-          {checkoutError ? (
-            <Text accessibilityRole="alert" style={sharedStyles.error}>
-              {checkoutError}
-            </Text>
-          ) : null}
-          {checkoutNotice ? (
-            <Text accessibilityLiveRegion="polite" style={sharedStyles.hint}>
-              {checkoutNotice}
-            </Text>
-          ) : null}
-        </View>
-      ) : checkoutError ? (
-        <View style={styles.errorBanner}>
           <Text accessibilityRole="alert" style={sharedStyles.error}>
-            No se pudieron consultar las opciones de pago en línea: {checkoutError}
+            {error}
           </Text>
         </View>
       ) : null}
-      {autoRenewal?.membership_id && (autoRenewal.eligible || autoRenewal.enabled) ? (
-        <View style={sharedStyles.card}>
-          <Text style={styles.sectionTitle}>Renovación automática</Text>
-          <Text style={sharedStyles.body}>
-            {autoRenewal.enabled
-              ? !autoRenewal.eligible
-                ? autoRenewal.first_renewal_due &&
-                  autoRenewal.first_renewal_requires_member_action
-                  ? `Tu periodo terminó. Para completar la renovación, captura tu tarjeta y paga el importe normal del plan${autoRenewal.period_ends_at ? ` (venció el ${formatDay(autoRenewal.period_ends_at)})` : ""}.`
-                  : autoRenewal.payment_method_ready
-                    ? autoRenewal.first_renewal_charge_status === "failed"
-                      ? "Conekta rechazó el cobro y tu acceso permanece suspendido. No inicies otro pago; consulta con recepción si necesitas ayuda."
-                      : autoRenewal.first_renewal_charge_status === "unknown"
-                        ? "El resultado del cobro no se pudo confirmar. No inicies otro pago; el gimnasio debe conciliarlo antes."
-                        : "La captura se completó y el cobro está pendiente de confirmación segura de Conekta. El acceso se habilitará cuando se confirme el pago."
-                    : "Tu autorización sigue registrada, pero tu membresía no está activa y vigente. No se debe programar un cobro mientras siga así; puedes revocar la autorización aquí."
-                : autoRenewal.first_renewal_requires_member_action
-                ? `Autorización activa. Tu periodo actual vence el ${autoRenewal.period_ends_at ? formatDay(autoRenewal.period_ends_at) : "día indicado en tu membresía"}. En esa fecha completarás de forma segura la captura de tarjeta y el primer cobro. Los ciclos posteriores podrán automatizarse cuando el servicio esté habilitado.`
-                : "Autorización activa y método de pago listo. Los cobros automáticos comenzarán cuando el servicio esté habilitado."
-              : autoRenewal.eligible
-                ? autoRenewal.consent_text
-                : "La renovación automática solo puede activarse para una membresía activa y vigente."}
-          </Text>
-          {autoRenewal.eligible && !autoRenewal.enabled ? (
-            <Pressable
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: autoRenewalConsentAccepted }}
-              onPress={() => setAutoRenewalConsentAccepted((accepted) => !accepted)}
-              style={styles.consentRow}
-            >
-              <View
-                style={[
-                  styles.consentBox,
-                  autoRenewalConsentAccepted ? styles.consentBoxChecked : null,
-                ]}
-              >
-                {autoRenewalConsentAccepted ? (
-                  <Text style={styles.consentCheckmark}>✓</Text>
-                ) : null}
-              </View>
-              <Text style={[sharedStyles.body, styles.consentText]}>
-                Acepto y autorizo la renovación automática conforme a estas
-                condiciones.
-              </Text>
-            </Pressable>
-          ) : null}
-          {autoRenewal.first_renewal_due &&
-          autoRenewal.first_renewal_requires_member_action ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ disabled: paymentMethodSetupBusy }}
-              disabled={paymentMethodSetupBusy}
-              onPress={() => void openPaymentMethodSetup()}
-              style={({ pressed }) => [
-                sharedStyles.primaryButton,
-                pressed && !paymentMethodSetupBusy
-                  ? sharedStyles.primaryButtonPressed
-                  : null,
-                paymentMethodSetupBusy ? sharedStyles.primaryButtonDisabled : null,
-              ]}
-            >
-              {paymentMethodSetupBusy ? (
-                <ActivityIndicator color={colors.accentText} />
-              ) : (
-                <Text style={sharedStyles.primaryButtonText}>
-                  Capturar tarjeta y pagar renovación
-                </Text>
-              )}
-            </Pressable>
-          ) : null}
-          {autoRenewal.eligible || autoRenewal.enabled ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{
-                disabled:
-                  autoRenewalBusy ||
-                  (!autoRenewal.enabled && !autoRenewalConsentAccepted),
-              }}
-              disabled={
-                autoRenewalBusy ||
-                (!autoRenewal.enabled && !autoRenewalConsentAccepted)
-              }
-              onPress={() => void changeAutoRenewal(!autoRenewal.enabled)}
-              style={({ pressed }) => [
-                autoRenewal.enabled
-                  ? sharedStyles.secondaryButton
-                  : sharedStyles.primaryButton,
-                pressed && !autoRenewalBusy
-                  ? autoRenewal.enabled
-                    ? sharedStyles.secondaryButtonPressed
-                    : sharedStyles.primaryButtonPressed
-                  : null,
-                autoRenewalBusy ||
-                (!autoRenewal.enabled && !autoRenewalConsentAccepted)
-                  ? sharedStyles.primaryButtonDisabled
-                  : null,
-              ]}
-            >
-              {autoRenewalBusy ? (
-                <ActivityIndicator color={colors.accentText} />
-              ) : (
-                <Text
-                  style={
-                    autoRenewal.enabled
-                      ? sharedStyles.secondaryButtonText
-                      : sharedStyles.primaryButtonText
-                  }
-                >
-                  {autoRenewal.enabled
-                    ? "Desactivar renovación automática"
-                    : "Autorizar renovación automática"}
-                </Text>
-              )}
-            </Pressable>
-          ) : null}
-          {autoRenewalError ? (
-            <Text accessibilityRole="alert" style={sharedStyles.error}>
-              {autoRenewalError}
-            </Text>
-          ) : null}
-          {autoRenewalNotice ? (
-            <Text accessibilityLiveRegion="polite" style={sharedStyles.hint}>
-              {autoRenewalNotice}
-            </Text>
-          ) : null}
-        </View>
-      ) : null}
+
       {loading && !account ? (
         <View style={styles.loading}>
           <ActivityIndicator color={colors.accent} />
-          <Text style={sharedStyles.body}>Cargando tus pagos…</Text>
+          <Text style={sharedStyles.body}>Cargando tu estado de cuenta…</Text>
         </View>
       ) : null}
 
@@ -549,15 +123,15 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
           <Text
             style={[
               styles.balance,
-              balance > 0 ? styles.balanceDue : styles.balanceOk,
+              account.balance_cents > 0 ? styles.balanceDue : styles.balanceOk,
             ]}
           >
-            {formatMoney(balance)}
+            {formatMoney(account.balance_cents)}
           </Text>
           <Text style={sharedStyles.hint}>
-            {balance > 0
+            {account.balance_cents > 0
               ? "Puedes liquidarlo en recepción."
-              : balance < 0
+              : account.balance_cents < 0
                 ? "Tienes saldo a favor."
                 : "No tienes cargos pendientes."}
           </Text>
@@ -577,7 +151,9 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
               <Text style={styles.statLabel}>Pagado en membresías</Text>
             </View>
           </View>
-          <Text style={sharedStyles.hint}>Corte al {formatDay(account.as_of)}.</Text>
+          <Text style={sharedStyles.hint}>
+            Corte al {formatDay(account.as_of)}.
+          </Text>
         </View>
       ) : null}
 
@@ -592,16 +168,17 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
             payments.items.map((payment) => (
               <View key={payment.id} style={styles.row}>
                 <View style={styles.rowHeading}>
-                  <Text style={styles.rowAmount}>{formatMoney(payment.amount_cents)}</Text>
+                  <Text style={styles.rowAmount}>
+                    {formatMoney(payment.amount_cents)}
+                  </Text>
                   <View style={styles.pill}>
-                    <Text style={styles.pillText}>{paymentMethodLabel(payment.method)}</Text>
+                    <Text style={styles.pillText}>
+                      {paymentMethodLabel(payment.method)}
+                    </Text>
                   </View>
                 </View>
                 <Text style={sharedStyles.body}>
-                  {[
-                    payment.plan_name,
-                    formatDateTime(payment.paid_at),
-                  ]
+                  {[payment.plan_name, formatDateTime(payment.paid_at)]
                     .filter(Boolean)
                     .join(" · ")}
                 </Text>
@@ -629,13 +206,18 @@ export function PaymentsScreen({ token, onBack, onSessionExpired }: Props) {
             </Text>
           ) : (
             account.entries.map((entry, index) => (
-              <View key={`${entry.kind}-${entry.reference}-${index}`} style={styles.row}>
+              <View
+                key={`${entry.kind}-${entry.reference}-${index}`}
+                style={styles.row}
+              >
                 <View style={styles.rowHeading}>
                   <Text style={styles.rowTitle}>{entry.description}</Text>
                   <Text
                     style={[
                       styles.rowAmount,
-                      entry.amount_cents > 0 ? styles.amountCharge : styles.amountCredit,
+                      entry.amount_cents > 0
+                        ? styles.amountCharge
+                        : styles.amountCredit,
                     ]}
                   >
                     {formatSignedMoney(entry.amount_cents)}
@@ -738,42 +320,6 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "900",
     letterSpacing: -0.3,
-  },
-  checkoutPlan: {
-    backgroundColor: colors.surfaceElevated,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    gap: spacing.sm,
-    paddingTop: spacing.md,
-    padding: spacing.md,
-  },
-  consentRow: {
-    alignItems: "flex-start",
-    flexDirection: "row",
-    gap: spacing.sm,
-  },
-  consentBox: {
-    alignItems: "center",
-    borderColor: colors.border,
-    borderRadius: 4,
-    borderWidth: 1,
-    height: 22,
-    justifyContent: "center",
-    marginTop: 2,
-    width: 22,
-  },
-  consentBoxChecked: {
-    backgroundColor: colors.accent,
-    borderColor: colors.accent,
-  },
-  consentCheckmark: {
-    color: colors.accentText,
-    fontSize: 15,
-    fontWeight: "800",
-  },
-  consentText: {
-    flex: 1,
   },
   row: {
     borderTopColor: colors.border,

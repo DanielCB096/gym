@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.engine import Engine
@@ -827,6 +827,15 @@ from app.timezone import DEFAULT_TIMEZONE, club_date, validate_club_timezone
 
 PreviewOutcome = Literal["succeeded", "failed", "unknown", "processing"]
 PREVIEW_MODE = os.getenv("PREVIEW_MODE", "").lower() == "true"
+BILLING_ENABLED = os.getenv("BILLING_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+ONLINE_PAYMENTS_ENABLED = os.getenv(
+    "ONLINE_PAYMENTS_ENABLED", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 CORS_ORIGINS = tuple(
     origin.strip()
     for origin in os.getenv("CORS_ORIGINS", "").split(",")
@@ -4070,6 +4079,49 @@ if CORS_ORIGINS:
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Kiosk-Token"],
     )
+
+
+@app.middleware("http")
+async def enforce_first_delivery_exclusions(request: Request, call_next: Callable) -> Response:
+    path = request.url.path
+    member_segments = path.strip("/").split("/")
+    is_admin_fiscal_profile = (
+        len(member_segments) == 4
+        and member_segments[0] == "admin"
+        and member_segments[1] == "members"
+        and member_segments[3] == "fiscal-profile"
+    )
+    billing_path = (
+        path == "/admin/billing"
+        or path.startswith("/admin/billing/")
+        or path == "/member/invoices"
+        or path.startswith("/member/invoices/")
+        or path == "/member/fiscal-profile"
+        or is_admin_fiscal_profile
+    )
+    online_payment_path = (
+        path
+        in {
+            "/member/membership/checkout",
+            "/member/membership/plans",
+            "/member/membership/auto-renewal",
+            "/webhooks/conekta/membership",
+        }
+        or path.startswith("/member/membership/payment-method/setup/")
+        or path == "/member/membership/payment-method/setup"
+    )
+
+    if billing_path and not BILLING_ENABLED:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": "La facturación no está disponible en esta entrega."},
+        )
+    if online_payment_path and not ONLINE_PAYMENTS_ENABLED:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": "Los pagos en línea no están disponibles en esta entrega."},
+        )
+    return await call_next(request)
 
 
 @app.get("/health", tags=["system"])

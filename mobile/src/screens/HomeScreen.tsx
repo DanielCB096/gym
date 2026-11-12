@@ -30,7 +30,6 @@ type Props = {
   onOpenPhysio: () => void;
   onOpenRoutines: () => void;
   onOpenPayments: () => void;
-  onOpenInvoices: () => void;
   onOpenNotifications: () => void;
 };
 
@@ -54,14 +53,12 @@ export function HomeScreen({
   onOpenPhysio,
   onOpenRoutines,
   onOpenPayments,
-  onOpenInvoices,
   onOpenNotifications,
 }: Props) {
   const quickActions: QuickAction[] = [
     { title: "Clases", subtitle: "Reservar", mark: "CL", onPress: onOpenClasses },
     { title: "Rutinas", subtitle: "Mi plan", mark: "RT", onPress: onOpenRoutines },
-    { title: "Pagos", subtitle: "Estado", mark: "$", onPress: onOpenPayments },
-    { title: "Facturas", subtitle: "Comprobantes", mark: "FX", onPress: onOpenInvoices },
+    { title: "Estado de cuenta", subtitle: "Movimientos", mark: "$", onPress: onOpenPayments },
   ];
 
   return (

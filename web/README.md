@@ -2,6 +2,14 @@
 
 Panel web para dueño, gerente, recepción, contabilidad y administración operativa.
 
+## Alcance de primera entrega
+
+La navegación no muestra Facturación y el backend rechaza sus endpoints, junto
+con los de pagos en línea. La descripción de facturación que aparece más abajo
+documenta código diferido, no una función disponible para esta entrega. Los
+cobros presenciales se registran manualmente en caja. El correo externo requiere
+credenciales SMTP configuradas; Mailpit solo captura mensajes de staging.
+
 ## Objetivo
 
 - administración de socios y membresías

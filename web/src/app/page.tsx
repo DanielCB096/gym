@@ -3053,7 +3053,7 @@ const requiredPermission: Record<PageName, string[]> = {
   Rutinas: ["routines.read"],
   Inventario: ["inventory.read"],
   Mantenimiento: ["maintenance.read"],
-  Facturación: ["billing.read"],
+  Facturación: [],
   Conciliación: ["finance.read"],
   Reportes: ["finance.read"],
   Kiosco: ["settings.manage"],
@@ -3081,7 +3081,6 @@ const primaryNavigation: { label: PageName; icon: LucideIcon }[] = [
 const operationsNavigation: { label: PageName; icon: LucideIcon }[] = [
   { label: "Inventario", icon: ShoppingBasket },
   { label: "Mantenimiento", icon: Wrench },
-  { label: "Facturación", icon: Receipt },
   { label: "Conciliación", icon: Landmark },
   { label: "Reportes", icon: BarChart3 },
   { label: "Kiosco", icon: MonitorSmartphone },
@@ -3118,9 +3117,6 @@ const permissionRows = [
   { group: "Mantenimiento", label: "Reportar fallas y marcar equipos fuera de servicio", code: "maintenance.report" },
   { group: "Finanzas", label: "Consultar reportes financieros", code: "finance.read" },
   { group: "Finanzas", label: "Conciliar pagos y cuentas bancarias", code: "finance.manage" },
-  { group: "Facturación", label: "Consultar facturas y datos fiscales", code: "billing.read" },
-  { group: "Facturación", label: "Solicitar facturas y capturar datos fiscales", code: "billing.request" },
-  { group: "Facturación", label: "Timbrar y cancelar facturas", code: "billing.manage" },
   { group: "Finanzas", label: "Consultar nómina", code: "payroll.read" },
   { group: "Finanzas", label: "Administrar nómina", code: "payroll.manage" },
   { group: "Configuración", label: "Administrar configuración", code: "settings.manage" },
@@ -3140,7 +3136,6 @@ const permissionGroupByPrefix: Record<string, string> = {
   inventory: "Inventario",
   sales: "Ventas",
   maintenance: "Mantenimiento",
-  billing: "Facturación",
   payroll: "Finanzas",
   finance: "Finanzas",
   settings: "Configuración",
@@ -5734,11 +5729,11 @@ function StaffView({ onToast, currentUserId, canViewStaff, canManageRoles, canMa
   };
   const curatedCodes = new Set(permissionRows.map((permission) => permission.code));
   const catalogExtras = (permissionCatalog ?? [])
-    .filter((entry) => !curatedCodes.has(entry.code))
+    .filter((entry) => !curatedCodes.has(entry.code) && !entry.code.startsWith("billing."))
     .map((entry) => ({ group: permissionGroupFor(entry.code), label: entry.label, code: entry.code }));
   const knownCodes = new Set([...curatedCodes, ...catalogExtras.map((row) => row.code)]);
   const extraPermissionRows = (selectedRole?.permissions ?? [])
-    .filter((code) => !knownCodes.has(code))
+    .filter((code) => !knownCodes.has(code) && !code.startsWith("billing."))
     .sort()
     .map((code) => ({ group: "Otros", label: code, code }));
   const rowsByGroup = new Map<string, { group: string; label: string; code: string }[]>();

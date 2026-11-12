@@ -1,6 +1,5 @@
 export type NotificationDestination =
   | "home"
-  | "invoices"
   | "classes"
   | "physio"
   | "routines"
@@ -31,7 +30,6 @@ const ROUTINE_KINDS = new Set([
 ]);
 
 export type NotificationRefTarget =
-  | "invoice"
   | "reservation"
   | "class_session"
   | "physio_appointment"
@@ -50,9 +48,6 @@ export type NotificationFocus = {
 export function notificationRefTarget(
   kind: string,
 ): NotificationRefTarget | null {
-  if (kind.startsWith("invoice_")) {
-    return "invoice";
-  }
   if (
     kind === "class_reserved" ||
     kind === "class_waitlist_promoted" ||
@@ -90,9 +85,6 @@ export function notificationFocus(
 // A kind the app does not know yet lands in the inbox instead of guessing a
 // screen, so the notice is never lost.
 export function notificationDestination(kind: string): NotificationDestination {
-  if (kind.startsWith("invoice_")) {
-    return "invoices";
-  }
   if (CLASS_KINDS.has(kind)) {
     return "classes";
   }
